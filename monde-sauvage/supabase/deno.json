@@ -1,0 +1,8 @@
+{
+  "deploy": {
+    "verify_jwt": false
+  },
+  "imports": {
+    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm"
+  }
+}

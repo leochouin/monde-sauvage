@@ -1,0 +1,8 @@
+{
+  "deploy": {
+    "verify_jwt": false
+  },
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.39.0"
+  }
+}

@@ -1,0 +1,379 @@
+/* Guide Booking Modal Styles */
+
+.guide-booking-modal {
+  max-width: 700px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.guide-booking-modal .modal-header {
+  border-bottom: 2px solid #e0e0e0;
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.guide-booking-modal .modal-header h2 {
+  margin: 0;
+  color: #2c5530;
+  font-size: 1.5rem;
+}
+
+.guide-booking-modal .modal-close {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  cursor: pointer;
+  color: #666;
+  line-height: 1;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+}
+
+.guide-booking-modal .modal-close:hover {
+  color: #333;
+}
+
+/* Form Sections */
+.form-section {
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.form-section:last-of-type {
+  border-bottom: none;
+}
+
+.form-section h3 {
+  color: #2c5530;
+  font-size: 1.1rem;
+  margin: 0 0 1rem 0;
+  font-weight: 600;
+}
+
+/* Form Groups */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: #333;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.form-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #2c5530;
+  box-shadow: 0 0 0 2px rgba(44, 85, 48, 0.1);
+}
+
+.form-input:disabled {
+  background-color: #f5f5f5;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+textarea.form-input {
+  resize: vertical;
+  min-height: 80px;
+}
+
+select.form-input {
+  cursor: pointer;
+}
+
+/* Availability Status */
+.availability-checking {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background-color: #f0f8ff;
+  border-radius: 4px;
+  margin-top: 1rem;
+  color: #0066cc;
+}
+
+.availability-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.availability-status.available {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #a5d6a7;
+}
+
+.availability-status.unavailable {
+  background-color: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  flex-direction: column;
+}
+
+.status-icon {
+  font-weight: bold;
+  font-size: 1.2rem;
+}
+
+.conflicts-list {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  width: 100%;
+}
+
+.conflicts-list strong {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.conflicts-list ul {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.conflicts-list li {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+/* Success Message */
+.success-message {
+  text-align: center;
+  padding: 3rem 2rem;
+}
+
+.success-icon {
+  width: 80px;
+  height: 80px;
+  background-color: #4caf50;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+  margin: 0 auto 1.5rem;
+  animation: scaleIn 0.3s ease-out;
+}
+
+.success-message h3 {
+  color: #2c5530;
+  margin-bottom: 1rem;
+}
+
+.success-message p {
+  color: #666;
+  margin: 0.5rem 0;
+}
+
+.success-note {
+  font-style: italic;
+  font-size: 0.9rem;
+  margin-top: 1rem;
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* Error Message */
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background-color: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+.error-icon {
+  font-size: 1.2rem;
+  font-weight: bold;
+}
+
+/* Spinners */
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(0, 102, 204, 0.2);
+  border-top-color: #0066cc;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner-small {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Modal Actions */
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e0e0e0;
+}
+
+.btn {
+  padding: 0.75rem 1.5rem;
+  border-radius: 4px;
+  border: none;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 120px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: #2c5530;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #1f3d22;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(44, 85, 48, 0.3);
+}
+
+.btn-secondary {
+  background-color: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: #e0e0e0;
+}
+
+/* Upcoming Bookings Preview */
+.upcoming-bookings {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 2px solid #e0e0e0;
+}
+
+.upcoming-bookings h4 {
+  color: #2c5530;
+  font-size: 1rem;
+  margin: 0 0 1rem 0;
+  font-weight: 600;
+}
+
+.bookings-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.booking-item {
+  padding: 0.75rem;
+  background-color: #f8f9fa;
+  border-left: 3px solid #2c5530;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.booking-time {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.booking-customer {
+  font-size: 0.9rem;
+  color: #333;
+}
+
+/* DatePicker Customization */
+.react-datepicker-wrapper {
+  width: 100%;
+}
+
+.react-datepicker__input-container input {
+  width: 100%;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .guide-booking-modal {
+    max-width: 95%;
+    margin: 1rem;
+  }
+
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-actions {
+    flex-direction: column-reverse;
+  }
+
+  .btn {
+    width: 100%;
+  }
+
+  .booking-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+}

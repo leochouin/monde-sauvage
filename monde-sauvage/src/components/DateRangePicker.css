@@ -1,0 +1,231 @@
+.date-range-picker {
+    position: relative;
+    padding: 24px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.date-picker-controls {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+
+.date-picker-nav {
+    background: none;
+    border: 1px solid #e2e8f0;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 20px;
+    color: #334155;
+    transition: all 0.15s ease;
+}
+
+.date-picker-nav:hover {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+.date-picker-nav:active {
+    transform: scale(0.95);
+}
+
+.date-picker-months {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 32px;
+}
+
+@media (max-width: 768px) {
+    .date-picker-months {
+        grid-template-columns: 1fr;
+        gap: 24px;
+    }
+}
+
+.date-picker-month {
+    min-width: 280px;
+}
+
+.date-picker-month-header {
+    margin-bottom: 16px;
+}
+
+.date-picker-month-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e293b;
+    text-align: center;
+}
+
+.date-picker-day-names {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    margin-bottom: 8px;
+}
+
+.date-picker-day-name {
+    text-align: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #64748b;
+    padding: 8px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.date-picker-days-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.date-picker-day {
+    aspect-ratio: 1;
+    border: none;
+    background: white;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #1e293b;
+    position: relative;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+}
+
+.date-picker-day-number {
+    position: relative;
+    z-index: 2;
+}
+
+.date-picker-day.empty {
+    cursor: default;
+    background: transparent;
+}
+
+/* Available dates hover */
+.date-picker-day:not(.disabled):not(.selected):hover {
+    background: #f1f5f9;
+    border-radius: 50%;
+}
+
+/* Past dates */
+.date-picker-day.past {
+    color: #cbd5e1;
+    cursor: not-allowed;
+    background: #fafafa;
+}
+
+/* Blocked/Booked dates */
+.date-picker-day.blocked {
+    color: #94a3b8;
+    background: #f8fafc;
+    cursor: not-allowed;
+    position: relative;
+}
+
+.date-picker-strikethrough {
+    position: absolute;
+    width: 100%;
+    height: 1px;
+    background: #cbd5e1;
+    transform: rotate(-45deg);
+    z-index: 1;
+}
+
+/* Selected dates */
+.date-picker-day.selected {
+    background: #222222;
+    color: white;
+    font-weight: 600;
+    z-index: 3;
+}
+
+.date-picker-day.selected:hover {
+    background: #222222;
+}
+
+/* Dates in selected range */
+.date-picker-day.in-range {
+    background: #f0f9ff;
+    border-radius: 0;
+}
+
+.date-picker-day.in-range:hover {
+    background: #e0f2fe;
+}
+
+/* Hover range preview */
+.date-picker-day.hover-range {
+    background: #f0f9ff;
+    border-radius: 0;
+}
+
+/* Check-in date specific styling */
+.date-picker-day.check-in {
+    border-radius: 50% 0 0 50%;
+}
+
+.date-picker-day.check-in.check-out {
+    border-radius: 50%;
+}
+
+/* Check-out date specific styling */
+.date-picker-day.check-out {
+    border-radius: 0 50% 50% 0;
+}
+
+/* First day in range */
+.date-picker-day.in-range:first-child,
+.date-picker-day.hover-range:first-child {
+    border-radius: 50% 0 0 50%;
+}
+
+/* Last day in range */
+.date-picker-day.in-range:last-child,
+.date-picker-day.hover-range:last-child {
+    border-radius: 0 50% 50% 0;
+}
+
+/* Disabled state */
+.date-picker-day:disabled {
+    cursor: not-allowed;
+}
+
+/* Focus states for accessibility */
+.date-picker-day:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+}
+
+.date-picker-nav:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+}
+
+/* Mobile optimizations */
+@media (max-width: 640px) {
+    .date-range-picker {
+        padding: 16px;
+    }
+
+    .date-picker-day {
+        min-height: 36px;
+        font-size: 0.8125rem;
+    }
+
+    .date-picker-month {
+        min-width: auto;
+    }
+}

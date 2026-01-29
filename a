@@ -1,0 +1,22 @@
+map.addLayer({
+    id: 'business-3d',
+    type: 'circle',
+    source: 'businesses',
+    'source-layer': 'Monde_sauvage', // <-- replace with your layer name
+    paint: {
+      'circle-radius': 35,
+      'circle-color': '#FF0000',
+      'circle-opacity': 1
+    }
+  });
+  map.addLayer({
+    id: 'business',
+    type: 'circle',
+    source: 'businesses',
+    'source-layer': 'Monde_sauvage', // <-- replace with your layer name
+    paint: {
+      'circle-radius': 30,
+      'circle-color': '#FFFFFF',
+      'circle-opacity': 1
+    }
+  });

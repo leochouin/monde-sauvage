@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Guides</title>
+<meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.css" rel="stylesheet">
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.js"></script>
+<style>
+  body { margin: 0; padding: 0; }
+  #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+  .popup-content img { max-width: 120px; margin: 6px 0; }
+  .popup-content h3 { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+mapboxgl.accessToken = 'pk.eyJ1IjoibGVvY2hvdWluYXJkIiwiYSI6ImNtZmltbnYwbzBvNnUycW9zMWZ1ZHB4dGUifQ.-WHGlNmEXAleoIE4-nkKSA';
+
+const map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/leochouinard/cmfid9k1r008d01s913p33wq7',
+  projection: 'globe',
+  zoom: 8,
+  center: [-65.899167, 48.559823],
+  maxZoom: 16,
+  minZoom: 6
+});
+
+map.setMaxBounds([[-66.5, 48.2], [-65.5, 48.8]]);
+
+map.addControl(new mapboxgl.NavigationControl());
+map.scrollZoom.disable();
+map.doubleClickZoom.disable();
+
+map.on('style.load', () => {
+  
+
+  const layers = map.getStyle().layers;
+
+  layers.forEach((layer) => {
+    if (layer.id.includes('road') && layer.type === 'symbol') {
+      map.setLayoutProperty(layer.id, 'visibility', 'none');
+    }
+  });
+  map.getStyle().layers.forEach(layer => {
+    if (layer.id.toLowerCase().includes('highway')) {
+      map.setLayoutProperty(layer.id, 'visibility', 'none');
+    }
+  });
+  // 1. Add your businesses tileset as a source
+  map.addSource('businesses', {
+    type: 'vector',
+    url: 'mapbox://leochouinard.cmfiagsm01tfl1qo364rq7ye3-71qfa' // <-- replace with your tileset ID
+  });
+
+  map.addSource('rivers', {
+    type: 'vector',
+    url: 'mapbox://leochouinard.cmfzee8ib2lry1us9oy5r8ui3-6zdfw'
+  })
+
+  // 2. Preload logos dynamically for each business
+  // Fetch the GeoJSON directly (if you have it) or loop features from tileset
+  // Here is a manual list example for testing:
+  const businessLogos = [
+    {
+      id: 'Falls Gully',
+      url: 'https://fallsgully.com/wp-content/uploads/2025/06/cropped-logo_fallsgully_blk.png'
+    },
+    {
+      id: 'Lamontagne',
+      url: 'https://example.com/lamontagne.png'
+    }
+  ];
+
+  businessLogos.forEach(icon => {
+    map.loadImage(icon.url, (error, image) => {
+      if (error) return;
+      if (!map.hasImage(icon.id)) {
+        map.addImage(icon.id, image);
+      }
+    });
+  });
+
+  map.loadImage('https://i.ibb.co/tpNkVbKw/location.png', (error, image) => {
+    if (error) throw error;
+    if (!map.hasImage('pin')) map.addImage('pin', image);
+  });
+
+  //----------------------------Pins------------------------------------------------------------
+  map.addLayer({
+      id: 'business-pin',
+      type: 'symbol',
+      source: 'businesses',
+      'source-layer': 'Monde_sauvage',
+      layout: {
+        'icon-image': 'pin',
+        'icon-size': 0.15,          // adjust as needed
+        'icon-allow-overlap': true,
+        'icon-anchor': 'bottom'
+      }
+    });
+
+  map.addLayer({
+    id: 'business',
+    type: 'circle',
+    source: 'businesses',
+    'source-layer': 'Monde_sauvage', // <-- replace with your layer name
+    paint: {
+      'circle-radius': 23,
+      'circle-color': '#FFFFFF',
+      'circle-translate': [0, -50],
+      'circle-opacity': 1,
+
+    }
+  });
+
+  map.addLayer({
+    id: 'business-icons',
+    type: 'symbol',
+    source: 'businesses',
+    'source-layer': 'Monde_sauvage', // <-- replace with your layer name
+    layout: {
+      'icon-image': ['get', 'name'],  // matches the business name to icon id
+      'icon-size': 0.08,
+      'icon-allow-overlap': true,
+      'icon-offset': [0, -37*10],
+      'icon-anchor': 'bottom',
+      'text-field': '',
+      'text-size': 0,
+      'text-offset': [0, 0] 
+    }
+  });
+  
+//------------------------------------------------------------------------
+//------------------------------------rivers--------------------------------------------
+  map.addLayer({
+    id: 'rivers-layer',
+    type: 'line',
+    source: 'rivers',
+    'source-layer': 'Rivers', // replace with your layer name
+    paint: {
+      'line-color': '#1E90FF',
+      'line-width': 8,
+      'line-blur': 8,
+      
+    },
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round'
+    }
+
+  });
+
+  map.addLayer({
+  id: 'land-outline',
+  type: 'line',
+  source: {
+    type: 'vector',
+    url: 'mapbox://mapbox.country-boundaries-v1' // example
+  },
+  'source-layer': 'country_boundaries',
+  layout: {},
+  paint: {
+    'line-color': '#000000',
+    'line-width': 4
+  },
+  layout: {
+    'line-join': 'round',
+    'line-cap': 'round'
+  }
+});
+
+
+  // 5. Popup on click with info
+  map.on('click', 'business-icons', (e) => {
+    const f = e;
+
+    new mapboxgl.Popup({ offset: 25 })
+      .setLngLat(e.lngLat)
+      .setHTML(`
+          <style>
+            .mapboxgl-popup-content { background: none; padding: 0; box-shadow: none; border-radius: 0; }
+          </style>
+        <div class="popup-card" style="
+            width: 300px;
+            max-width: 90vw;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            padding: 20px;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        ">
+          <div class="popup-header" style="
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 12px;
+              margin-bottom: 16px;
+          ">
+            <img src="${f.icon}" alt="${f.name} logo" style="
+                width: 80px;
+                height: 80px;
+                object-fit: cover;
+                border-radius: 50%;
+                border: 2px solid #ddd;
+            " />
+            <h3 style="
+                font-size: 1.25rem;
+                font-weight: 600;
+                text-align: center;
+                color: #333;
+                margin: 0;
+            ">${f.name}</h3>
+          </div>
+          <p style="
+              font-size: 0.95rem;
+              text-align: center;
+              color: #555;
+              margin-bottom: 20px;
+          ">${f.description}</p>
+          <a href="${f.website}" target="_blank" style="
+              text-decoration: none;
+              background: #4f46e5;
+              color: white;
+              padding: 10px 18px;
+              border-radius: 8px;
+              font-weight: 500;
+              transition: background 0.2s ease;
+          " onmouseover="this.style.background='#4338ca'" onmouseout="this.style.background='#4f46e5'">Visit Website</a>
+        </div>
+      `)
+      .addTo(map);
+});
+
+
+  map.on('mouseenter', 'business-icons', () => {
+    map.getCanvas().style.cursor = 'pointer';
+  });
+  map.on('mouseleave', 'business-icons', () => {
+    map.getCanvas().style.cursor = '';
+  });
+
+  // 6. Add decorative icons (example: fish)
+  map.loadImage('https://upload.wikimedia.org/wikipedia/commons/0/09/Fish_icon.png', (error, image) => {
+    if (error) throw error;
+    map.addImage('fish', image);
+    map.addSource('decorations', {
+      type: 'geojson',
+      data: {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [-65.7, 48.6] }
+          }
+        ]
+      }
+    });
+    map.addLayer({
+      id: 'fish-layer',
+      type: 'symbol',
+      source: 'decorations',
+      layout: { 'icon-image': 'fish', 'icon-size': 0.15 }
+    });
+  });
+
+  // 7. Optional: 3D buildings for extra depth
+  map.addLayer({
+    id: '3d-buildings',
+    source: 'composite',
+    'source-layer': 'building',
+    filter: ['==', 'extrude', 'true'],
+    type: 'fill-extrusion',
+    paint: {
+      'fill-extrusion-color': '#aaa',
+      'fill-extrusion-height': ['get', 'height'],
+      'fill-extrusion-opacity': 0.6
+    }
+  });
+});
+</script>
+</body>
+</html>

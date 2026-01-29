@@ -1,0 +1,3 @@
+# functions/google-calendar-availability/config.toml
+[function]
+api_key_required = false

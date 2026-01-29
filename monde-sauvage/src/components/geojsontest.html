@@ -1,0 +1,213 @@
+<html>
+<head>
+<meta charset="utf-8">
+<title>Guides</title>
+<meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.css" rel="stylesheet">
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.js"></script>
+<style>
+body { margin: 0; padding: 0; }
+#map { position: absolute; top: 0; bottom: 0; width: 100%; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+mapboxgl.accessToken = 'pk.eyJ1IjoibGVvY2hvdWluYXJkIiwiYSI6ImNtZmltbnYwbzBvNnUycW9zMWZ1ZHB4dGUifQ.-WHGlNmEXAleoIE4-nkKSA';
+
+
+const gaspBounds = [
+    [-68.05770988533543, 47.61203514013091], // bottom-left
+    [-63.94465050088402, 49.48686704416437]  // top-right
+];
+const map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/standard',
+    projection: 'mercator', // better for overlays
+    zoom: 6,
+    center: [-66, 49.0],
+     // Higher latitude for northern focus
+    maxBounds: gaspBounds
+});
+const businessLogos = [
+    {
+      id: 'Falls Gully',
+      url: 'https://fallsgully.com/wp-content/uploads/2025/06/cropped-logo_fallsgully_blk.png'
+    },
+    {
+      id: 'Lamontagne',
+      url: './test2.png'
+    }
+  ];
+
+
+map.addControl(new mapboxgl.NavigationControl());
+map.scrollZoom.disable();
+
+map.easeTo({
+  center: [-66, 49.2], // shift toward top
+  duration: 0
+});
+map.on('load', () => {
+    map.addSource('gaspesieOverlay', {
+        'type': 'image',
+        'url' : './realonnee.png',
+        'coordinates': [
+            [-68.05770988533543, 49.48686704416437], // top-left
+            [-63.94465050088402, 49.48686704416437], // top-right
+            [-63.94465050088402, 47.61203514013091], // bottom-right
+            [-68.05770988533543, 47.61203514013091] // bottom-left
+        ]
+    });
+    console.log("overlay added", map.getSource('gaspesieOverlay'));
+    map.addLayer({
+        'id': 'gaspesieOverlayLayer',
+        'type': 'raster',
+        'source': 'gaspesieOverlay',
+        'paint': {
+            'raster-opacity': 1
+        }
+    });
+
+    map.addSource('businesses', {
+    type: 'vector',
+    url: 'mapbox://leochouinard.cmfiagsm01tfl1qo364rq7ye3-71qfa' // <-- replace with your tileset ID
+  });
+
+
+    businessLogos.forEach(icon => {
+    map.loadImage(icon.url, (error, image) => {
+      if (error) return;
+      if (!map.hasImage(icon.id)) {
+        map.addImage(icon.id, image);
+      }
+    });
+  });
+
+  map.loadImage('https://i.ibb.co/tpNkVbKw/location.png', (error, image) => {
+    if (error) throw error;
+    if (!map.hasImage('pin')) map.addImage('pin', image);
+  });
+
+  map.addLayer({
+      id: 'business-pin',
+      type: 'symbol',
+      source: 'businesses',
+      'source-layer': 'Monde_sauvage',
+      layout: {
+        'icon-image': 'pin',
+        'icon-size': 0.15,          // adjust as needed
+        'icon-allow-overlap': true,
+        'icon-anchor': 'bottom'
+      }
+    });
+
+  map.addLayer({
+    id: 'business',
+    type: 'circle',
+    source: 'businesses',
+    'source-layer': 'Monde_sauvage', // <-- replace with your layer name
+    paint: {
+      'circle-radius': 23,
+      'circle-color': '#FFFFFF',
+      'circle-translate': [0, -50],
+      'circle-opacity': 1,
+
+    }
+  });
+
+  map.addLayer({
+    id: 'business-icons',
+    type: 'symbol',
+    source: 'businesses',
+    'source-layer': 'Monde_sauvage', // <-- replace with your layer name
+    layout: {
+      'icon-image': ['get', 'name'],  // matches the business name to icon id
+      'icon-size': 0.08,
+      'icon-allow-overlap': true,
+      'icon-offset': [0, -37*10],
+      'icon-anchor': 'bottom',
+      'text-field': '',
+      'text-size': 0,
+      'text-offset': [0, 0] 
+    }
+  });
+
+  map.on('click', 'business-icons', (e) => {
+    const feature = e.features[0];
+    const properties = feature.properties;
+
+    new mapboxgl.Popup({ offset: 25 })
+      .setLngLat(e.lngLat)
+      .setHTML(`
+          <style>
+            .mapboxgl-popup-content { background: none; padding: 0; box-shadow: none; border-radius: 0; }
+          </style>
+        <div class="popup-card" style="
+            width: 200px;
+            max-width: 90vw;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            padding: 20px;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        ">
+          <div class="popup-header" style="
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 12px;
+              margin-bottom: 16px;
+          ">
+            <img src="${businessLogos.find(logo => logo.id === properties.name)?.url || ''}" alt="${properties.name} logo" style="
+                width: 80px;
+                height: 80px;
+                object-fit: cover;
+                border-radius: 50%;
+                border: 2px solid #ddd;
+            " />
+            <h3 style="
+                font-size: 1.25rem;
+                font-weight: 600;
+                text-align: center;
+                color: #333;
+                margin: 0;
+            ">${properties.name}</h3>
+          </div>
+          <p style="
+              font-size: 0.95rem;
+              text-align: center;
+              color: #555;
+              margin-bottom: 20px;
+          ">${properties.description || 'No description available'}</p>
+          <a href="${properties.website || '#'}" target="_blank" style="
+              text-decoration: none;
+              background: #4f46e5;
+              color: white;
+              padding: 10px 18px;
+              border-radius: 8px;
+              font-weight: 500;
+              transition: background 0.2s ease;
+          " onmouseover="this.style.background='#4338ca'" onmouseout="this.style.background='#4f46e5'">Découvrir</a>
+        </div>
+      `)
+      .addTo(map);
+  });
+
+
+  map.on('mouseenter', 'business-icons', () => {
+    map.getCanvas().style.cursor = 'pointer';
+  });
+  map.on('mouseleave', 'business-icons', () => {
+    map.getCanvas().style.cursor = '';
+  });
+
+
+});
+</script>
+</body>
+</html>

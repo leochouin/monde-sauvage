@@ -1,0 +1,239 @@
+// Supabase Edge Function: refresh-google-token
+// This function refreshes a Google access token using a refresh token
+// Returns a new access token without requiring user interaction
+// Supports both guides and establishments with automatic token refresh
+
+import { createClient } from "@supabase/supabase-js";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+interface TokenCacheEntry {
+  access_token: string;
+  expires_at: number; // Unix timestamp in milliseconds
+}
+
+// In-memory cache for access tokens (per Edge Function instance)
+const tokenCache = new Map<string, TokenCacheEntry>();
+
+Deno.serve(async (req: Request) => {
+  // Handle CORS preflight requests
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders,
+    });
+  }
+
+  const SUPABASE_URL = Deno.env.get("URL")!;
+  const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
+  const GOOGLE_CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID")!;
+  const GOOGLE_CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET")!;
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+  const url = new URL(req.url);
+  const guideId = url.searchParams.get("guideId");
+  const establishmentId = url.searchParams.get("establishmentId");
+
+  if (!guideId && !establishmentId) {
+    return new Response(JSON.stringify({ error: "Missing guideId or establishmentId" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const isGuide = !!guideId;
+  const entityType = isGuide ? "guide" : "establishment";
+  const entityId = guideId || establishmentId;
+  const tableName = isGuide ? "guide" : "etablissement";
+
+  console.log(`🔄 Refreshing token for ${entityType} ${entityId}`);
+
+  // Check cache first
+  const cachedToken = tokenCache.get(entityId!);
+  if (cachedToken && cachedToken.expires_at > Date.now() + 60000) { // 1 minute buffer
+    console.log(`✅ Using cached token for ${entityType} ${entityId}`);
+    return new Response(
+      JSON.stringify({
+        access_token: cachedToken.access_token,
+        expires_in: Math.floor((cachedToken.expires_at - Date.now()) / 1000),
+        cached: true,
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  // Get entity's refresh token
+  // Note: guides use 'google_refresh_token', establishments use 'google_calendar_id'
+  const selectFields = isGuide 
+    ? "google_refresh_token, google_token_created_at"
+    : "google_calendar_id";
+  
+  // Try to fetch entity - establishments might use 'key' or 'id' column
+  let entity = null;
+  let error = null;
+  
+  if (isGuide) {
+    // Guides use 'id' column
+    const response = await supabase
+      .from(tableName)
+      .select(selectFields)
+      .eq("id", entityId)
+      .single();
+    entity = response.data;
+    error = response.error;
+  } else {
+    // Establishments might use 'key' or 'id' column
+    let response = await supabase
+      .from(tableName)
+      .select(selectFields)
+      .eq("key", entityId)
+      .single();
+    
+    if (response.error) {
+      // Try with 'id' column instead
+      response = await supabase
+        .from(tableName)
+        .select(selectFields)
+        .eq("id", entityId)
+        .single();
+    }
+    
+    if (response.error) {
+      // Try with capital E
+      response = await supabase
+        .from("Etablissement")
+        .select(selectFields)
+        .eq("key", entityId)
+        .single();
+    }
+    
+    entity = response.data;
+    error = response.error;
+  }
+
+  if (error || !entity) {
+    console.log(`❌ ${entityType} not found:`, error);
+    return new Response(
+      JSON.stringify({ 
+        error: `${entityType} not found`,
+        requiresReauth: true
+      }),
+      {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  // Get refresh token from appropriate field
+  const refreshToken = isGuide 
+    ? (entity as { google_refresh_token?: string }).google_refresh_token
+    : (entity as { google_calendar_id?: string }).google_calendar_id;
+
+  // If no refresh token exists, need to authenticate
+  if (!refreshToken) {
+    console.log(`❌ No refresh token for ${entityType} ${entityId}`);
+    return new Response(
+      JSON.stringify({ 
+        error: "No Google Calendar connection found",
+        requiresReauth: true
+      }),
+      {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  // Exchange refresh token for new access token
+  console.log(`🔑 Exchanging refresh token for access token...`);
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+
+    // Token refresh failed - refresh token is invalid/expired/revoked
+    if (tokenData.error === "invalid_grant" || !tokenData.access_token) {
+      console.log(`❌ Refresh token invalid for ${entityType} ${entityId}. Clearing from database.`);
+      
+      // Clear the expired token (use appropriate field name)
+      const updateData = isGuide
+        ? { google_refresh_token: null, google_token_created_at: null }
+        : { google_calendar_id: null };
+        
+      await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq("id", entityId);
+
+      // Remove from cache
+      tokenCache.delete(entityId!);
+
+      return new Response(
+        JSON.stringify({ 
+          error: "Refresh token expired or revoked",
+          googleError: tokenData.error || "invalid_grant",
+          description: "Your Google Calendar connection has expired. Please reconnect your account.",
+          requiresReauth: true
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Success! Cache the new access token
+    const expiresIn = tokenData.expires_in || 3600; // Default to 1 hour
+    const expiresAt = Date.now() + (expiresIn * 1000);
+    
+    tokenCache.set(entityId!, {
+      access_token: tokenData.access_token,
+      expires_at: expiresAt,
+    });
+
+    console.log(`✅ Token refreshed successfully for ${entityType} ${entityId}, expires in ${expiresIn}s`);
+
+    return new Response(
+      JSON.stringify({
+        access_token: tokenData.access_token,
+        expires_in: expiresIn,
+        token_type: tokenData.token_type || "Bearer",
+        cached: false,
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+
+  } catch (error) {
+    console.error(`❌ Error refreshing token:`, error);
+    return new Response(
+      JSON.stringify({ 
+        error: "Failed to refresh token",
+        details: error instanceof Error ? error.message : String(error)
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  }
+});
