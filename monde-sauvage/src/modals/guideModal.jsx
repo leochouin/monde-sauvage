@@ -338,7 +338,7 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
                 if (!guide?.id) return;
                 const redirectTo = encodeURIComponent(globalThis.location.href); // Return to current page
                 console.log("Redirecting to Google OAuth for guideId:", guide.id);
-                globalThis.location.href = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
+                globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
               }}
               className="guide-connect-button"
             >
