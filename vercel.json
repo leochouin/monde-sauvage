@@ -1,0 +1,6 @@
+{
+  "buildCommand": "cd monde-sauvage && npm install && npm run build",
+  "outputDirectory": "monde-sauvage/dist",
+  "installCommand": "cd monde-sauvage && npm install",
+  "framework": "vite"
+}
