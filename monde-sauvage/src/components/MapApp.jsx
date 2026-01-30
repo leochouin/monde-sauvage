@@ -151,14 +151,14 @@ function MapApp({ user, profile, guide }) {
         console.log(e);
     }
 
-    // Fetch guides filtered by fish type when entering step 2
+    // Fetch guides filtered by fish type AND availability when entering step 2
     useEffect(() => {
-        if (bookingStep !== 2) return;
+        if (bookingStep !== 2 || !startDate || !endDate) return;
 
         const fetchGuides = async () => {
             setLoadingGuides(true);
             try {
-                console.log("🔍 Fetching guides for fish type:", fishType);
+                console.log("🔍 Fetching guides for fish type:", fishType, "dates:", startDate, "-", endDate);
                 
                 // First get guides from our database filtered by fish type
                 let query = supabase
@@ -174,19 +174,50 @@ function MapApp({ user, profile, guide }) {
                 
                 if (error) throw error;
                 
-                console.log("👤 Guides found:", guides);
+                console.log("👤 Guides found from DB:", guides);
+
+                // Now check actual calendar availability for these guides
+                const startISO = new Date(startDate + 'T00:00:00').toISOString();
+                const endISO = new Date(endDate + 'T23:59:59').toISOString();
                 
-                // Transform to match expected format (with is_available flag for now)
-                const formattedGuides = (guides || []).map(g => ({
-                    guide_id: g.id,
-                    name: g.name,
-                    email: g.email,
-                    fish_types: g.fish_types || [],
-                    hourly_rate: g.hourlyRate,
-                    is_available: true, // Will be verified when dates are selected
-                    events: []
-                }));
+                const availabilityUrl = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability-all?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
                 
+                const availabilityRes = await fetch(availabilityUrl, {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                });
+                
+                const availabilityData = await availabilityRes.json();
+                console.log("📅 Availability data for all guides:", availabilityData);
+                
+                // Create a map of guide_id -> availability info
+                const availabilityMap = new Map();
+                if (Array.isArray(availabilityData)) {
+                    availabilityData.forEach(item => {
+                        availabilityMap.set(item.guide_id, item);
+                    });
+                }
+                
+                // Transform and filter guides - only include those with actual availability
+                const formattedGuides = (guides || [])
+                    .map(g => {
+                        const availability = availabilityMap.get(g.id);
+                        return {
+                            guide_id: g.id,
+                            name: g.name,
+                            email: g.email,
+                            fish_types: g.fish_types || [],
+                            hourly_rate: g.hourlyRate,
+                            is_available: availability?.is_available || false,
+                            events: availability?.events || []
+                        };
+                    })
+                    .filter(g => g.is_available); // Only show guides with availability
+                
+                console.log("✅ Guides with availability:", formattedGuides);
                 setAvailableGuides(formattedGuides);
             } catch (err) {
                 console.error("❌ Error fetching guides:", err);
@@ -197,7 +228,7 @@ function MapApp({ user, profile, guide }) {
         };
 
         fetchGuides();
-    }, [bookingStep, fishType]);
+    }, [bookingStep, fishType, startDate, endDate]);
 
     // Fetch guide availability events when a guide is selected in Step 2
     useEffect(() => {

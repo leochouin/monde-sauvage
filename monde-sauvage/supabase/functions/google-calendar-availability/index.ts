@@ -192,6 +192,53 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  // 3.5️⃣ Fetch existing bookings for this guide to filter out already-booked slots
+  const { data: existingBookings, error: bookingsError } = await supabase
+    .from("guide_booking")
+    .select("start_time, end_time, status")
+    .eq("guide_id", guideId)
+    .gte("end_time", start)
+    .lte("start_time", end)
+    .neq("status", "cancelled")
+    .neq("status", "deleted");
+
+  if (bookingsError) {
+    console.error("Error fetching existing bookings:", bookingsError);
+  }
+
+  const bookedSlots = existingBookings || [];
+  console.log("📅 Existing bookings for this guide:", bookedSlots.length, JSON.stringify(bookedSlots));
+
+  // Helper function to check if two time ranges overlap
+  // Handles both datetime strings (2026-01-28T08:00:00) and date-only strings (2026-01-28)
+  function doTimesOverlap(start1: string, end1: string, start2: string, end2: string): boolean {
+    // Normalize date-only strings to full day ranges
+    const normalizeToStart = (dateStr: string): Date => {
+      if (!dateStr.includes('T')) {
+        return new Date(`${dateStr}T00:00:00`);
+      }
+      return new Date(dateStr);
+    };
+    
+    const normalizeToEnd = (dateStr: string): Date => {
+      if (!dateStr.includes('T')) {
+        return new Date(`${dateStr}T23:59:59`);
+      }
+      return new Date(dateStr);
+    };
+    
+    const s1 = normalizeToStart(start1).getTime();
+    const e1 = normalizeToEnd(end1).getTime();
+    const s2 = normalizeToStart(start2).getTime();
+    const e2 = normalizeToEnd(end2).getTime();
+    
+    console.log(`Overlap check: Event [${new Date(s1).toISOString()} - ${new Date(e1).toISOString()}] vs Booking [${new Date(s2).toISOString()} - ${new Date(e2).toISOString()}]`);
+    
+    const overlaps = s1 < e2 && e1 > s2;
+    console.log(`  -> Overlaps: ${overlaps}`);
+    return overlaps;
+  }
+
   const calendarIdEscaped = encodeURIComponent(availabilityCalendarId);
   const eventsRes = await fetch(
     `https://www.googleapis.com/calendar/v3/calendars/${calendarIdEscaped}/events?singleEvents=true&orderBy=startTime&timeMin=${start}&timeMax=${end}`,
@@ -332,7 +379,7 @@ Deno.serve(async (req: Request) => {
   const availabilityRegex = new RegExp(availabilityKeywords.map(escapeRegExp).join("|"), "i");
 
   const originalCount = events.items?.length || 0;
-  const filteredItems = (events.items || []).filter((ev: Record<string, unknown>) => {
+  let filteredItems = (events.items || []).filter((ev: Record<string, unknown>) => {
     // Check the most relevant textual fields: summary (title), description and location
     // Normalize and strip diacritics so matches like "disponible" still work with accents
     const summary = (ev.summary as string) || "";
@@ -345,9 +392,32 @@ Deno.serve(async (req: Request) => {
     return availabilityRegex.test(text);
   });
 
+  console.log(`✅ Filtered events: kept ${filteredItems.length} of ${originalCount} (availability keywords)`);
+
+  // 4️⃣ Filter out availability slots that are already booked
+  const beforeBookingFilter = filteredItems.length;
+  filteredItems = filteredItems.filter((ev: Record<string, unknown>) => {
+    const eventStart = (ev.start as any)?.dateTime || (ev.start as any)?.date;
+    const eventEnd = (ev.end as any)?.dateTime || (ev.end as any)?.date;
+    
+    if (!eventStart || !eventEnd) return false;
+    
+    // Check if this event overlaps with any existing booking
+    const isBooked = bookedSlots.some(booking => 
+      doTimesOverlap(eventStart, eventEnd, booking.start_time, booking.end_time)
+    );
+    
+    if (isBooked) {
+      console.log(`🚫 Filtering out booked slot: ${eventStart} - ${eventEnd}`);
+    }
+    
+    return !isBooked;
+  });
+
+  console.log(`✅ After booking filter: kept ${filteredItems.length} of ${beforeBookingFilter} (removed already-booked slots)`);
+
   // Replace items with filtered set
   events.items = filteredItems;
-  console.log(`✅ Filtered events: kept ${filteredItems.length} of ${originalCount} (availability keywords)`);
 
   return new Response(JSON.stringify(events), {
     headers: {

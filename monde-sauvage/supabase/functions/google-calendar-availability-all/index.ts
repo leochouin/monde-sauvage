@@ -6,6 +6,37 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
+// Helper function to check if two time ranges overlap
+// Handles both datetime strings (2026-01-28T08:00:00) and date-only strings (2026-01-28)
+function doTimesOverlap(start1: string, end1: string, start2: string, end2: string): boolean {
+  // Normalize date-only strings to full day ranges
+  // If start2 is just a date (no T), treat it as midnight to midnight (full day booking)
+  const normalizeToStart = (dateStr: string): Date => {
+    if (!dateStr.includes('T')) {
+      return new Date(`${dateStr}T00:00:00`);
+    }
+    return new Date(dateStr);
+  };
+  
+  const normalizeToEnd = (dateStr: string): Date => {
+    if (!dateStr.includes('T')) {
+      return new Date(`${dateStr}T23:59:59`);
+    }
+    return new Date(dateStr);
+  };
+  
+  const s1 = normalizeToStart(start1).getTime();
+  const e1 = normalizeToEnd(end1).getTime();
+  const s2 = normalizeToStart(start2).getTime();
+  const e2 = normalizeToEnd(end2).getTime();
+  
+  console.log(`Overlap check: Event [${new Date(s1).toISOString()} - ${new Date(e1).toISOString()}] vs Booking [${new Date(s2).toISOString()} - ${new Date(e2).toISOString()}]`);
+  
+  const overlaps = s1 < e2 && e1 > s2;
+  console.log(`  -> Overlaps: ${overlaps}`);
+  return overlaps;
+}
+
 Deno.serve(async (req: Request) => {
   // Handle CORS preflight request
   if (req.method === "OPTIONS") {
@@ -42,11 +73,43 @@ Deno.serve(async (req: Request) => {
     .select("id, name, google_refresh_token, availability_calendar_id")
     .not("google_refresh_token", "is", null);
 
+  // 2️⃣ Fetch ALL existing bookings for all guides in the date range (pending, confirmed)
+  // We exclude cancelled and deleted bookings
+  const { data: existingBookings, error: bookingsError } = await supabase
+    .from("guide_booking")
+    .select("guide_id, start_time, end_time, status")
+    .gte("end_time", start) // Use the original date string for comparison
+    .lte("start_time", end)
+    .neq("status", "cancelled")
+    .neq("status", "deleted");
+
+  if (bookingsError) {
+    console.error("Error fetching existing bookings:", bookingsError);
+  }
+
+  console.log("Raw existing bookings:", existingBookings);
+  console.log("Total bookings found:", existingBookings?.length || 0);
+
+  // Create a map of guide_id -> array of booked time ranges
+  const bookedSlotsMap = new Map<string, Array<{start: string, end: string, status: string}>>();
+  if (existingBookings) {
+    for (const booking of existingBookings) {
+      const guideBookings = bookedSlotsMap.get(booking.guide_id) || [];
+      guideBookings.push({
+        start: booking.start_time,
+        end: booking.end_time,
+        status: booking.status
+      });
+      bookedSlotsMap.set(booking.guide_id, guideBookings);
+    }
+  }
+  console.log("Existing bookings by guide:", Object.fromEntries(bookedSlotsMap));
+
   const results: any[] = [];
 
   for (const guide of guides) {
     try {
-      // 2️⃣ Exchange refresh token → access token
+      // 3️⃣ Exchange refresh token → access token
       const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -70,7 +133,7 @@ Deno.serve(async (req: Request) => {
       console.log(`Fetching events for guide ${guide.id} (${guide.name}), calendar: ${calendarId}`);
       console.log(`Date range: ${startISO} to ${endISO}`);
 
-      // 3️⃣ Fetch availability events
+      // 4️⃣ Fetch availability events from Google Calendar
       const eventsRes = await fetch(
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?singleEvents=true&orderBy=startTime&timeMin=${encodeURIComponent(startISO)}&timeMax=${encodeURIComponent(endISO)}`,
         {
@@ -90,17 +153,44 @@ Deno.serve(async (req: Request) => {
           guide_id: guide.id,
           name: guide.name,
           events: [],
+          available_events: [],
           is_available: false,
           error: events.error?.message || "Calendar API error",
         });
         continue;
       }
 
+      // 5️⃣ Filter out availability slots that overlap with existing bookings
+      const guideBookedSlots = bookedSlotsMap.get(guide.id) || [];
+      const allEvents = events.items || [];
+      
+      const availableEvents = allEvents.filter((event: any) => {
+        const eventStart = event.start?.dateTime || event.start?.date;
+        const eventEnd = event.end?.dateTime || event.end?.date;
+        
+        if (!eventStart || !eventEnd) return false;
+        
+        // Check if this event overlaps with any existing booking
+        const isBooked = guideBookedSlots.some(booking => 
+          doTimesOverlap(eventStart, eventEnd, booking.start, booking.end)
+        );
+        
+        if (isBooked) {
+          console.log(`Filtering out booked slot for guide ${guide.name}: ${eventStart} - ${eventEnd}`);
+        }
+        
+        return !isBooked;
+      });
+
+      console.log(`Guide ${guide.name}: ${allEvents.length} total events, ${availableEvents.length} available after filtering`);
+
       results.push({
         guide_id: guide.id,
         name: guide.name,
-        events: events.items || [],
-        is_available: (events.items || []).length > 0,
+        events: availableEvents, // Only return unbooked events
+        all_events: allEvents, // Include all for debugging
+        booked_slots: guideBookedSlots,
+        is_available: availableEvents.length > 0, // Only available if there are unbooked slots
       });
 
     } catch (err) {

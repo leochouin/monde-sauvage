@@ -141,19 +141,17 @@ export const createGuideBooking = async (bookingData) => {
     try {
         console.log('📝 Creating guide booking:', bookingData);
 
-        // 1️⃣ Check availability (unless skipped - e.g., when slots were pre-selected from available times)
-        if (!bookingData.skipAvailabilityCheck) {
-            const availabilityCheck = await checkGuideAvailability(
-                bookingData.guideId,
-                bookingData.startTime,
-                bookingData.endTime
-            );
+        // 1️⃣ ALWAYS check availability to prevent double booking
+        // Even if skipAvailabilityCheck is true, we do a final database check
+        const availabilityCheck = await checkGuideAvailability(
+            bookingData.guideId,
+            bookingData.startTime,
+            bookingData.endTime
+        );
 
-            if (!availabilityCheck.available) {
-                throw new Error(availabilityCheck.reason || 'Guide is not available for selected time');
-            }
-        } else {
-            console.log('⏭️ Skipping availability check (slots pre-selected from available times)');
+        if (!availabilityCheck.available) {
+            console.log('❌ Booking conflict detected:', availabilityCheck.reason);
+            throw new Error(availabilityCheck.reason || 'Ce créneau a déjà été réservé. Veuillez sélectionner un autre horaire.');
         }
 
         // 2️⃣ Create booking in database (SOURCE OF TRUTH)
