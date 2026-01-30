@@ -76,7 +76,7 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
         try {
             const { error: googleError } = await supabase.auth.signInWithOAuth({
                 provider: 'google',
-                options: { redirectTo: 'http://localhost:5173'}
+                options: { redirectTo: globalThis.location.origin }
             });
             
             if (googleError) throw googleError;

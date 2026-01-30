@@ -106,7 +106,7 @@ export default function GuideCalendar({ guideId }) {
               type="button"
               onClick={() => {
                 const redirectTo = encodeURIComponent(globalThis.location.href);
-                globalThis.location.href = `http://127.0.0.1:54321/functions/v1/google-calendar-oauth?guideId=${guideId}&redirect_to=${redirectTo}`;
+                globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guideId}&redirect_to=${redirectTo}`;
               }}
               style={{
                 padding: "10px 20px",
