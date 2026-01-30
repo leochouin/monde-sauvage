@@ -14,7 +14,7 @@ function App() {
   const checkGoogleTokenValidity = async (guideId) => {
     try {
       const response = await fetch(
-        `http://127.0.0.1:54321/functions/v1/check-google-token?guideId=${guideId}`
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/check-google-token?guideId=${guideId}`
       );
       
       const result = await response.json();
