@@ -53,7 +53,17 @@ const GaspesieMap = ({
   proceedToStep3,
   // NEW: Step 3 date conflict props
   dateConflicts,
-  checkingAvailability
+  checkingAvailability,
+  // NEW: Booking creation state
+  isCreatingBooking,
+  bookingError,
+  // Help/onboarding
+  onOpenHelp,
+  // NEW: Guide availability time slots
+  guideAvailabilityEvents,
+  loadingGuideAvailability,
+  selectedTimeSlots,
+  handleSelectTimeSlot
 }) => {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -838,8 +848,8 @@ const GaspesieMap = ({
 
             {/* Step 2: Combined Guide + Chalet Selection (NEW FLOW) */}
             {bookingStep === 2 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflow: 'hidden' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: 'calc(100vh - 200px)', overflow: 'hidden' }}>
+                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E', flexShrink: 0 }}>
                   2. Sélectionnez guide et hébergement
                 </h3>
 
@@ -849,23 +859,31 @@ const GaspesieMap = ({
                   backgroundColor: 'rgba(45, 95, 76, 0.08)',
                   borderRadius: '8px',
                   fontSize: '12px',
-                  color: '#5A7766'
+                  color: '#5A7766',
+                  flexShrink: 0
                 }}>
                   <div>🎣 Poisson: <strong>{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}</strong></div>
                   <div>👥 {numberOfPeople} personne(s)</div>
                   <div>🏠 Chalet: <strong>{needsChalet ? 'Oui' : 'Non'}</strong></div>
                 </div>
 
-                {/* GUIDE SECTION */}
+                {/* Scrollable content area for guide and chalet sections */}
                 <div style={{ 
-                  borderBottom: '1px solid #E5E7EB', 
-                  paddingBottom: '16px',
-                  flex: needsChalet ? 'none' : 1,
-                  overflow: 'auto'
+                  flex: 1, 
+                  overflowY: 'auto', 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '16px',
+                  paddingRight: '4px'
                 }}>
-                  <h4 style={{ margin: '0 0 12px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
-                    🧭 Guides disponibles
-                  </h4>
+                  {/* GUIDE SECTION */}
+                  <div style={{ 
+                    borderBottom: needsChalet ? '1px solid #E5E7EB' : 'none', 
+                    paddingBottom: needsChalet ? '16px' : '0'
+                  }}>
+                    <h4 style={{ margin: '0 0 12px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
+                      🧭 Guides disponibles
+                    </h4>
 
                   {loadingGuides ? (
                     <div style={{ textAlign: 'center', padding: '16px', color: '#5A7766' }}>
@@ -882,7 +900,7 @@ const GaspesieMap = ({
                       Aucun guide spécialisé trouvé pour "{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}"
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {/* Option to skip guide */}
                       <div
                         onClick={() => handleSelectGuide(null)}
@@ -901,53 +919,175 @@ const GaspesieMap = ({
                         </div>
                       </div>
                       
-                      {availableGuides.map((guide) => (
-                        <div
-                          key={guide.guide_id}
-                          onClick={() => handleSelectGuide(guide)}
-                          style={{
-                            padding: '10px',
-                            backgroundColor: selectedGuide?.guide_id === guide.guide_id ? 'rgba(45, 95, 76, 0.15)' : '#FFFCF7',
-                            borderRadius: '8px',
-                            border: selectedGuide?.guide_id === guide.guide_id ? '2px solid #2D5F4C' : '1px solid #D1D5DB',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <div style={{
-                              width: '32px',
-                              height: '32px',
-                              borderRadius: '50%',
-                              backgroundColor: '#4A9B8E',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              color: 'white',
-                              fontWeight: '600',
-                              fontSize: '12px'
-                            }}>
-                              {guide.name?.charAt(0) || 'G'}
-                            </div>
-                            <div>
-                              <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
-                                {guide.name}
-                              </p>
-                              {guide.fish_types && guide.fish_types.length > 0 && (
-                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#5A7766' }}>
-                                  🎣 {guide.fish_types.slice(0, 3).join(', ')}
+                      {/* Guide list */}
+                      <div style={{ maxHeight: selectedGuide ? '100px' : '150px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {availableGuides.map((guide) => (
+                          <div
+                            key={guide.guide_id}
+                            onClick={() => handleSelectGuide(guide)}
+                            style={{
+                              padding: '10px',
+                              backgroundColor: selectedGuide?.guide_id === guide.guide_id ? 'rgba(45, 95, 76, 0.15)' : '#FFFCF7',
+                              borderRadius: '8px',
+                              border: selectedGuide?.guide_id === guide.guide_id ? '2px solid #2D5F4C' : '1px solid #D1D5DB',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <div style={{
+                                width: '32px',
+                                height: '32px',
+                                borderRadius: '50%',
+                                backgroundColor: '#4A9B8E',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'white',
+                                fontWeight: '600',
+                                fontSize: '12px'
+                              }}>
+                                {guide.name?.charAt(0) || 'G'}
+                              </div>
+                              <div>
+                                <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
+                                  {guide.name}
                                 </p>
-                              )}
+                                {guide.fish_types && guide.fish_types.length > 0 && (
+                                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#5A7766' }}>
+                                    🎣 {guide.fish_types.slice(0, 3).join(', ')}
+                                  </p>
+                                )}
+                              </div>
                             </div>
                           </div>
+                        ))}
+                      </div>
+
+                      {/* TIME SLOTS SECTION - shown when a guide is selected */}
+                      {selectedGuide && (
+                        <div style={{ marginTop: '12px' }}>
+                          <h5 style={{ margin: '0 0 8px', fontSize: '13px', color: '#1F3A2E', fontWeight: '600' }}>
+                            📅 Disponibilités de {selectedGuide.name}
+                          </h5>
+                          <p style={{ fontSize: '11px', color: '#5A7766', margin: '0 0 8px' }}>
+                            Sélectionnez les créneaux horaires souhaités
+                          </p>
+
+                          {loadingGuideAvailability ? (
+                            <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766', fontSize: '12px' }}>
+                              Chargement des disponibilités...
+                            </div>
+                          ) : guideAvailabilityEvents && guideAvailabilityEvents.length > 0 ? (
+                            <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {/* Group events by date */}
+                              {(() => {
+                                // Group events by date
+                                const eventsByDate = guideAvailabilityEvents.reduce((acc, event) => {
+                                  const date = event.date || (event.start ? event.start.split('T')[0] : 'unknown');
+                                  if (!acc[date]) acc[date] = [];
+                                  acc[date].push(event);
+                                  return acc;
+                                }, {});
+
+                                return Object.entries(eventsByDate).map(([date, events]) => (
+                                  <div key={date} style={{ marginBottom: '8px' }}>
+                                    <div style={{ 
+                                      fontSize: '11px', 
+                                      fontWeight: '600', 
+                                      color: '#1F3A2E',
+                                      marginBottom: '4px',
+                                      padding: '4px 8px',
+                                      backgroundColor: 'rgba(45, 95, 76, 0.08)',
+                                      borderRadius: '4px'
+                                    }}>
+                                      {new Date(date + 'T00:00:00').toLocaleDateString('fr-CA', { 
+                                        weekday: 'short', 
+                                        day: 'numeric', 
+                                        month: 'short' 
+                                      })}
+                                    </div>
+                                    {events.map((event) => {
+                                      const isSelected = selectedTimeSlots?.some(slot => slot.id === event.id);
+                                      const startTime = event.start ? new Date(event.start).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
+                                      const endTime = event.end ? new Date(event.end).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
+                                      
+                                      return (
+                                        <div
+                                          key={event.id}
+                                          onClick={() => handleSelectTimeSlot && handleSelectTimeSlot(event)}
+                                          style={{
+                                            padding: '8px 10px',
+                                            backgroundColor: isSelected ? 'rgba(34, 197, 94, 0.15)' : '#FFFCF7',
+                                            borderRadius: '6px',
+                                            border: isSelected ? '2px solid #22C55E' : '1px solid #E5E7EB',
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            marginBottom: '4px',
+                                            transition: 'all 0.2s ease'
+                                          }}
+                                        >
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ 
+                                              fontSize: '14px',
+                                              opacity: isSelected ? 1 : 0.5
+                                            }}>
+                                              {isSelected ? '✓' : '○'}
+                                            </span>
+                                            <div>
+                                              <p style={{ margin: 0, fontSize: '12px', fontWeight: '500', color: '#1F3A2E' }}>
+                                                {startTime} - {endTime}
+                                              </p>
+                                              {event.summary && event.summary.toLowerCase() !== 'disponible' && (
+                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5A7766' }}>
+                                                  {event.summary}
+                                                </p>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ));
+                              })()}
+                            </div>
+                          ) : (
+                            <div style={{
+                              padding: '12px',
+                              backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                              borderRadius: '8px',
+                              color: '#D97706',
+                              fontSize: '12px',
+                              textAlign: 'center'
+                            }}>
+                              Aucune disponibilité trouvée pour les dates sélectionnées ({startDate} - {endDate})
+                            </div>
+                          )}
+
+                          {/* Selected slots summary */}
+                          {selectedTimeSlots && selectedTimeSlots.length > 0 && (
+                            <div style={{
+                              marginTop: '8px',
+                              padding: '8px',
+                              backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              color: '#059669'
+                            }}>
+                              ✓ {selectedTimeSlots.length} créneau(x) sélectionné(s)
+                            </div>
+                          )}
                         </div>
-                      ))}
+                      )}
                     </div>
                   )}
                 </div>
 
                 {/* CHALET SECTION - only if needsChalet is true */}
                 {needsChalet && (
-                  <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <h4 style={{ margin: '0 0 8px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
                       🏠 Chalets disponibles
                     </h4>
@@ -983,7 +1123,7 @@ const GaspesieMap = ({
                         </p>
                       </div>
                     ) : (
-                      <div style={{ flex: 1, overflowY: 'auto' }}>
+                      <div>
                         {loadingChalets && (
                           <div style={{ textAlign: 'center', padding: '16px', color: '#5A7766' }}>
                             Chargement des chalets...
@@ -1133,15 +1273,24 @@ const GaspesieMap = ({
                   </div>
                 )}
 
+                </div>
+                {/* End of scrollable content area */}
+
                 {/* Selection summary */}
                 <div style={{
                   padding: '10px',
                   backgroundColor: '#FFFCF7',
                   borderRadius: '8px',
                   border: '1px solid #E5E7EB',
-                  fontSize: '12px'
+                  fontSize: '12px',
+                  flexShrink: 0
                 }}>
                   <div><strong>Guide:</strong> {selectedGuide ? selectedGuide.name : 'Aucun'}</div>
+                  {selectedGuide && selectedTimeSlots && selectedTimeSlots.length > 0 && (
+                    <div style={{ marginTop: '4px', fontSize: '11px', color: '#5A7766' }}>
+                      <strong>Créneaux:</strong> {selectedTimeSlots.length} sélectionné(s)
+                    </div>
+                  )}
                   {needsChalet && (
                     <div><strong>Chalet:</strong> {selectedChalet ? selectedChalet.name : 'Aucun'}</div>
                   )}
@@ -1205,7 +1354,19 @@ const GaspesieMap = ({
                 }}>
                   <div><strong>📅 Dates:</strong> {startDate} au {endDate}</div>
                   {selectedGuide && (
-                    <div><strong>🧭 Guide:</strong> {selectedGuide.name}</div>
+                    <>
+                      <div><strong>🧭 Guide:</strong> {selectedGuide.name}</div>
+                      {selectedTimeSlots && selectedTimeSlots.length > 0 && (
+                        <div style={{ fontSize: '11px', marginTop: '4px' }}>
+                          <strong>⏰ Créneaux:</strong> {selectedTimeSlots.map(slot => {
+                            const startTime = new Date(slot.startTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
+                            const endTime = new Date(slot.endTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
+                            const date = new Date(slot.date + 'T00:00:00').toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' });
+                            return `${date} ${startTime}-${endTime}`;
+                          }).join(', ')}
+                        </div>
+                      )}
+                    </>
                   )}
                   {selectedChalet && needsChalet && (
                     <div><strong>🏠 Chalet:</strong> {selectedChalet.name}</div>
@@ -1406,11 +1567,25 @@ const GaspesieMap = ({
                   </div>
                 )}
 
+                {/* Booking error display */}
+                {bookingError && (
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    color: '#DC2626'
+                  }}>
+                    ⚠️ {bookingError}
+                  </div>
+                )}
+
                 {/* Navigation */}
                 <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
                   <button
                     type="button"
                     onClick={() => setBookingStep(2)}
+                    disabled={isCreatingBooking}
                     style={{
                       flex: 1,
                       padding: '12px',
@@ -1418,9 +1593,10 @@ const GaspesieMap = ({
                       color: '#5A7766',
                       border: '1.5px solid #5A7766',
                       borderRadius: '10px',
-                      cursor: 'pointer',
+                      cursor: isCreatingBooking ? 'not-allowed' : 'pointer',
                       fontWeight: '500',
-                      fontSize: '14px'
+                      fontSize: '14px',
+                      opacity: isCreatingBooking ? 0.6 : 1
                     }}
                   >
                     ← Retour
@@ -1428,20 +1604,38 @@ const GaspesieMap = ({
                   <button
                     type="button"
                     onClick={handleBookGuide}
-                    disabled={!canProceedStep3}
+                    disabled={!canProceedStep3 || isCreatingBooking}
                     style={{
                       flex: 1,
                       padding: '12px',
-                      backgroundColor: canProceedStep3 ? '#2D5F4C' : '#9CA3AF',
+                      backgroundColor: (canProceedStep3 && !isCreatingBooking) ? '#2D5F4C' : '#9CA3AF',
                       color: '#FFFCF7',
                       border: 'none',
                       borderRadius: '10px',
-                      cursor: canProceedStep3 ? 'pointer' : 'not-allowed',
+                      cursor: (canProceedStep3 && !isCreatingBooking) ? 'pointer' : 'not-allowed',
                       fontWeight: '600',
-                      fontSize: '14px'
+                      fontSize: '14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
                     }}
                   >
-                    Réserver →
+                    {isCreatingBooking ? (
+                      <>
+                        <span style={{
+                          width: '16px',
+                          height: '16px',
+                          border: '2px solid #FFFCF7',
+                          borderTopColor: 'transparent',
+                          borderRadius: '50%',
+                          animation: 'spin 1s linear infinite'
+                        }} />
+                        Réservation...
+                      </>
+                    ) : (
+                      'Réserver →'
+                    )}
                   </button>
                 </div>
               </div>
@@ -1489,9 +1683,26 @@ const GaspesieMap = ({
                     <strong>🎣 Poisson:</strong> {FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}
                   </p>
                   {selectedGuide && (
-                    <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
-                      <strong>🧭 Guide:</strong> {selectedGuide?.name}
-                    </p>
+                    <>
+                      <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
+                        <strong>🧭 Guide:</strong> {selectedGuide?.name}
+                      </p>
+                      {selectedTimeSlots && selectedTimeSlots.length > 0 && (
+                        <div style={{ margin: '0 0 8px', fontSize: '12px', color: '#5A7766' }}>
+                          <strong>⏰ Créneaux réservés:</strong>
+                          <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                            {selectedTimeSlots.map((slot, idx) => {
+                              const startTime = new Date(slot.startTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
+                              const endTime = new Date(slot.endTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
+                              const date = new Date(slot.date + 'T00:00:00').toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' });
+                              return (
+                                <li key={idx} style={{ fontSize: '11px' }}>{date}: {startTime} - {endTime}</li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
+                    </>
                   )}
                   {selectedChalet && needsChalet && (
                     <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
@@ -1651,6 +1862,7 @@ const GaspesieMap = ({
                 <button
                   type="button"
                   onClick={() => GuideOpen(true)}
+                  data-onboarding="guide-button"
                   style={{
                     width: '100%',
                     padding: '14px 20px',
@@ -1681,6 +1893,41 @@ const GaspesieMap = ({
                 >
                   <span style={{ fontSize: '18px' }}></span>
                   Guide
+                </button>
+              )}
+
+              {/* Help button for guides/admins */}
+              {(profile?.type === "guide" || profile?.type === "admin") && onOpenHelp && (
+                <button
+                  type="button"
+                  onClick={onOpenHelp}
+                  style={{
+                    width: '100%',
+                    padding: '10px 16px',
+                    backgroundColor: 'transparent',
+                    color: '#5A7766',
+                    border: '1px dashed #5A7766',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '13px',
+                    transition: 'all 0.2s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                  onMouseOver={(e) => {
+                    e.target.style.backgroundColor = 'rgba(90, 119, 102, 0.08)';
+                    e.target.style.borderStyle = 'solid';
+                  }}
+                  onMouseOut={(e) => {
+                    e.target.style.backgroundColor = 'transparent';
+                    e.target.style.borderStyle = 'dashed';
+                  }}
+                >
+                  <span style={{ fontSize: '14px' }}>❓</span>
+                  Aide ?
                 </button>
               )}
 

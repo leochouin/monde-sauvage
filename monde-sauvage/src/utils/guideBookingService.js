@@ -118,7 +118,7 @@ export const checkGuideAvailability = async (guideId, startTime, endTime, exclud
  * Create a new guide booking in the database AND Google Calendar
  * 
  * WORKFLOW:
- * 1. Validate availability
+ * 1. Validate availability (optional)
  * 2. Create booking in database (source of truth)
  * 3. Create event in Google Calendar
  * 4. Update booking with google_event_id
@@ -134,21 +134,26 @@ export const checkGuideAvailability = async (guideId, startTime, endTime, exclud
  * @param {number} bookingData.numberOfPeople - Number of people
  * @param {string} bookingData.notes - Optional notes
  * @param {string} bookingData.status - Status (default: 'pending')
+ * @param {boolean} bookingData.skipAvailabilityCheck - Skip availability check if slots pre-selected (default: false)
  * @returns {Promise<Object>} The created booking
  */
 export const createGuideBooking = async (bookingData) => {
     try {
         console.log('📝 Creating guide booking:', bookingData);
 
-        // 1️⃣ Check availability
-        const availabilityCheck = await checkGuideAvailability(
-            bookingData.guideId,
-            bookingData.startTime,
-            bookingData.endTime
-        );
+        // 1️⃣ Check availability (unless skipped - e.g., when slots were pre-selected from available times)
+        if (!bookingData.skipAvailabilityCheck) {
+            const availabilityCheck = await checkGuideAvailability(
+                bookingData.guideId,
+                bookingData.startTime,
+                bookingData.endTime
+            );
 
-        if (!availabilityCheck.available) {
-            throw new Error(availabilityCheck.reason || 'Guide is not available for selected time');
+            if (!availabilityCheck.available) {
+                throw new Error(availabilityCheck.reason || 'Guide is not available for selected time');
+            }
+        } else {
+            console.log('⏭️ Skipping availability check (slots pre-selected from available times)');
         }
 
         // 2️⃣ Create booking in database (SOURCE OF TRUTH)

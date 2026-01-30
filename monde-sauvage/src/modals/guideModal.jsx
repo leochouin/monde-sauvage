@@ -3,6 +3,20 @@ import React, { useState, useEffect } from "react";
 void React;
 import GuideCalendar from "../components/GuideCalendar.jsx";
 import supabase from "../utils/supabase.js";
+
+// Fish types available for guides to specialize in
+const FISH_TYPES = [
+    { value: 'saumon', label: 'Saumon Atlantique' },
+    { value: 'truite', label: 'Truite mouchetée' },
+    { value: 'omble', label: 'Omble de fontaine' },
+    { value: 'brochet', label: 'Brochet' },
+    { value: 'perchaude', label: 'Perchaude' },
+    { value: 'bar', label: 'Bar rayé' },
+    { value: 'maquereau', label: 'Maquereau' },
+    { value: 'plie', label: 'Plie' },
+    { value: 'capelan', label: 'Capelan' }
+];
+
 // -------------------
 // Named export: GuideCalendar
 // -------------------
@@ -10,16 +24,17 @@ import supabase from "../utils/supabase.js";
 // -------------------
 // Default export: GuideProfile
 // -------------------
-export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
+export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHelp }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editedGuide, setEditedGuide] = useState({
     name: '',
     experience: '',
     bio: '',
-    hourlyRate: '',
+    hourly_rate: '',
     location: '',
     phone: '',
     email: '',
+    fish_types: [],
   });
   const [isSaving, setIsSaving] = useState(false);
   console.log("GuideProfile render, guide =", guide);
@@ -30,10 +45,11 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
         name: guide.name || '',
         experience: guide.experience || '',
         bio: guide.bio || '',
-        hourlyRate: guide.hourlyRate || '',
+        hourly_rate: guide.hourly_rate || '',
         location: guide.location || '',
         phone: guide.phone || '',
         email: guide.email || '',
+        fish_types: guide.fish_types || [],
       });
     }
   }, [guide]);
@@ -49,13 +65,19 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
     }
 
     setIsSaving(true);
-    // Prepare payload: ensure hourlyRate is a number or null
+    // Prepare payload: ensure hourly_rate is a number or null
     const payload = {
-      ...editedGuide,
-      hourlyRate:
-        editedGuide.hourlyRate === "" || editedGuide.hourlyRate == null
+      name: editedGuide.name,
+      experience: editedGuide.experience,
+      bio: editedGuide.bio,
+      location: editedGuide.location,
+      phone: editedGuide.phone,
+      email: editedGuide.email,
+      fish_types: editedGuide.fish_types,
+      hourly_rate:
+        editedGuide.hourly_rate === "" || editedGuide.hourly_rate == null
           ? null
-          : Number(editedGuide.hourlyRate),
+          : Number(editedGuide.hourly_rate),
     };
 
     try {
@@ -76,10 +98,11 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
           name: data.name || "",
           experience: data.experience || "",
           bio: data.bio || "",
-          hourlyRate: data.hourlyRate || "",
+          hourly_rate: data.hourly_rate || "",
           location: data.location || "",
           phone: data.phone || "",
           email: data.email || "",
+          fish_types: data.fish_types || [],
         });
         setIsEditing(false);
         // Optional: inform parent (if they rely on guide prop) via console.
@@ -98,12 +121,25 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
       name: guide?.name || "",
       experience: guide?.experience || "",
       bio: guide?.bio || "",
-      hourlyRate: guide?.hourlyRate || "",
+      hourly_rate: guide?.hourly_rate || "",
       location: guide?.location || "",
       phone: guide?.phone || "",
       email: guide?.email || "",
+      fish_types: guide?.fish_types || [],
     });
     setIsEditing(false);
+  };
+
+  // Toggle fish type selection
+  const toggleFishType = (fishValue) => {
+    setEditedGuide(prev => {
+      const currentTypes = prev.fish_types || [];
+      if (currentTypes.includes(fishValue)) {
+        return { ...prev, fish_types: currentTypes.filter(t => t !== fishValue) };
+      } else {
+        return { ...prev, fish_types: [...currentTypes, fishValue] };
+      }
+    });
   };
 
 
@@ -140,6 +176,39 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
         </div>
 
         <div className="guide-header-actions">
+          {onOpenHelp && (
+            <button 
+              type="button" 
+              className="guide-help-button" 
+              onClick={onOpenHelp}
+              title="Voir le tutoriel"
+              style={{
+                padding: '8px 14px',
+                backgroundColor: 'transparent',
+                color: '#5A7766',
+                border: '1px dashed #5A7766',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '500',
+                fontSize: '13px',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginRight: '8px'
+              }}
+              onMouseOver={(e) => {
+                e.target.style.backgroundColor = 'rgba(90, 119, 102, 0.1)';
+                e.target.style.borderStyle = 'solid';
+              }}
+              onMouseOut={(e) => {
+                e.target.style.backgroundColor = 'transparent';
+                e.target.style.borderStyle = 'dashed';
+              }}
+            >
+              ❓ Aide
+            </button>
+          )}
           {!isEditing ? (
             <button type="button" className="guide-edit-button" onClick={() => setIsEditing(true)}>
               ✏️ Modifier
@@ -265,19 +334,90 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide }) {
                 {isEditing ? (
                   <input
                     type="number"
-                    value={editedGuide.hourlyRate}
+                    value={editedGuide.hourly_rate}
                     onChange={(e) =>
-                      setEditedGuide({ ...editedGuide, hourlyRate: e.target.value })
+                      setEditedGuide({ ...editedGuide, hourly_rate: e.target.value })
                     }
                     className="guide-input"
                     placeholder="Ex: 75"
                   />
                 ) : (
                   <p className="guide-text">
-                    {editedGuide.hourlyRate
-                      ? `${editedGuide.hourlyRate}$ / heure`
+                    {editedGuide.hourly_rate
+                      ? `${editedGuide.hourly_rate}$ / heure`
                       : "Non défini"}
                   </p>
+                )}
+              </div>
+
+              {/* Fish Types - Specializations */}
+              <div className="guide-form-group">
+                <label>Spécialisations (types de poissons)</label>
+                {isEditing ? (
+                  <div style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    marginTop: '8px'
+                  }}>
+                    {FISH_TYPES.map((fish) => {
+                      const isSelected = (editedGuide.fish_types || []).includes(fish.value);
+                      return (
+                        <button
+                          key={fish.value}
+                          type="button"
+                          onClick={() => toggleFishType(fish.value)}
+                          style={{
+                            padding: '8px 14px',
+                            borderRadius: '20px',
+                            border: isSelected ? '2px solid #2D5F4C' : '1px solid #D1D5DB',
+                            backgroundColor: isSelected ? 'rgba(45, 95, 76, 0.15)' : '#FFFCF7',
+                            color: isSelected ? '#2D5F4C' : '#5A7766',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            fontWeight: isSelected ? '600' : '400',
+                            transition: 'all 0.2s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                          }}
+                        >
+                          {isSelected && <span>✓</span>}
+                          🐟 {fish.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    marginTop: '8px'
+                  }}>
+                    {(editedGuide.fish_types || []).length > 0 ? (
+                      editedGuide.fish_types.map((fishValue) => {
+                        const fish = FISH_TYPES.find(f => f.value === fishValue);
+                        return (
+                          <span
+                            key={fishValue}
+                            style={{
+                              padding: '6px 12px',
+                              borderRadius: '16px',
+                              backgroundColor: 'rgba(74, 155, 142, 0.15)',
+                              color: '#2D5F4C',
+                              fontSize: '13px',
+                              fontWeight: '500'
+                            }}
+                          >
+                            🐟 {fish?.label || fishValue}
+                          </span>
+                        );
+                      })
+                    ) : (
+                      <p className="guide-text" style={{ margin: 0 }}>Aucune spécialisation</p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

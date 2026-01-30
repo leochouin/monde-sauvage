@@ -6,7 +6,11 @@ import JoinUs from "../modals/joinUsModal.jsx";
 import EtablissementModal from "../modals/etablissementModal.jsx";
 import GuideBookingModal from "../modals/guideBookingModal.jsx";
 import ChaletDetailModal from "../modals/chaletDetailModal.jsx";
+import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guideOnboardingModal.jsx";
+import HighlightOverlay from "./HighlightOverlay.jsx";
 import supabase from "../utils/supabase.js";
+import { createGuideBooking } from "../utils/guideBookingService.js";
+import { createBooking } from "../utils/bookingService.js";
 
 // Fish types available for selection
 const FISH_TYPES = [
@@ -42,6 +46,11 @@ function MapApp({ user, profile, guide }) {
     const [selectedGuide, setSelectedGuide] = useState(null);
     const [loadingGuides, setLoadingGuides] = useState(false);
     
+    // NEW: Guide availability time slots
+    const [guideAvailabilityEvents, setGuideAvailabilityEvents] = useState([]);
+    const [loadingGuideAvailability, setLoadingGuideAvailability] = useState(false);
+    const [selectedTimeSlots, setSelectedTimeSlots] = useState([]); // Array of {date, startTime, endTime, eventId}
+    
     // Chalet search state
     const [chalets, setChalets] = useState([]);
     const [loadingChalets, setLoadingChalets] = useState(false);
@@ -57,6 +66,10 @@ function MapApp({ user, profile, guide }) {
     const [dateConflicts, setDateConflicts] = useState(null);
     const [checkingAvailability, setCheckingAvailability] = useState(false);
     
+    // Booking creation state
+    const [isCreatingBooking, setIsCreatingBooking] = useState(false);
+    const [bookingError, setBookingError] = useState(null);
+    
     // Other modals
     const [isLoginOpen, setIsLoginOpen] = useState(false);
     const [isGuideOpen, setIsGuideOpen] = useState(false);
@@ -64,6 +77,29 @@ function MapApp({ user, profile, guide }) {
     const [isEtablissementOpen, setIsEtablissementOpen] = useState(false);
     const [isGuideBookingModalOpen, setIsGuideBookingModalOpen] = useState(false);
     const [guideForBooking, setGuideForBooking] = useState(null);
+    
+    // Guide onboarding state
+    const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+    const [highlightedElement, setHighlightedElement] = useState(null);
+    const [onboardingStartStep, setOnboardingStartStep] = useState(0);
+    
+    // Function to manually open onboarding (for help button)
+    // skipGuideButton: if true, starts at step 2 (after guide-button step) - used when opening from guide modal
+    const openOnboarding = (skipGuideButton = false) => {
+        setOnboardingStartStep(skipGuideButton ? 2 : 0);
+        setIsOnboardingOpen(true);
+    };
+    
+    // Check if guide onboarding should be shown
+    useEffect(() => {
+        if (profile && shouldShowGuideOnboarding(profile)) {
+            // Small delay to let the page render first
+            const timer = setTimeout(() => {
+                setIsOnboardingOpen(true);
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [profile]);
     
     // Check URL parameters on mount to reopen establishment modal if needed
     useEffect(() => {
@@ -163,6 +199,59 @@ function MapApp({ user, profile, guide }) {
         fetchGuides();
     }, [bookingStep, fishType]);
 
+    // Fetch guide availability events when a guide is selected in Step 2
+    useEffect(() => {
+        if (bookingStep !== 2 || !selectedGuide || !startDate || !endDate) {
+            setGuideAvailabilityEvents([]);
+            return;
+        }
+
+        const fetchGuideAvailability = async () => {
+            setLoadingGuideAvailability(true);
+            try {
+                console.log("📅 Fetching availability for guide:", selectedGuide.guide_id, "from", startDate, "to", endDate);
+                
+                // Convert dates to ISO format for Google Calendar API
+                // Add time component: start at beginning of day, end at end of day
+                const startISO = new Date(startDate + 'T00:00:00').toISOString();
+                const endISO = new Date(endDate + 'T23:59:59').toISOString();
+                
+                const url = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability?guideId=${selectedGuide.guide_id}&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+                const res = await fetch(url, {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                });
+                
+                const data = await res.json();
+                console.log("📅 Guide availability events:", data);
+                
+                if (data.items && Array.isArray(data.items)) {
+                    // Process events to extract time slots for each day
+                    const events = data.items.map(event => ({
+                        id: event.id,
+                        summary: event.summary || 'Disponible',
+                        start: event.start?.dateTime || event.start?.date,
+                        end: event.end?.dateTime || event.end?.date,
+                        date: event.start?.dateTime ? event.start.dateTime.split('T')[0] : event.start?.date,
+                    }));
+                    setGuideAvailabilityEvents(events);
+                } else {
+                    setGuideAvailabilityEvents([]);
+                }
+            } catch (err) {
+                console.error("❌ Error fetching guide availability:", err);
+                setGuideAvailabilityEvents([]);
+            } finally {
+                setLoadingGuideAvailability(false);
+            }
+        };
+
+        fetchGuideAvailability();
+    }, [bookingStep, selectedGuide, startDate, endDate]);
+
     // Fetch ALL chalets within radius (no filtering by capacity/dates)
     // The filtering criteria from step 1 will be used to highlight matching chalets
     useEffect(() => {
@@ -223,7 +312,9 @@ function MapApp({ user, profile, guide }) {
             const conflicts = { guide: null, chalet: null };
 
             // Check guide availability via Google Calendar
-            if (selectedGuide) {
+            // BUT: Skip this check if user has already selected specific time slots
+            // because they've already chosen from the guide's available times
+            if (selectedGuide && (!selectedTimeSlots || selectedTimeSlots.length === 0)) {
                 const url = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability?guideId=${selectedGuide.guide_id}&start=${startDate}&end=${endDate}`;
                 const res = await fetch(url, {
                     method: "GET",
@@ -241,6 +332,7 @@ function MapApp({ user, profile, guide }) {
                     };
                 }
             }
+            // If user selected time slots, the guide is confirmed available for those times
 
             // Check chalet availability via bookings table
             if (selectedChalet) {
@@ -271,7 +363,7 @@ function MapApp({ user, profile, guide }) {
         } finally {
             setCheckingAvailability(false);
         }
-    }, [startDate, endDate, selectedGuide, selectedChalet]);
+    }, [startDate, endDate, selectedGuide, selectedChalet, selectedTimeSlots]);
 
     useEffect(() => {
         if (bookingStep === 3) {
@@ -335,15 +427,40 @@ function MapApp({ user, profile, guide }) {
         // Handle "no guide" selection
         if (guide === null) {
             setSelectedGuide(null);
+            setSelectedTimeSlots([]); // Clear selected time slots
+            setGuideAvailabilityEvents([]); // Clear availability events
             return;
         }
         
         // Toggle selection
         if (selectedGuide?.guide_id === guide.guide_id) {
             setSelectedGuide(null);
+            setSelectedTimeSlots([]); // Clear selected time slots
+            setGuideAvailabilityEvents([]); // Clear availability events
         } else {
             setSelectedGuide(guide);
+            setSelectedTimeSlots([]); // Clear any previously selected slots when changing guide
         }
+    }
+
+    // Handle time slot selection/deselection for guide booking
+    function handleSelectTimeSlot(event) {
+        setSelectedTimeSlots(prev => {
+            const isAlreadySelected = prev.some(slot => slot.id === event.id);
+            if (isAlreadySelected) {
+                // Remove if already selected
+                return prev.filter(slot => slot.id !== event.id);
+            } else {
+                // Add to selection
+                return [...prev, {
+                    id: event.id,
+                    date: event.date,
+                    startTime: event.start,
+                    endTime: event.end,
+                    summary: event.summary
+                }];
+            }
+        });
     }
 
     function handleSelectGuideEvent(guide) {
@@ -364,22 +481,70 @@ function MapApp({ user, profile, guide }) {
         setBookingStep(3);
     }
 
-    function handleBookGuide() {
-        if (!selectedGuide) {
-            // No guide selected, just confirm chalet booking
-            setBookingStep(4);
-            return;
-        }
+    async function handleBookGuide() {
+        // Reset error state
+        setBookingError(null);
+        setIsCreatingBooking(true);
         
-        setGuideForBooking({
-            id: selectedGuide.guide_id,
-            name: selectedGuide.name,
-            email: selectedGuide.email,
-            hourlyRate: selectedGuide.hourly_rate,
-            prefilledStartTime: `${startDate}T09:00:00`,
-            prefilledEndTime: `${endDate}T17:00:00`
-        });
-        setIsGuideBookingModalOpen(true);
+        try {
+            const bookingResults = {
+                guideBookings: [],
+                chaletBooking: null
+            };
+            
+            // 1. Create guide bookings if guide is selected with time slots
+            if (selectedGuide && selectedTimeSlots.length > 0) {
+                console.log('📅 Creating guide bookings for selected time slots:', selectedTimeSlots);
+                
+                // Create a booking for each selected time slot
+                for (const slot of selectedTimeSlots) {
+                    const guideBookingData = {
+                        guideId: selectedGuide.guide_id,
+                        startTime: slot.startTime,
+                        endTime: slot.endTime,
+                        customerName: user?.user_metadata?.name || 'Guest',
+                        customerEmail: user?.email || '',
+                        tripType: `Pêche ${FISH_TYPES.find(f => f.value === fishType)?.label || fishType}`,
+                        numberOfPeople: numberOfPeople,
+                        notes: `Réservation via Monde Sauvage - ${fishType}`,
+                        status: 'pending',
+                        // Skip availability check since user selected from pre-fetched available slots
+                        skipAvailabilityCheck: true
+                    };
+                    
+                    const guideBooking = await createGuideBooking(guideBookingData);
+                    bookingResults.guideBookings.push(guideBooking);
+                    console.log('✅ Guide booking created:', guideBooking);
+                }
+            }
+            
+            // 2. Create chalet booking if chalet is selected and needed
+            if (needsChalet && selectedChalet) {
+                console.log('🏠 Creating chalet booking:', selectedChalet);
+                
+                const chaletBookingData = {
+                    chaletId: selectedChalet.key,
+                    startDate: startDate,
+                    endDate: endDate,
+                    customerName: user?.user_metadata?.name || 'Guest',
+                    customerEmail: user?.email || '',
+                    notes: `Réservation via Monde Sauvage - ${numberOfPeople} personne(s)${selectedGuide ? ` - Guide: ${selectedGuide.name}` : ''}`
+                };
+                
+                const chaletBooking = await createBooking(chaletBookingData);
+                bookingResults.chaletBooking = chaletBooking;
+                console.log('✅ Chalet booking created:', chaletBooking);
+            }
+            
+            console.log('🎉 All bookings created successfully:', bookingResults);
+            setBookingStep(4);
+            
+        } catch (error) {
+            console.error('❌ Error creating booking:', error);
+            setBookingError(error.message || 'Une erreur est survenue lors de la réservation');
+        } finally {
+            setIsCreatingBooking(false);
+        }
     }
 
     function handleGuideBookingCreated(booking) {
@@ -405,6 +570,10 @@ function MapApp({ user, profile, guide }) {
         setSelectedGuideEvent(null);
         setFishingZones([]);
         setDateConflicts(null);
+        setGuideAvailabilityEvents([]);
+        setSelectedTimeSlots([]);
+        setBookingError(null);
+        setIsCreatingBooking(false);
     }
 
     // Validation for step 1: preferences + dates
@@ -415,7 +584,10 @@ function MapApp({ user, profile, guide }) {
         new Date(endDate) > new Date(startDate);
 
     // Validation for step 2: guide/chalet selection
-    const canProceedStep2 = selectedGuide || (needsChalet && selectedChalet);
+    // If a guide is selected, require at least one time slot to be selected
+    const canProceedStep2 = (selectedGuide && selectedTimeSlots.length > 0) || 
+        (!selectedGuide && needsChalet && selectedChalet) ||
+        (selectedGuide && selectedTimeSlots.length > 0 && needsChalet && selectedChalet);
 
     // Validation for step 3: availability confirmed (dates already validated in step 1)
     const canProceedStep3 = !dateConflicts?.guide && 
@@ -476,6 +648,14 @@ function MapApp({ user, profile, guide }) {
                 // NEW: Step 3 date conflict props
                 dateConflicts={dateConflicts}
                 checkingAvailability={checkingAvailability}
+                // NEW: Booking creation state
+                isCreatingBooking={isCreatingBooking}
+                bookingError={bookingError}
+                // NEW: Guide availability time slots
+                guideAvailabilityEvents={guideAvailabilityEvents}
+                loadingGuideAvailability={loadingGuideAvailability}
+                selectedTimeSlots={selectedTimeSlots}
+                handleSelectTimeSlot={handleSelectTimeSlot}
             />
             <ChaletDetailModal
                 isOpen={chaletDetailModalOpen}
@@ -491,6 +671,7 @@ function MapApp({ user, profile, guide }) {
                 isGuideOpen={isGuideOpen}
                 closeGuide={() => setIsGuideOpen(false)}
                 guide={guide}
+                onOpenHelp={() => openOnboarding(true)}
             />
 
             <JoinUs
@@ -508,6 +689,30 @@ function MapApp({ user, profile, guide }) {
                 isOpen={isGuideBookingModalOpen}
                 onClose={() => setIsGuideBookingModalOpen(false)}
                 onBookingCreated={handleGuideBookingCreated}
+            />
+
+            {/* Guide Onboarding */}
+            <HighlightOverlay 
+                targetId={highlightedElement} 
+                isActive={isOnboardingOpen && highlightedElement !== null}
+                onBackdropClick={() => {
+                    // Mark as complete when clicking backdrop
+                    localStorage.setItem('guide_onboarding_complete', 'true');
+                    setIsOnboardingOpen(false);
+                    setHighlightedElement(null);
+                }}
+            />
+            <GuideOnboardingModal
+                isOpen={isOnboardingOpen}
+                onClose={() => {
+                    setIsOnboardingOpen(false);
+                    setHighlightedElement(null);
+                }}
+                onComplete={() => {
+                    setHighlightedElement(null);
+                }}
+                onHighlightElement={setHighlightedElement}
+                startStep={onboardingStartStep}
             />
             
         </div>
