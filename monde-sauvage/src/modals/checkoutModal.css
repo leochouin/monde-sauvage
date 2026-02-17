@@ -1,0 +1,254 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Checkout Modal — Stripe Elements Payment
+   Appears after the user fills in their booking details. Shows a summary
+   and Stripe card input to complete payment.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.checkout-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 20px;
+}
+
+.checkout-modal {
+  background: white;
+  border-radius: 16px;
+  max-width: 520px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  position: relative;
+}
+
+.checkout-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: #f1f5f9;
+  border: none;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  z-index: 1;
+}
+.checkout-close:hover {
+  background: #e2e8f0;
+}
+
+.checkout-header {
+  padding: 24px 24px 0;
+}
+.checkout-header h2 {
+  margin: 0 0 4px;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+.checkout-header p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+
+.checkout-body {
+  padding: 20px 24px 24px;
+}
+
+/* ── Booking Summary ─────────────────────────────────────────────────────── */
+.checkout-summary {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+.checkout-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 0.95rem;
+  color: #475569;
+}
+.checkout-summary-row.total {
+  border-top: 1px solid #cbd5e1;
+  margin-top: 8px;
+  padding-top: 12px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+.checkout-summary-row .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.checkout-summary-dates {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0 12px;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+
+/* ── Stripe Card Element ─────────────────────────────────────────────────── */
+.checkout-card-section {
+  margin-bottom: 20px;
+}
+.checkout-card-section label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+.checkout-card-element {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 14px;
+  background: white;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.checkout-card-element:focus-within,
+.checkout-card-element.StripeElement--focus {
+  border-color: #059669;
+  box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+}
+.checkout-card-element.StripeElement--invalid {
+  border-color: #ef4444;
+}
+
+/* ── Pay Button ──────────────────────────────────────────────────────────── */
+.checkout-pay-button {
+  width: 100%;
+  padding: 14px 24px;
+  background: #059669;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+.checkout-pay-button:hover:not(:disabled) {
+  background: #047857;
+  transform: translateY(-1px);
+}
+.checkout-pay-button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Messages ────────────────────────────────────────────────────────────── */
+.checkout-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+
+.checkout-success {
+  text-align: center;
+  padding: 32px 24px;
+}
+.checkout-success-icon {
+  font-size: 3.5rem;
+  margin-bottom: 16px;
+}
+.checkout-success h3 {
+  margin: 0 0 8px;
+  font-size: 1.3rem;
+  color: #059669;
+}
+.checkout-success p {
+  margin: 0 0 8px;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+.checkout-success-id {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin-top: 12px;
+}
+
+.checkout-secure-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+/* ── Test Mode Banner ────────────────────────────────────────────────────── */
+.checkout-test-mode {
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 0.82rem;
+  color: #92400e;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.checkout-test-mode strong {
+  white-space: nowrap;
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────────── */
+.checkout-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: checkout-spin 0.6s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+@keyframes checkout-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Vendor Not Ready ────────────────────────────────────────────────────── */
+.checkout-vendor-warning {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+.checkout-vendor-warning h3 {
+  color: #c2410c;
+  margin: 8px 0;
+}
+.checkout-vendor-warning p {
+  color: #9a3412;
+  font-size: 0.9rem;
+  margin: 0;
+}

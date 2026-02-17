@@ -62,10 +62,15 @@ Deno.serve(async (req)=>{
     });
   }
   // 3️⃣ Fetch events from Google Calendar
-  const now = new Date().toISOString();
-  const weekAhead = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  console.log("📅 Fetching events from:", now, "to:", weekAhead);
-  const eventsRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now}&timeMax=${weekAhead}`, {
+  // Use the start/end params from the request, or default to now + 7 days
+  const startParam = url.searchParams.get("start");
+  const endParam = url.searchParams.get("end");
+  
+  const timeMin = startParam || new Date().toISOString();
+  const timeMax = endParam || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  
+  console.log("📅 Fetching events from:", timeMin, "to:", timeMax);
+  const eventsRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&timeMax=${timeMax}`, {
     headers: {
       Authorization: `Bearer ${tokenData.access_token}`
     }

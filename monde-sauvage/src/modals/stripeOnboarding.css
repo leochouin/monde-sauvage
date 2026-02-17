@@ -1,0 +1,126 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Stripe Onboarding Section — displayed inside the Etablissement modal
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.stripe-onboarding {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px 0;
+}
+
+.stripe-onboarding h3 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.stripe-onboarding-subtitle {
+  color: #64748b;
+  font-size: 0.85rem;
+  margin: 0 0 16px;
+}
+
+/* ── Status Badges ────────────────────────────────────────────────────────── */
+.stripe-status {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.stripe-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.stripe-status-badge.active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.stripe-status-badge.pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.stripe-status-badge.inactive {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ── Button ──────────────────────────────────────────────────────────────── */
+.stripe-onboard-button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stripe-onboard-button.primary {
+  background: #635bff;
+  color: white;
+}
+.stripe-onboard-button.primary:hover:not(:disabled) {
+  background: #4f46e5;
+  transform: translateY(-1px);
+}
+.stripe-onboard-button.primary:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.stripe-onboard-button.secondary {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #d1d5db;
+}
+.stripe-onboard-button.secondary:hover {
+  background: #e2e8f0;
+}
+
+.stripe-onboard-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-top: 12px;
+}
+
+.stripe-onboard-info {
+  margin-top: 12px;
+  font-size: 0.82rem;
+  color: #64748b;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────────── */
+.stripe-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: stripe-spin 0.6s linear infinite;
+}
+@keyframes stripe-spin {
+  to { transform: rotate(360deg); }
+}

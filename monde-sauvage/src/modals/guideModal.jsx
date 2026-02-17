@@ -24,7 +24,7 @@ const FISH_TYPES = [
 // -------------------
 // Default export: GuideProfile
 // -------------------
-export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHelp }) {
+export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHelp, onOpenClients }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editedGuide, setEditedGuide] = useState({
     name: '',
@@ -176,6 +176,39 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
         </div>
 
         <div className="guide-header-actions">
+          {onOpenClients && (
+            <button 
+              type="button" 
+              className="guide-clients-button" 
+              onClick={onOpenClients}
+              title="Gérer mes clients"
+              style={{
+                padding: '8px 14px',
+                backgroundColor: '#eff6ff',
+                color: '#1d4ed8',
+                border: '1px solid #bfdbfe',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '500',
+                fontSize: '13px',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginRight: '8px'
+              }}
+              onMouseOver={(e) => {
+                e.target.style.backgroundColor = '#dbeafe';
+                e.target.style.borderColor = '#93c5fd';
+              }}
+              onMouseOut={(e) => {
+                e.target.style.backgroundColor = '#eff6ff';
+                e.target.style.borderColor = '#bfdbfe';
+              }}
+            >
+              👥 Mes Clients
+            </button>
+          )}
           {onOpenHelp && (
             <button 
               type="button" 

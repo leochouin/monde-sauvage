@@ -160,37 +160,46 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // 5️⃣ Filter out availability slots that overlap with existing bookings
+      // 5️⃣ Check if the guide is fully booked for the entire requested range
       const guideBookedSlots = bookedSlotsMap.get(guide.id) || [];
       const allEvents = events.items || [];
+
+      // A guide is available by default if they have a connected calendar.
+      // They are only UNAVAILABLE if every day in the requested range is covered by a booking.
+      const requestStart = new Date(startISO).getTime();
+      const requestEnd = new Date(endISO).getTime();
       
-      const availableEvents = allEvents.filter((event: any) => {
-        const eventStart = event.start?.dateTime || event.start?.date;
-        const eventEnd = event.end?.dateTime || event.end?.date;
-        
-        if (!eventStart || !eventEnd) return false;
-        
-        // Check if this event overlaps with any existing booking
-        const isBooked = guideBookedSlots.some(booking => 
-          doTimesOverlap(eventStart, eventEnd, booking.start, booking.end)
+      // Check if bookings fully cover the requested range
+      let fullyBooked = false;
+      if (guideBookedSlots.length > 0) {
+        // Sort bookings by start time
+        const sorted = [...guideBookedSlots].sort((a, b) => 
+          new Date(a.start).getTime() - new Date(b.start).getTime()
         );
         
-        if (isBooked) {
-          console.log(`Filtering out booked slot for guide ${guide.name}: ${eventStart} - ${eventEnd}`);
+        // Check if bookings cover the entire range (simplified: if any day is free, guide is available)
+        let coveredUntil = requestStart;
+        for (const booking of sorted) {
+          const bStart = new Date(booking.start.includes('T') ? booking.start : `${booking.start}T00:00:00`).getTime();
+          const bEnd = new Date(booking.end.includes('T') ? booking.end : `${booking.end}T23:59:59`).getTime();
+          if (bStart <= coveredUntil) {
+            coveredUntil = Math.max(coveredUntil, bEnd);
+          }
         }
-        
-        return !isBooked;
-      });
+        fullyBooked = coveredUntil >= requestEnd;
+      }
 
-      console.log(`Guide ${guide.name}: ${allEvents.length} total events, ${availableEvents.length} available after filtering`);
+      console.log(`Guide ${guide.name}: ${allEvents.length} calendar events, ${guideBookedSlots.length} bookings, fullyBooked=${fullyBooked}`);
 
+      // Guide is available by default (has connected calendar).
+      // Only unavailable if their entire requested range is covered by bookings.
       results.push({
         guide_id: guide.id,
         name: guide.name,
-        events: availableEvents, // Only return unbooked events
-        all_events: allEvents, // Include all for debugging
+        events: allEvents,
+        all_events: allEvents,
         booked_slots: guideBookedSlots,
-        is_available: availableEvents.length > 0, // Only available if there are unbooked slots
+        is_available: !fullyBooked, // Available unless fully booked for the entire range
       });
 
     } catch (err) {

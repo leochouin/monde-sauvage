@@ -377,3 +377,28 @@ select.form-input {
     gap: 0.25rem;
   }
 }
+
+/* ── Booked-day indicator on DatePicker calendar ────────────────────────── */
+.react-datepicker__day.grp-day--booked {
+  position: relative;
+  background-color: rgba(220, 38, 38, 0.08) !important;
+  color: #b91c1c !important;
+  border-radius: 50%;
+  border: 1.5px solid #dc2626 !important;
+}
+
+.react-datepicker__day.grp-day--booked::after {
+  content: '✕';
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #dc2626;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.react-datepicker__day.grp-day--booked:hover {
+  background-color: rgba(220, 38, 38, 0.18) !important;
+}

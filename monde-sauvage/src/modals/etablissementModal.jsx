@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import supabase from '../utils/supabase.js';
 import ChaletHoraireModal from './chaletHoraireModal.jsx';
+import StripeOnboarding from './stripeOnboarding.jsx';
 
 const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     const [establishments, setEstablishments] = useState([]);
@@ -1063,6 +1064,22 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+
+                            {/* Stripe Payments Section */}
+                            <div className="guide-section guide-card">
+                                <StripeOnboarding
+                                    establishment={selectedEstablishment}
+                                    onStatusUpdate={(status) => {
+                                        // Update the local state with the new Stripe status
+                                        setSelectedEstablishment(prev => ({
+                                            ...prev,
+                                            stripe_charges_enabled: status.chargesEnabled,
+                                            stripe_payouts_enabled: status.payoutsEnabled,
+                                            stripe_onboarding_complete: status.onboardingComplete,
+                                        }));
+                                    }}
+                                />
                             </div>
 
                             {/* Google Calendar Connection */}

@@ -2,11 +2,13 @@
 // Syncs guide bookings bidirectionally with Google Calendar
 // 
 // WORKFLOW:
-// 1. Fetch all events from guide's Google Calendar
+// 1. Fetch all events from guide's availability calendar (not primary)
 // 2. Compare with guide_booking table using google_event_id
 // 3. Detect deletions (exists in DB but not in Calendar)
 // 4. Detect new events (exists in Calendar but not in DB)
-// 5. Update database to reflect changes
+// 5. Detect modifications (event times/title changed in Calendar)
+// 6. Retry failed calendar syncs for bookings with calendar_sync_failed=true
+// 7. Update database to reflect changes
 // 
 // SECURITY:
 // - Paid bookings cannot be deleted by calendar sync
@@ -14,16 +16,20 @@
 // - All changes are logged for audit trail
 
 import { createClient } from "@supabase/supabase-js";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+import {
+  corsHeaders,
+  retryWithBackoff,
+  getAccessToken,
+  getGuideCalendarId,
+  errorResponse,
+  successResponse,
+} from "../_shared/calendarUtils.ts";
 
 interface SyncResult {
   deletedBookings: string[];
   newBookings: string[];
   updatedBookings: string[];
+  retriedBookings: string[];
   errors: string[];
   protectedBookings: string[]; // Paid bookings that couldn't be deleted
 }
@@ -49,13 +55,7 @@ Deno.serve(async (req: Request) => {
     const { guide_id } = await req.json();
 
     if (!guide_id) {
-      return new Response(
-        JSON.stringify({ error: "Missing guide_id" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      return errorResponse("Missing guide_id", 400);
     }
 
     console.log(`📋 Syncing bookings for guide: ${guide_id}`);
@@ -64,55 +64,28 @@ Deno.serve(async (req: Request) => {
       deletedBookings: [],
       newBookings: [],
       updatedBookings: [],
+      retriedBookings: [],
       errors: [],
       protectedBookings: [],
     };
 
-    // 1️⃣ Get guide's Google Calendar access token
-    console.log("🔑 Getting access token...");
-    const tokenUrl = `${SUPABASE_URL}/functions/v1/refresh-google-token?guideId=${guide_id}`;
-    
-    const tokenRes = await fetch(tokenUrl, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      },
-    });
-
-    if (!tokenRes.ok) {
-      const errorData = await tokenRes.json();
-      console.log("❌ Failed to get access token:", errorData);
-      
-      return new Response(
-        JSON.stringify({ 
-          error: "Failed to authenticate with Google Calendar",
-          requiresAuth: errorData.requiresReauth || false
-        }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
+    // ── GET ACCESS TOKEN (with retry) ──────────────────────────
+    let accessToken: string;
+    try {
+      const tokenResult = await getAccessToken(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, guide_id);
+      accessToken = tokenResult.access_token;
+    } catch (tokenError: any) {
+      return errorResponse(
+        "Failed to authenticate with Google Calendar",
+        tokenError.status || 401,
+        { requiresAuth: tokenError.requiresReauth || false }
       );
     }
 
-    const tokenData = await tokenRes.json();
-    const accessToken = tokenData.access_token;
-    console.log("✅ Access token obtained");
+    // ── GET GUIDE CALENDAR (verify + auto-create if missing) ───
+    const { calendarId } = await getGuideCalendarId(supabase, guide_id, accessToken);
 
-    // 2️⃣ Get guide's email to fetch their primary calendar
-    const { data: guide, error: guideError } = await supabase
-      .from("guide")
-      .select("email")
-      .eq("id", guide_id)
-      .single();
-
-    if (guideError || !guide) {
-      throw new Error("Guide not found");
-    }
-
-    const calendarId = guide.email; // Primary calendar uses email as ID
-
-    // 3️⃣ Fetch all events from Google Calendar (next 6 months)
+    // ── FETCH GOOGLE CALENDAR EVENTS ───────────────────────────
     console.log("📅 Fetching events from Google Calendar...");
     
     const now = new Date();
@@ -127,11 +100,12 @@ Deno.serve(async (req: Request) => {
     calendarApiUrl.searchParams.set("singleEvents", "true");
     calendarApiUrl.searchParams.set("maxResults", "500");
 
-    const calendarRes = await fetch(calendarApiUrl.toString(), {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
+    const calendarRes = await retryWithBackoff(
+      () => fetch(calendarApiUrl.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }),
+      { maxRetries: 2, operationName: "Fetch calendar events" }
+    );
 
     if (!calendarRes.ok) {
       const errorData = await calendarRes.json();
@@ -142,7 +116,7 @@ Deno.serve(async (req: Request) => {
     const calendarEvents = calendarData.items || [];
     console.log(`📊 Found ${calendarEvents.length} events in Google Calendar`);
 
-    // 4️⃣ Get all active bookings from database
+    // ── FETCH DB BOOKINGS ──────────────────────────────────────
     const { data: dbBookings, error: dbError } = await supabase
       .from("guide_booking")
       .select("*")
@@ -156,12 +130,10 @@ Deno.serve(async (req: Request) => {
 
     console.log(`📊 Found ${dbBookings?.length || 0} bookings in database`);
 
-    // 5️⃣ Create maps for comparison
+    // ── BUILD LOOKUP MAPS ──────────────────────────────────────
     const calendarEventMap = new Map();
     calendarEvents.forEach((event: any) => {
-      if (event.id) {
-        calendarEventMap.set(event.id, event);
-      }
+      if (event.id) calendarEventMap.set(event.id, event);
     });
 
     const dbBookingMap = new Map();
@@ -171,30 +143,21 @@ Deno.serve(async (req: Request) => {
       }
     });
 
-    // 6️⃣ DETECT DELETIONS: Events in DB but not in Calendar
+    // ── DETECT DELETIONS ───────────────────────────────────────
     console.log("🔍 Checking for deleted events...");
     
     for (const booking of dbBookings || []) {
-      // Skip bookings that were created in the system without Google Calendar sync
-      if (!booking.google_event_id) {
-        continue;
-      }
+      if (!booking.google_event_id) continue;
 
-      // If event doesn't exist in calendar anymore, it was deleted
       if (!calendarEventMap.has(booking.google_event_id)) {
         console.log(`🗑️ Event deleted from calendar: ${booking.google_event_id}`);
 
-        // SECURITY: Check if booking is paid
         if (booking.is_paid) {
           console.log(`⚠️ Cannot delete paid booking: ${booking.id}`);
           syncResult.protectedBookings.push(booking.id);
-          
-          // Optionally notify admin/customer
-          // TODO: Send notification about paid booking deletion attempt
           continue;
         }
 
-        // Soft delete the booking
         const { error: deleteError } = await supabase
           .from("guide_booking")
           .update({
@@ -216,21 +179,65 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // 7️⃣ DETECT NEW EVENTS: Events in Calendar but not in DB
+    // ── DETECT MODIFICATIONS ───────────────────────────────────
+    console.log("🔍 Checking for modified events...");
+
+    for (const booking of dbBookings || []) {
+      if (!booking.google_event_id) continue;
+
+      const calEvent = calendarEventMap.get(booking.google_event_id);
+      if (!calEvent) continue; // Already handled in deletion check
+
+      const calStart = calEvent.start?.dateTime || calEvent.start?.date;
+      const calEnd = calEvent.end?.dateTime || calEvent.end?.date;
+      const calSummary = calEvent.summary || "";
+
+      // Compare timestamps (normalize to ms)
+      const dbStartMs = new Date(booking.start_time).getTime();
+      const dbEndMs = new Date(booking.end_time).getTime();
+      const calStartMs = calStart ? new Date(calStart).getTime() : dbStartMs;
+      const calEndMs = calEnd ? new Date(calEnd).getTime() : dbEndMs;
+
+      const timeChanged = Math.abs(dbStartMs - calStartMs) > 60000 || Math.abs(dbEndMs - calEndMs) > 60000;
+      const titleChanged = calSummary && booking.customer_name && !calSummary.includes(booking.customer_name);
+
+      if (timeChanged || titleChanged) {
+        console.log(`📝 Event modified in calendar: ${booking.google_event_id}`);
+
+        const updatePayload: Record<string, any> = {
+          updated_at: new Date().toISOString(),
+          synced_at: new Date().toISOString(),
+        };
+
+        if (timeChanged) {
+          updatePayload.start_time = calStart;
+          updatePayload.end_time = calEnd;
+          updatePayload.notes = (booking.notes || "") + 
+            `\n[AUTO-SYNC] Time updated from Google Calendar on ${new Date().toISOString()}`;
+        }
+
+        const { error: updateError } = await supabase
+          .from("guide_booking")
+          .update(updatePayload)
+          .eq("id", booking.id);
+
+        if (updateError) {
+          console.error(`❌ Failed to update booking ${booking.id}:`, updateError);
+          syncResult.errors.push(`Failed to update booking ${booking.id}`);
+        } else {
+          syncResult.updatedBookings.push(booking.id);
+          console.log(`✅ Updated booking: ${booking.id}`);
+        }
+      }
+    }
+
+    // ── DETECT NEW EVENTS ──────────────────────────────────────
     console.log("🔍 Checking for new events...");
     
     for (const event of calendarEvents) {
-      // Skip if event already exists in DB
-      if (dbBookingMap.has(event.id)) {
-        continue;
-      }
+      if (dbBookingMap.has(event.id)) continue;
+      if (event.status === "cancelled") continue;
 
-      // Skip cancelled events
-      if (event.status === "cancelled") {
-        continue;
-      }
-
-      // Extract event details
       const startTime = event.start?.dateTime || event.start?.date;
       const endTime = event.end?.dateTime || event.end?.date;
       const summary = event.summary || "Untitled Event";
@@ -242,19 +249,20 @@ Deno.serve(async (req: Request) => {
 
       console.log(`➕ New event found: ${summary} (${event.id})`);
 
-      // Create new booking from calendar event
       const { data: newBooking, error: createError } = await supabase
         .from("guide_booking")
         .insert({
           guide_id: guide_id,
           start_time: startTime,
           end_time: endTime,
-          status: "confirmed", // Events in calendar are considered confirmed
-          source: "google", // Came from Google Calendar
+          status: "confirmed",
+          source: "google",
           google_event_id: event.id,
-          customer_name: summary, // Use event title as customer name
+          customer_name: summary,
           notes: event.description || "[AUTO-SYNC] Imported from Google Calendar",
-          synced_at: new Date().toISOString()
+          synced_at: new Date().toISOString(),
+          calendar_sync_failed: false,
+          calendar_sync_attempts: 0,
         })
         .select()
         .single();
@@ -268,48 +276,109 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // 8️⃣ UPDATE SYNCED TIMESTAMP
-    const { error: updateSyncError } = await supabase
+    // ── RETRY FAILED CALENDAR SYNCS ────────────────────────────
+    console.log("🔄 Retrying failed calendar syncs...");
+
+    const { data: failedBookings } = await supabase
+      .from("guide_booking")
+      .select("*")
+      .eq("guide_id", guide_id)
+      .eq("calendar_sync_failed", true)
+      .is("deleted_at", null)
+      .is("google_event_id", null)
+      .lt("calendar_sync_attempts", 5); // Max 5 retry attempts
+
+    for (const booking of failedBookings || []) {
+      console.log(`🔄 Retrying calendar sync for booking ${booking.id} (attempt ${booking.calendar_sync_attempts + 1})`);
+
+      try {
+        const createEventUrl = `${SUPABASE_URL}/functions/v1/create-guide-booking-event`;
+        const eventRes = await fetch(createEventUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            booking_id: booking.id,
+            guide_id: booking.guide_id,
+            start_time: booking.start_time,
+            end_time: booking.end_time,
+            customer_name: booking.customer_name,
+            customer_email: booking.customer_email,
+            trip_type: booking.trip_type,
+            notes: booking.notes,
+          }),
+        });
+
+        if (eventRes.ok) {
+          const eventData = await eventRes.json();
+          await supabase
+            .from("guide_booking")
+            .update({
+              google_event_id: eventData.event_id,
+              calendar_sync_failed: false,
+              calendar_sync_error: null,
+              calendar_sync_attempts: booking.calendar_sync_attempts + 1,
+              synced_at: new Date().toISOString(),
+            })
+            .eq("id", booking.id);
+
+          syncResult.retriedBookings.push(booking.id);
+          console.log(`✅ Retry succeeded for booking ${booking.id}: event ${eventData.event_id}`);
+        } else {
+          const errorData = await eventRes.json();
+          await supabase
+            .from("guide_booking")
+            .update({
+              calendar_sync_attempts: booking.calendar_sync_attempts + 1,
+              calendar_sync_error: errorData.error || "Unknown error",
+            })
+            .eq("id", booking.id);
+
+          syncResult.errors.push(`Retry failed for booking ${booking.id}: ${errorData.error}`);
+        }
+      } catch (retryError: any) {
+        await supabase
+          .from("guide_booking")
+          .update({
+            calendar_sync_attempts: booking.calendar_sync_attempts + 1,
+            calendar_sync_error: retryError.message,
+          })
+          .eq("id", booking.id);
+
+        syncResult.errors.push(`Retry error for booking ${booking.id}: ${retryError.message}`);
+      }
+    }
+
+    // ── UPDATE SYNCED TIMESTAMP ────────────────────────────────
+    await supabase
       .from("guide_booking")
       .update({ synced_at: new Date().toISOString() })
       .eq("guide_id", guide_id)
+      .eq("calendar_sync_failed", false)
       .is("deleted_at", null);
 
-    if (updateSyncError) {
-      console.warn("⚠️ Could not update sync timestamps:", updateSyncError);
-    }
-
-    // 9️⃣ Return sync results
+    // ── RETURN RESULTS ─────────────────────────────────────────
     console.log("✅ Sync completed");
     console.log(`   - Deleted: ${syncResult.deletedBookings.length}`);
     console.log(`   - New: ${syncResult.newBookings.length}`);
+    console.log(`   - Updated: ${syncResult.updatedBookings.length}`);
+    console.log(`   - Retried: ${syncResult.retriedBookings.length}`);
     console.log(`   - Protected: ${syncResult.protectedBookings.length}`);
     console.log(`   - Errors: ${syncResult.errors.length}`);
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        syncResult,
-        message: `Sync completed: ${syncResult.newBookings.length} new, ${syncResult.deletedBookings.length} deleted, ${syncResult.protectedBookings.length} protected`
-      }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
-
-  } catch (error) {
+    return successResponse({
+      syncResult,
+      message: `Sync completed: ${syncResult.newBookings.length} new, ${syncResult.deletedBookings.length} deleted, ${syncResult.updatedBookings.length} updated, ${syncResult.retriedBookings.length} retried, ${syncResult.protectedBookings.length} protected`,
+    });
+  } catch (error: any) {
     console.error("❌ Error in sync-guide-calendar:", error);
-    
-    return new Response(
-      JSON.stringify({ 
-        error: error.message || "Failed to sync with Google Calendar",
-        details: error.toString()
-      }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+
+    return errorResponse(
+      error.message || "Failed to sync with Google Calendar",
+      500,
+      { details: error.toString() }
     );
   }
 });

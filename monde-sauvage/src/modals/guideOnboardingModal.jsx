@@ -27,42 +27,72 @@ const WelcomeIllustration = () => (
   </div>
 );
 
-const GuideButtonIllustration = () => (
+const AccountSettingsIllustration = () => (
   <div style={{
-    width: '200px',
+    width: '240px',
     margin: '0 auto 24px',
-    padding: '16px',
-    backgroundColor: 'rgba(45, 95, 76, 0.08)',
+    padding: '20px',
+    backgroundColor: 'rgba(255, 252, 247, 0.7)',
     borderRadius: '16px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '8px'
+    gap: '12px',
+    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.06)',
+    border: '3px solid rgba(74, 155, 142, 0.3)',
+    animation: 'pulse-button 2s ease-in-out infinite'
   }}>
+    {/* Profile avatar */}
     <div style={{
-      padding: '12px 16px',
-      backgroundColor: '#FFFCF7',
-      borderRadius: '10px',
-      border: '2px solid #2D5F4C',
       display: 'flex',
       alignItems: 'center',
-      gap: '8px',
-      fontWeight: '600',
-      color: '#2D5F4C',
-      fontSize: '14px',
-      boxShadow: '0 0 0 4px rgba(74, 155, 142, 0.2)',
-      animation: 'pulse-button 2s ease-in-out infinite'
+      gap: '12px',
+      paddingBottom: '12px',
+      borderBottom: '1px solid rgba(209, 213, 219, 0.5)'
     }}>
-      <span>👤</span> Guide
+      <div style={{
+        width: '48px',
+        height: '48px',
+        borderRadius: '50%',
+        backgroundColor: '#4A9B8E',
+        border: '3px solid #4A9B8E',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '20px'
+      }}>👤</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ height: '12px', width: '80px', backgroundColor: '#1F3A2E', borderRadius: '4px', marginBottom: '6px' }}></div>
+        <div style={{ height: '10px', width: '100px', backgroundColor: '#9CA3AF', borderRadius: '4px' }}></div>
+      </div>
     </div>
+    {/* Settings button - highlighted */}
     <div style={{
-      padding: '10px 14px',
-      backgroundColor: 'transparent',
-      borderRadius: '8px',
-      border: '1px solid #D1D5DB',
-      color: '#9CA3AF',
-      fontSize: '12px'
+      display: 'flex',
+      gap: '8px',
+      justifyContent: 'center'
     }}>
-      Établissement
+      <div style={{
+        padding: '6px 12px',
+        backgroundColor: 'transparent',
+        borderRadius: '6px',
+        color: '#2D5F4C',
+        fontSize: '12px',
+        fontWeight: '500',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        boxShadow: '0 0 0 3px rgba(74, 155, 142, 0.3)'
+      }}>
+        ⚙️ Paramètres
+      </div>
+      <span style={{ color: '#D1D5DB' }}>|</span>
+      <div style={{
+        padding: '6px 12px',
+        color: '#9CA3AF',
+        fontSize: '11px'
+      }}>
+        Déconnexion
+      </div>
     </div>
   </div>
 );
@@ -297,23 +327,23 @@ const ONBOARDING_STEPS = [
     Illustration: WelcomeIllustration
   },
   {
-    id: 'guide-button',
-    title: 'Votre espace Guide',
-    description: 'Cliquez sur le bouton "Guide" dans le menu de gauche pour accéder à votre profil et gérer vos informations.',
-    highlight: 'guide-button',
-    Illustration: GuideButtonIllustration
+    id: 'account-settings',
+    title: 'Accédez à vos paramètres',
+    description: 'Dans votre profil en haut du menu de gauche, cliquez sur "Paramètres" pour accéder à la configuration de votre compte guide et gérer toutes vos informations.',
+    highlight: 'account-settings',
+    Illustration: AccountSettingsIllustration
   },
   {
     id: 'profile-info',
     title: 'Complétez votre profil',
-    description: 'Dans votre espace guide, vous pourrez modifier vos informations personnelles: nom, expérience, biographie, tarif horaire, et localisation. Un profil complet attire plus de clients!',
+    description: 'Dans l\'onglet "Guide" de vos paramètres, vous pourrez modifier vos informations personnelles: nom, expérience, biographie, tarif horaire, et localisation. Un profil complet attire plus de clients!',
     highlight: null,
     Illustration: ProfileIllustration
   },
   {
     id: 'fish-types',
     title: 'Vos spécialisations',
-    description: 'Sélectionnez les types de poissons pour lesquels vous êtes spécialisé. Cela permet aux clients de vous trouver selon leurs préférences de pêche.',
+    description: 'Dans l\'onglet "Guide", sélectionnez les types de poissons pour lesquels vous êtes spécialisé, puis associez des lieux de pêche spécifiques (rivières, lacs) pour chaque type. Cela permet aux clients de vous trouver selon leurs préférences.',
     highlight: null,
     Illustration: FishTypesIllustration
   },

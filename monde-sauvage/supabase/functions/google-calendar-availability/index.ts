@@ -239,14 +239,48 @@ Deno.serve(async (req: Request) => {
     return overlaps;
   }
 
+  // Fetch events from BOTH the dedicated availability calendar AND primary calendar
   const calendarIdEscaped = encodeURIComponent(availabilityCalendarId);
-  const eventsRes = await fetch(
+  const availabilityEventsRes = await fetch(
     `https://www.googleapis.com/calendar/v3/calendars/${calendarIdEscaped}/events?singleEvents=true&orderBy=startTime&timeMin=${start}&timeMax=${end}`,
     { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
   );
 
-  const events = await eventsRes.json();
-  console.log("✅ Events fetched:", events.items?.length || 0);
+  const primaryEventsRes = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&timeMin=${start}&timeMax=${end}`,
+    { headers: { Authorization: `Bearer ${tokenData.access_token}` } }
+  );
+
+  const availabilityEvents = await availabilityEventsRes.json();
+  const primaryEvents = await primaryEventsRes.json();
+  
+  // Merge events from both calendars, avoiding duplicates
+  // Tag events with their source calendar so we can handle them differently
+  const allEventIds = new Set();
+  const mergedItems = [];
+  
+  // Tag availability calendar events
+  for (const event of (availabilityEvents.items || [])) {
+    if (!allEventIds.has(event.id)) {
+      allEventIds.add(event.id);
+      event._calendarSource = 'availability';
+      mergedItems.push(event);
+    }
+  }
+  
+  // Tag primary calendar events (personal events)
+  for (const event of (primaryEvents.items || [])) {
+    if (!allEventIds.has(event.id)) {
+      allEventIds.add(event.id);
+      event._calendarSource = 'primary';
+      mergedItems.push(event);
+    }
+  }
+  
+  const events = { ...availabilityEvents, items: mergedItems };
+  console.log("✅ Events fetched from availability calendar:", availabilityEvents.items?.length || 0);
+  console.log("✅ Events fetched from primary calendar:", primaryEvents.items?.length || 0);
+  console.log("✅ Total merged events:", mergedItems.length);
 
   // --- FILTER: keep only events that look like availability entries ---
   // Keywords to identify availability events (common English/French variants + small typos)
@@ -256,6 +290,7 @@ Deno.serve(async (req: Request) => {
   "avalaible",
   "disponible",
   "dispo",
+  "Dispo",
   "work",
   "availability",
   "libre",
@@ -380,23 +415,57 @@ Deno.serve(async (req: Request) => {
 
   const originalCount = events.items?.length || 0;
   let filteredItems = (events.items || []).filter((ev: Record<string, unknown>) => {
+    const description = (ev.description as string) || "";
+
+    // Events from primary calendar are always kept (they represent personal busy time)
+    // We can't distinguish calendar source here, so we'll be lenient and keep all events
+    // The frontend will handle displaying them appropriately
+    
+    // For now, keep ALL events - the booking-overlap filter below will handle
+    // removing system-created booking events and overlapping availability slots.
+    return true;
+    
+    /* Original keyword filtering - disabled to show all events
     // Check the most relevant textual fields: summary (title), description and location
     // Normalize and strip diacritics so matches like "disponible" still work with accents
     const summary = (ev.summary as string) || "";
-    const description = (ev.description as string) || "";
     const location = (ev.location as string) || "";
     const raw = `${summary} ${description} ${location}`;
     const text = raw.normalize && typeof raw.normalize === "function"
       ? raw.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
       : raw;
     return availabilityRegex.test(text);
+    */
   });
 
-  console.log(`✅ Filtered events: kept ${filteredItems.length} of ${originalCount} (availability keywords)`);
+  console.log(`✅ Filtered events: kept ${filteredItems.length} of ${originalCount} (showing all events)`);
 
-  // 4️⃣ Filter out availability slots that are already booked
+  // 4️⃣ Filter out:
+  //   - Booking events created by our system (shown from DB instead to avoid duplicates)
+  //   - Availability calendar events that overlap with existing bookings
+  // Keep:
+  //   - Personal calendar events (dinners, meetings, etc.)
+  //   - Non-overlapping availability events
   const beforeBookingFilter = filteredItems.length;
   filteredItems = filteredItems.filter((ev: Record<string, unknown>) => {
+    const eventDescription = (ev.description as string) || "";
+    
+    // FILTER OUT booking events created by our system.
+    // These are already displayed from the guide_booking database table (source of truth).
+    // Returning them here would cause duplicates on the calendar.
+    if (eventDescription.includes("Booking ID:") || eventDescription.includes("Monde Sauvage booking system")) {
+      console.log(`🚫 Filtering out system-created booking event: ${(ev.summary as string) || 'Untitled'} (already shown from DB)`);
+      return false;
+    }
+
+    // Never filter out personal calendar events (meetings, dinners, etc.)
+    // These should be displayed alongside bookings to give complete view
+    if ((ev as any)._calendarSource === 'primary') {
+      console.log(`✅ Keeping personal calendar event: ${(ev.summary as string) || 'Untitled'}`);
+      return true;
+    }
+
+    // Only filter availability calendar events that overlap with bookings
     const eventStart = (ev.start as any)?.dateTime || (ev.start as any)?.date;
     const eventEnd = (ev.end as any)?.dateTime || (ev.end as any)?.date;
     
@@ -408,13 +477,16 @@ Deno.serve(async (req: Request) => {
     );
     
     if (isBooked) {
-      console.log(`🚫 Filtering out booked slot: ${eventStart} - ${eventEnd}`);
+      console.log(`🚫 Filtering out booked availability slot: ${eventStart} - ${eventEnd}`);
     }
     
     return !isBooked;
   });
 
-  console.log(`✅ After booking filter: kept ${filteredItems.length} of ${beforeBookingFilter} (removed already-booked slots)`);
+  console.log(`✅ After booking filter: kept ${filteredItems.length} of ${beforeBookingFilter} (removed system booking events and already-booked availability slots, kept personal events)`);
+
+  // Clean up internal markers before returning
+  filteredItems.forEach((ev: any) => delete ev._calendarSource);
 
   // Replace items with filtered set
   events.items = filteredItems;

@@ -1,16 +1,18 @@
 import { useEffect, useState, useCallback } from "react";
 import GaspesieMap from "./Map.jsx";
 import LoginModal from "../modals/loginModal.jsx";
-import Guide from "../modals/guideModal.jsx";
 import JoinUs from "../modals/joinUsModal.jsx";
 import EtablissementModal from "../modals/etablissementModal.jsx";
 import GuideBookingModal from "../modals/guideBookingModal.jsx";
+import GuideClientModal from "../modals/guideClientModal.jsx";
 import ChaletDetailModal from "../modals/chaletDetailModal.jsx";
 import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guideOnboardingModal.jsx";
+import AccountSettingsModal from "../modals/accountSettingsModal.jsx";
 import HighlightOverlay from "./HighlightOverlay.jsx";
 import supabase from "../utils/supabase.js";
 import { createGuideBooking } from "../utils/guideBookingService.js";
 import { createBooking } from "../utils/bookingService.js";
+import CheckoutModal from "../modals/checkoutModal.jsx";
 
 // Fish types available for selection
 const FISH_TYPES = [
@@ -27,6 +29,12 @@ const FISH_TYPES = [
 
 function MapApp({ user, profile, guide }) {
     // NEW FLOW: Step 1 (preferences) -> Step 2 (guide+chalet selection) -> Step 3 (dates) -> Step 4 (confirmation)
+    
+    // Browse mode: 'trip' = full flow, 'guide' = guide-only, 'chalet' = chalet-only
+    const [browseMode, setBrowseMode] = useState('trip');
+    
+    // Account settings modal
+    const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
     
     // Booking flow state
     const [bookingStep, setBookingStep] = useState(0); // 0 = not started, 1 = preferences, 2 = guide+chalet, 3 = dates, 4 = confirmation
@@ -72,11 +80,18 @@ function MapApp({ user, profile, guide }) {
     
     // Other modals
     const [isLoginOpen, setIsLoginOpen] = useState(false);
-    const [isGuideOpen, setIsGuideOpen] = useState(false);
     const [isRejoindreOpen, setIsRejoindreOpen] = useState(false);
     const [isEtablissementOpen, setIsEtablissementOpen] = useState(false);
     const [isGuideBookingModalOpen, setIsGuideBookingModalOpen] = useState(false);
     const [guideForBooking, setGuideForBooking] = useState(null);
+    const [isGuideClientModalOpen, setIsGuideClientModalOpen] = useState(false);
+    const [settingsWasOpenBeforeClients, setSettingsWasOpenBeforeClients] = useState(false);
+    
+    // Stripe payment checkout state for main booking flow
+    const [showPaymentCheckout, setShowPaymentCheckout] = useState(false);
+    const [paymentCheckoutData, setPaymentCheckoutData] = useState(null);
+    const [paymentCheckoutType, setPaymentCheckoutType] = useState(null); // 'guide' or 'chalet'
+    const [pendingChaletBooking, setPendingChaletBooking] = useState(null); // chalet data waiting after guide payment
     
     // Guide onboarding state
     const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
@@ -175,12 +190,20 @@ function MapApp({ user, profile, guide }) {
                 if (error) throw error;
                 
                 console.log("👤 Guides found from DB:", guides);
+                console.log("👤 Number of guides:", guides?.length || 0);
+                if (guides?.length > 0) {
+                    console.log("👤 Guide IDs:", guides.map(g => `${g.name} (${g.id})`));
+                }
 
                 // Now check actual calendar availability for these guides
                 const startISO = new Date(startDate + 'T00:00:00').toISOString();
                 const endISO = new Date(endDate + 'T23:59:59').toISOString();
                 
+                console.log("📆 Date inputs:", { startDate, endDate });
+                console.log("📆 ISO dates:", { startISO, endISO });
+                
                 const availabilityUrl = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability-all?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+                console.log("🌐 Availability URL:", availabilityUrl);
                 
                 const availabilityRes = await fetch(availabilityUrl, {
                     method: "GET",
@@ -191,33 +214,49 @@ function MapApp({ user, profile, guide }) {
                 });
                 
                 const availabilityData = await availabilityRes.json();
+                console.log("📅 Availability response status:", availabilityRes.status);
                 console.log("📅 Availability data for all guides:", availabilityData);
                 
                 // Create a map of guide_id -> availability info
                 const availabilityMap = new Map();
                 if (Array.isArray(availabilityData)) {
                     availabilityData.forEach(item => {
+                        console.log(`  📊 Guide ${item.guide_id} (${item.name}): is_available=${item.is_available}, events=${item.events?.length || 0}, booked=${item.booked_slots?.length || 0}, error=${item.error || 'none'}`);
                         availabilityMap.set(item.guide_id, item);
                     });
+                } else {
+                    console.warn("⚠️ availabilityData is not an array:", availabilityData);
                 }
                 
-                // Transform and filter guides - only include those with actual availability
+                // Transform guides — a guide is available unless the API explicitly says they're fully booked
                 const formattedGuides = (guides || [])
                     .map(g => {
                         const availability = availabilityMap.get(g.id);
+                        
+                        // If guide is in availability response, use the API's is_available
+                        // If guide is NOT in the response (no calendar connected), they're still available  
+                        const isAvailable = availability 
+                            ? (availability.is_available !== false && !availability.error)
+                            : true; // Guide with refresh token but not in response → available by default
+                        
+                        console.log(`🔍 Guide ${g.name}: inMap=${!!availability}, is_available=${isAvailable}, error=${availability?.error || 'none'}`);
+                        
                         return {
                             guide_id: g.id,
                             name: g.name,
                             email: g.email,
                             fish_types: g.fish_types || [],
-                            hourly_rate: g.hourlyRate,
-                            is_available: availability?.is_available || false,
-                            events: availability?.events || []
+                            hourly_rate: g.hourly_rate,
+                            stripe_charges_enabled: g.stripe_charges_enabled || false,
+                            stripe_account_id: g.stripe_account_id || null,
+                            is_available: isAvailable,
+                            events: availability?.events || [],
+                            booked_slots: availability?.booked_slots || []
                         };
                     })
-                    .filter(g => g.is_available); // Only show guides with availability
+                    .filter(g => g.is_available);
                 
-                console.log("✅ Guides with availability:", formattedGuides);
+                console.log("✅ Guides with availability:", formattedGuides.length, formattedGuides);
                 setAvailableGuides(formattedGuides);
             } catch (err) {
                 console.error("❌ Error fetching guides:", err);
@@ -431,12 +470,47 @@ function MapApp({ user, profile, guide }) {
 
     function startBookingFlow() {
         // Clear any previous state when starting a new booking
+        setBrowseMode('trip');
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
         setChalets([]);
         setFishType('');
         setNeedsChalet(true);
+        setNumberOfPeople(2);
+        setFishingZones([]);
+        setStartDate('');
+        setEndDate('');
+        setDateConflicts(null);
+        setBookingStep(1);
+    }
+
+    function startGuideFlow() {
+        // Guide-only browsing flow (uses same booking steps, chalet disabled)
+        setBrowseMode('guide');
+        setSelectedPoint(null);
+        setSelectedChalet(null);
+        setSelectedGuide(null);
+        setChalets([]);
+        setFishType('');
+        setNeedsChalet(false); // No chalet in guide-only mode
+        setNumberOfPeople(2);
+        setFishingZones([]);
+        setStartDate('');
+        setEndDate('');
+        setDateConflicts(null);
+        setBookingStep(1);
+    }
+
+    function startChaletFlow() {
+        // Chalet-only browsing flow (guide is optional, chalet is required)
+        setBrowseMode('chalet');
+        setSelectedPoint(null);
+        setSelectedChalet(null);
+        setSelectedGuide(null);
+        setChalets([]);
+        setFishType('');
+        setNeedsChalet(true); // Always need chalet in chalet mode
         setNumberOfPeople(2);
         setFishingZones([]);
         setStartDate('');
@@ -500,14 +574,27 @@ function MapApp({ user, profile, guide }) {
     }
 
     function proceedToStep3() {
-        // Validate step 2 selection
-        if (!selectedGuide && needsChalet && !selectedChalet) {
-            alert('Veuillez sélectionner au moins un guide ou un chalet.');
-            return;
-        }
-        if (!selectedGuide && !needsChalet) {
-            alert('Veuillez sélectionner un guide.');
-            return;
+        // Validate step 2 selection based on browseMode
+        if (browseMode === 'chalet') {
+            if (!selectedChalet) {
+                alert('Veuillez sélectionner un chalet.');
+                return;
+            }
+        } else if (browseMode === 'guide') {
+            if (!selectedGuide) {
+                alert('Veuillez sélectionner un guide.');
+                return;
+            }
+        } else {
+            // Trip mode
+            if (!selectedGuide && needsChalet && !selectedChalet) {
+                alert('Veuillez sélectionner au moins un guide ou un chalet.');
+                return;
+            }
+            if (!selectedGuide && !needsChalet) {
+                alert('Veuillez sélectionner un guide.');
+                return;
+            }
         }
         setBookingStep(3);
     }
@@ -518,16 +605,68 @@ function MapApp({ user, profile, guide }) {
         setIsCreatingBooking(true);
         
         try {
+            const guideNeedsStripe = selectedGuide && selectedTimeSlots.length > 0 
+                && selectedGuide.stripe_charges_enabled 
+                && selectedGuide.hourly_rate > 0;
+            
+            // If guide needs Stripe payment, open CheckoutModal for guide first
+            if (guideNeedsStripe) {
+                // Calculate total hours from all selected time slots
+                const totalHours = selectedTimeSlots.reduce((sum, slot) => {
+                    const start = new Date(slot.startTime);
+                    const end = new Date(slot.endTime);
+                    return sum + (end - start) / (1000 * 60 * 60);
+                }, 0);
+                
+                // Use the first/last slot for the combined booking timerange
+                const sortedSlots = [...selectedTimeSlots].sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+                
+                const guideCheckoutData = {
+                    guideId: selectedGuide.guide_id,
+                    startTime: sortedSlots[0].startTime,
+                    endTime: sortedSlots[sortedSlots.length - 1].endTime,
+                    customerName: user?.user_metadata?.name || 'Guest',
+                    customerEmail: user?.email || '',
+                    tripType: `Pêche ${FISH_TYPES.find(f => f.value === fishType)?.label || fishType}`,
+                    numberOfPeople: numberOfPeople,
+                    notes: `Réservation via Monde Sauvage - ${fishType}`,
+                    durationHours: totalHours,
+                    hourlyRate: selectedGuide.hourly_rate,
+                    totalAmount: selectedGuide.hourly_rate * totalHours,
+                    allSlots: selectedTimeSlots
+                };
+                
+                // Save chalet data for after guide payment succeeds
+                if (needsChalet && selectedChalet) {
+                    setPendingChaletBooking({
+                        chaletId: selectedChalet.key,
+                        startDate: startDate,
+                        endDate: endDate,
+                        customerName: user?.user_metadata?.name || 'Guest',
+                        customerEmail: user?.email || '',
+                        notes: `Réservation via Monde Sauvage - ${numberOfPeople} personne(s) - Guide: ${selectedGuide.name}`,
+                        pricePerNight: selectedChalet.price_per_night || 0,
+                        chaletName: selectedChalet.name || selectedChalet.chalet_name || 'Chalet'
+                    });
+                }
+                
+                setPaymentCheckoutData(guideCheckoutData);
+                setPaymentCheckoutType('guide');
+                setShowPaymentCheckout(true);
+                setIsCreatingBooking(false);
+                return; // Wait for payment callback
+            }
+            
+            // No Stripe needed — use existing direct flow
             const bookingResults = {
                 guideBookings: [],
                 chaletBooking: null
             };
             
-            // 1. Create guide bookings if guide is selected with time slots
+            // 1. Create guide bookings directly (no Stripe)
             if (selectedGuide && selectedTimeSlots.length > 0) {
                 console.log('📅 Creating guide bookings for selected time slots:', selectedTimeSlots);
                 
-                // Create a booking for each selected time slot
                 for (const slot of selectedTimeSlots) {
                     const guideBookingData = {
                         guideId: selectedGuide.guide_id,
@@ -539,7 +678,6 @@ function MapApp({ user, profile, guide }) {
                         numberOfPeople: numberOfPeople,
                         notes: `Réservation via Monde Sauvage - ${fishType}`,
                         status: 'pending',
-                        // Skip availability check since user selected from pre-fetched available slots
                         skipAvailabilityCheck: true
                     };
                     
@@ -549,7 +687,7 @@ function MapApp({ user, profile, guide }) {
                 }
             }
             
-            // 2. Create chalet booking if chalet is selected and needed
+            // 2. Create chalet booking directly (no Stripe)
             if (needsChalet && selectedChalet) {
                 console.log('🏠 Creating chalet booking:', selectedChalet);
                 
@@ -584,8 +722,52 @@ function MapApp({ user, profile, guide }) {
         setBookingStep(4);
     }
 
+    // Handle payment success from the main booking flow CheckoutModal
+    async function handleMainFlowPaymentSuccess(result) {
+        console.log('💳 Payment success for', paymentCheckoutType, result);
+        setShowPaymentCheckout(false);
+        setPaymentCheckoutData(null);
+        
+        if (paymentCheckoutType === 'guide') {
+            // Guide payment done. Check if there's a pending chalet booking
+            if (pendingChaletBooking) {
+                const chaletData = pendingChaletBooking;
+                setPendingChaletBooking(null);
+                
+                // For now, create chalet booking directly (chalet Stripe handled via ChaletDetailModal separately)
+                try {
+                    const chaletBooking = await createBooking({
+                        chaletId: chaletData.chaletId,
+                        startDate: chaletData.startDate,
+                        endDate: chaletData.endDate,
+                        customerName: chaletData.customerName,
+                        customerEmail: chaletData.customerEmail,
+                        notes: chaletData.notes
+                    });
+                    console.log('✅ Chalet booking created after guide payment:', chaletBooking);
+                } catch (err) {
+                    console.warn('⚠️ Chalet booking failed after guide payment:', err);
+                }
+            }
+            setPaymentCheckoutType(null);
+            setBookingStep(4);
+        } else if (paymentCheckoutType === 'chalet') {
+            setPaymentCheckoutType(null);
+            setBookingStep(4);
+        }
+    }
+
+    function handleMainFlowPaymentClose() {
+        setShowPaymentCheckout(false);
+        setPaymentCheckoutData(null);
+        setPaymentCheckoutType(null);
+        setPendingChaletBooking(null);
+        setIsCreatingBooking(false);
+    }
+
     function resetBookingFlow() {
         setBookingStep(0);
+        setBrowseMode('trip');
         setStartDate("");
         setEndDate("");
         setNumberOfPeople(2);
@@ -605,20 +787,30 @@ function MapApp({ user, profile, guide }) {
         setSelectedTimeSlots([]);
         setBookingError(null);
         setIsCreatingBooking(false);
+        // Reset payment state
+        setShowPaymentCheckout(false);
+        setPaymentCheckoutData(null);
+        setPaymentCheckoutType(null);
+        setPendingChaletBooking(null);
     }
 
     // Validation for step 1: preferences + dates
+    // In chalet-only mode, fish type is optional
     const canProceedStep1 = numberOfPeople > 0 && 
-        fishType !== '' && 
+        (browseMode === 'chalet' || fishType !== '') && 
         startDate && 
         endDate && 
         new Date(endDate) > new Date(startDate);
 
     // Validation for step 2: guide/chalet selection
-    // If a guide is selected, require at least one time slot to be selected
-    const canProceedStep2 = (selectedGuide && selectedTimeSlots.length > 0) || 
-        (!selectedGuide && needsChalet && selectedChalet) ||
-        (selectedGuide && selectedTimeSlots.length > 0 && needsChalet && selectedChalet);
+    // Adapts based on browseMode
+    const canProceedStep2 = browseMode === 'chalet'
+        ? (selectedChalet != null) // Chalet mode: just need a chalet
+        : browseMode === 'guide'
+        ? (selectedGuide && selectedTimeSlots.length > 0) // Guide mode: need guide + slots
+        : (selectedGuide && selectedTimeSlots.length > 0) || 
+          (!selectedGuide && needsChalet && selectedChalet) ||
+          (selectedGuide && selectedTimeSlots.length > 0 && needsChalet && selectedChalet);
 
     // Validation for step 3: availability confirmed (dates already validated in step 1)
     const canProceedStep3 = !dateConflicts?.guide && 
@@ -630,13 +822,17 @@ function MapApp({ user, profile, guide }) {
                 onClick={onClick}
                 radius={radius}
                 login={login}
-                GuideOpen={setIsGuideOpen}
                 isTripOpen={startBookingFlow}
+                isGuideFlowOpen={startGuideFlow}
+                isChaletFlowOpen={startChaletFlow}
+                isAccountSettingsOpen={() => setIsAccountSettingsOpen(true)}
                 user={user}
                 profile={profile}
+                guide={guide}
                 isRejoindreOpen={setIsRejoindreOpen}
                 isEtablissementOpen={setIsEtablissementOpen}
                 // Pass booking flow state to control the sidebar
+                browseMode={browseMode}
                 bookingStep={bookingStep}
                 setBookingStep={setBookingStep}
                 startDate={startDate}
@@ -698,11 +894,17 @@ function MapApp({ user, profile, guide }) {
                 onLoginClose={() => setIsLoginOpen(false)}
             />
             
-            <Guide
-                isGuideOpen={isGuideOpen}
-                closeGuide={() => setIsGuideOpen(false)}
+            <GuideClientModal
+                isOpen={isGuideClientModalOpen}
+                onClose={() => {
+                    setIsGuideClientModalOpen(false);
+                    if (settingsWasOpenBeforeClients) {
+                        setSettingsWasOpenBeforeClients(false);
+                        setIsAccountSettingsOpen(true);
+                    }
+                }}
                 guide={guide}
-                onOpenHelp={() => openOnboarding(true)}
+                profile={profile}
             />
 
             <JoinUs
@@ -713,6 +915,20 @@ function MapApp({ user, profile, guide }) {
             <EtablissementModal
                 isEtablissementOpen={isEtablissementOpen}
                 onClose={() => setIsEtablissementOpen(false)}
+            />
+
+            <AccountSettingsModal
+                isOpen={isAccountSettingsOpen}
+                onClose={() => setIsAccountSettingsOpen(false)}
+                user={user}
+                profile={profile}
+                guide={guide}
+                onOpenClients={() => {
+                    setSettingsWasOpenBeforeClients(true);
+                    setIsAccountSettingsOpen(false);
+                    setIsGuideClientModalOpen(true);
+                }}
+                onOpenHelp={() => openOnboarding(true)}
             />
 
             <GuideBookingModal
@@ -745,6 +961,18 @@ function MapApp({ user, profile, guide }) {
                 onHighlightElement={setHighlightedElement}
                 startStep={onboardingStartStep}
             />
+
+            {/* Stripe Payment Checkout for main booking flow */}
+            {showPaymentCheckout && paymentCheckoutData && (
+                <CheckoutModal
+                    isOpen={showPaymentCheckout}
+                    onClose={handleMainFlowPaymentClose}
+                    bookingData={paymentCheckoutData}
+                    bookingType={paymentCheckoutType}
+                    title={paymentCheckoutType === 'guide' ? selectedGuide?.name : selectedChalet?.name}
+                    onSuccess={handleMainFlowPaymentSuccess}
+                />
+            )}
             
         </div>
     );

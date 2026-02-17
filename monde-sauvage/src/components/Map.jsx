@@ -3,15 +3,19 @@ import supabase from '../utils/supabase.js';
 
 const GaspesieMap = ({ 
   onClick, 
-  GuideOpen, 
   login, 
   user, 
   profile, 
-  isTripOpen, 
+  guide,
+  isTripOpen,
+  isGuideFlowOpen,
+  isChaletFlowOpen,
+  isAccountSettingsOpen,
   radius, 
   isRejoindreOpen, 
   isEtablissementOpen,
   // Booking flow props
+  browseMode,
   bookingStep,
   setBookingStep,
   startDate,
@@ -428,7 +432,7 @@ const GaspesieMap = ({
       }
     ];
     
-    mapboxgl.accessToken = 'pk.eyJ1IjoibGVvY2hvdWluYXJkIiwiYSI6ImNtZmltbnYwbzBvNnUycW9zMWZ1ZHB4dGUifQ.-WHGlNmEXAleoIE4-nkKSA';
+    mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
 
     const gaspBounds = [
       [-68.05770988533543, 47.61203514013091],
@@ -603,7 +607,7 @@ const GaspesieMap = ({
         top: 0,
         width: '20vw',
         height: '100vh',
-        background: 'linear-gradient(165deg, #F9F7F3 0%, #E8F3ED 100%)',
+        background: '#ffffff',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'flex-start',
@@ -636,7 +640,7 @@ const GaspesieMap = ({
                 ←
               </button>
               <h2 style={{ margin: 0, fontSize: '18px', color: '#1F3A2E', fontWeight: '600' }}>
-                Planifier votre séjour
+                {browseMode === 'guide' ? 'Trouver un guide' : browseMode === 'chalet' ? 'Trouver un chalet' : 'Planifier votre séjour'}
               </h2>
             </div>
 
@@ -659,7 +663,7 @@ const GaspesieMap = ({
             {bookingStep === 1 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
-                  1. Préférences de voyage
+                  1. {browseMode === 'guide' ? 'Préférences de guide' : browseMode === 'chalet' ? 'Préférences d\'hébergement' : 'Préférences de voyage'}
                 </h3>
                 
                 {/* Number of people */}
@@ -789,7 +793,8 @@ const GaspesieMap = ({
                   )}
                 </div>
 
-                {/* Needs chalet checkbox */}
+                {/* Needs chalet checkbox - only shown in 'trip' mode */}
+                {browseMode === 'trip' && (
                 <div style={{ 
                   display: 'flex', 
                   alignItems: 'center', 
@@ -823,6 +828,7 @@ const GaspesieMap = ({
                     J'ai besoin d'un chalet
                   </label>
                 </div>
+                )}
 
                 <button
                   type="button"
@@ -850,7 +856,7 @@ const GaspesieMap = ({
             {bookingStep === 2 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: 'calc(100vh - 200px)', overflow: 'hidden' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E', flexShrink: 0 }}>
-                  2. Sélectionnez guide et hébergement
+                  2. {browseMode === 'guide' ? 'Sélectionnez un guide' : browseMode === 'chalet' ? 'Sélectionnez un chalet' : 'Sélectionnez guide et hébergement'}
                 </h3>
 
                 {/* Summary of preferences */}
@@ -876,7 +882,8 @@ const GaspesieMap = ({
                   gap: '16px',
                   paddingRight: '4px'
                 }}>
-                  {/* GUIDE SECTION */}
+                  {/* GUIDE SECTION - hidden in chalet-only mode */}
+                  {browseMode !== 'chalet' && (
                   <div style={{ 
                     borderBottom: needsChalet ? '1px solid #E5E7EB' : 'none', 
                     paddingBottom: needsChalet ? '16px' : '0'
@@ -1084,8 +1091,9 @@ const GaspesieMap = ({
                     </div>
                   )}
                 </div>
+                )}
 
-                {/* CHALET SECTION - only if needsChalet is true */}
+                {/* CHALET SECTION - only if needsChalet is true (always shown in chalet mode) */}
                 {needsChalet && (
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <h4 style={{ margin: '0 0 8px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
@@ -1775,72 +1783,238 @@ const GaspesieMap = ({
                 }}>
                   {user.user_metadata.name}
                 </p>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  style={{
-                    padding: '6px 14px',
-                    backgroundColor: 'transparent',
-                    color: '#5A7766',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    fontSize: '13px',
-                    textDecoration: 'underline',
-                    transition: 'color 0.2s ease'
-                  }}
-                  onMouseOver={(e) => {
-                    e.target.style.color = '#1F3A2E';
-                  }}
-                  onMouseOut={(e) => {
-                    e.target.style.color = '#5A7766';
-                  }}
-                >
-                  Se déconnecter
-                </button>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={isAccountSettingsOpen}
+                    data-onboarding="account-settings"
+                    style={{
+                      padding: '6px 14px',
+                      backgroundColor: 'transparent',
+                      color: '#5A7766',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      fontSize: '13px',
+                      transition: 'color 0.2s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                    onMouseOver={(e) => { e.target.style.color = '#2D5F4C'; }}
+                    onMouseOut={(e) => { e.target.style.color = '#5A7766'; }}
+                  >
+                    ⚙️ Paramètres
+                  </button>
+                  <span style={{ color: '#D1D5DB' }}>|</span>
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    style={{
+                      padding: '6px 14px',
+                      backgroundColor: 'transparent',
+                      color: '#5A7766',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      fontSize: '13px',
+                      textDecoration: 'underline',
+                      transition: 'color 0.2s ease'
+                    }}
+                    onMouseOver={(e) => { e.target.style.color = '#1F3A2E'; }}
+                    onMouseOut={(e) => { e.target.style.color = '#5A7766'; }}
+                  >
+                    Se déconnecter
+                  </button>
+                </div>
               </div>
             )}
 
-            {/* Primary CTA */}
-            <button
-              type="button"
-              onClick={() => isTripOpen(true)}
-              style={{
-                width: '100%',
-                padding: '16px 20px',
-                backgroundColor: '#2D5F4C',
-                color: '#FFFCF7',
-                border: '2px solid #4A9B8E',
-                borderRadius: '12px',
-                cursor: 'pointer',
-                fontWeight: '600',
-                fontSize: '17px',
-                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                boxShadow: '0 4px 12px rgba(45, 95, 76, 0.15), 0 2px 4px rgba(45, 95, 76, 0.08)',
-                display: 'flex',
-                alignItems: 'center',
+            {/* Floating Icon Menu - Modern Minimal Design */}
+            <div style={{
+              width: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '36px',
+              marginBottom: '40px',
+              padding: '20px 0'
+            }}>
+              {/* Trip Icon - Right Aligned */}
+              <div style={{ 
+                display: 'flex', 
                 justifyContent: 'center',
-                gap: '10px',
-                marginBottom: '32px'
-              }}
-              onMouseOver={(e) => {
-                e.target.style.backgroundColor = '#3A7360';
-                e.target.style.transform = 'translateY(-2px)';
-                e.target.style.boxShadow = '0 8px 20px rgba(45, 95, 76, 0.25), 0 4px 8px rgba(45, 95, 76, 0.12)';
-              }}
-              onMouseOut={(e) => {
-                e.target.style.backgroundColor = '#2D5F4C';
-                e.target.style.transform = 'translateY(0)';
-                e.target.style.boxShadow = '0 4px 12px rgba(45, 95, 76, 0.15), 0 2px 4px rgba(45, 95, 76, 0.08)';
-              }}
-            >
-              <span style={{ fontSize: '20px' }}></span>
-              Planifiez votre séjour
-            </button>
+                alignItems: 'center'
+              }}>
+                <button
+                  type="button"
+                  onClick={() => isTripOpen(true)}
+                  style={{
+                    background: '#5b6854',
+                    border: '2px solid #4A9B8E',
+                    padding: '16px 24px',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    opacity: 1,
+                    transform: 'scale(1)',
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: '16px',
+                    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.1)',
+                    width: '100%'
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.03)';
+                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(45, 95, 76, 0.2)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 95, 76, 0.1)';
+                  }}
+                >
+                  <span style={{
+                    fontSize: '15px',
+                    fontWeight: '600',
+                    color: '#ffffff',
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap',
+                    fontFamily: "'Cabin', 'Georgia', 'Trebuchet MS', sans-serif",
+                    letterSpacing: '0.3px',
+                    textTransform: 'uppercase',
+                    flex: 1
+                  }}>
+                    Planifiez votre séjour
+                  </span>
+                  
+                </button>
+              </div>
 
-            {/* Divider */}
-            {(profile?.type === "guide" || profile?.type === "establishment" || profile?.type === "admin") && (
+              {/* Fish Icon - Left Aligned */}
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'center',
+                alignItems: 'center'
+              }}>
+                <button
+                  type="button"
+                  onClick={() => isGuideFlowOpen(true)}
+                  style={{
+                    background: '#FFFCF7',
+                    border: '2px solid #4A9B8E',
+                    padding: '16px 24px',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    opacity: 1,
+                    transform: 'scale(1)',
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: '16px',
+                    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.1)',
+                    width: '100%'
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.03)';
+                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(45, 95, 76, 0.2)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 95, 76, 0.1)';
+                  }}
+                >
+                  <img 
+                    src="/fish.png" 
+                    alt="Trouvez un guide" 
+                    style={{ 
+                      width: '60px', 
+                      height: '60px', 
+                      display: 'block',
+                      pointerEvents: 'none'
+                    }} 
+                  />
+                  <span style={{
+                    fontSize: '15px',
+                    fontWeight: '600',
+                    color: '#2D5F4C',
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap',
+                    fontFamily: "'Cabin', 'Georgia', 'Trebuchet MS', sans-serif",
+                    letterSpacing: '0.3px',
+                    textTransform: 'uppercase',
+                    flex: 1
+                  }}>
+                    Trouvez un guide
+                  </span>
+                </button>
+              </div>
+
+              {/* Chalet Icon - Right Aligned */}
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'center',
+                alignItems: 'center'
+              }}>
+                <button
+                  type="button"
+                  onClick={() => isChaletFlowOpen(true)}
+                  style={{
+                    background: '#FFFCF7',
+                    border: '2px solid #4A9B8E',
+                    padding: '16px 24px',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    opacity: 1,
+                    transform: 'scale(1)',
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: '16px',
+                    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.1)',
+                    width: '100%'
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.03)';
+                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(45, 95, 76, 0.2)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 95, 76, 0.1)';
+                  }}
+                >
+                  <span style={{
+                    fontSize: '15px',
+                    fontWeight: '600',
+                    color: '#2D5F4C',
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap',
+                    fontFamily: "'Cabin', 'Georgia', 'Trebuchet MS', sans-serif",
+                    letterSpacing: '0.3px',
+                    textTransform: 'uppercase',
+                    flex: 1
+                  }}>
+                    Réservez un chalet
+                  </span>
+                  <img 
+                    src="/chalet.png" 
+                    alt="Réservez un chalet" 
+                    style={{ 
+                      width: '60px', 
+                      height: '60px', 
+                      display: 'block',
+                      pointerEvents: 'none'
+                    }} 
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Divider - only show if there are admin/establishment actions */}
+            {(profile?.type === "establishment" || profile?.type === "admin") && (
               <div style={{
                 width: '60%',
                 height: '1px',
@@ -1850,88 +2024,15 @@ const GaspesieMap = ({
               }}></div>
             )}
 
-            {/* Secondary Actions Group */}
-            <div style={{
-              width: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-              marginBottom: '32px'
-            }}>
-              {(profile?.type === "guide" || profile?.type === "admin") && (
-                <button
-                  type="button"
-                  onClick={() => GuideOpen(true)}
-                  data-onboarding="guide-button"
-                  style={{
-                    width: '100%',
-                    padding: '14px 20px',
-                    backgroundColor: '#FFFCF7',
-                    color: '#2D5F4C',
-                    border: '2px solid #2D5F4C',
-                    borderRadius: '12px',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    fontSize: '15px',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    boxShadow: '0 2px 6px rgba(45, 95, 76, 0.08)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '10px'
-                  }}
-                  onMouseOver={(e) => {
-                    e.target.style.backgroundColor = 'rgba(74, 155, 142, 0.12)';
-                    e.target.style.transform = 'translateY(-1px)';
-                    e.target.style.boxShadow = '0 4px 12px rgba(45, 95, 76, 0.15)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.target.style.backgroundColor = '#FFFCF7';
-                    e.target.style.transform = 'translateY(0)';
-                    e.target.style.boxShadow = '0 2px 6px rgba(45, 95, 76, 0.08)';
-                  }}
-                >
-                  <span style={{ fontSize: '18px' }}></span>
-                  Guide
-                </button>
-              )}
-
-              {/* Help button for guides/admins */}
-              {(profile?.type === "guide" || profile?.type === "admin") && onOpenHelp && (
-                <button
-                  type="button"
-                  onClick={onOpenHelp}
-                  style={{
-                    width: '100%',
-                    padding: '10px 16px',
-                    backgroundColor: 'transparent',
-                    color: '#5A7766',
-                    border: '1px dashed #5A7766',
-                    borderRadius: '10px',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    fontSize: '13px',
-                    transition: 'all 0.2s ease',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                  }}
-                  onMouseOver={(e) => {
-                    e.target.style.backgroundColor = 'rgba(90, 119, 102, 0.08)';
-                    e.target.style.borderStyle = 'solid';
-                  }}
-                  onMouseOut={(e) => {
-                    e.target.style.backgroundColor = 'transparent';
-                    e.target.style.borderStyle = 'dashed';
-                  }}
-                >
-                  <span style={{ fontSize: '14px' }}>❓</span>
-                  Aide ?
-                </button>
-              )}
-
-              {(profile?.type === "establishment" || profile?.type === "admin") && (
+            {/* Admin/Establishment Actions */}
+            {(profile?.type === "establishment" || profile?.type === "admin") && (
+              <div style={{
+                width: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                marginBottom: '32px'
+              }}>
                 <button
                   type="button"
                   onClick={() => isEtablissementOpen(true)}
@@ -1966,8 +2067,8 @@ const GaspesieMap = ({
                   <span style={{ fontSize: '18px' }}></span>
                   Établissement
                 </button>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Divider */}
             <div style={{
@@ -2077,17 +2178,17 @@ const GaspesieMap = ({
           onClick={login}
           style={{
             position: 'fixed',
-            top: '50px',
-            left: '50px',
+            top: '20px',
+            left: '24px',
             zIndex: 1000,
-            padding: '12px 24px',
+            padding: '10px 20px',
             backgroundColor: '#2D5F4C',
             color: '#FFFCF7',
             border: '2px solid #4A9B8E',
             borderRadius: '12px',
             cursor: 'pointer',
             fontWeight: '600',
-            fontSize: '15px',
+            fontSize: '14px',
             boxShadow: '0 4px 12px rgba(45, 95, 76, 0.2)',
             transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
           }}

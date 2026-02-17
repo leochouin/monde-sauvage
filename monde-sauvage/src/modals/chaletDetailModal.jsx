@@ -6,6 +6,7 @@ import {
     createBooking 
 } from '../utils/bookingService.js';
 import DateRangePicker from '../components/DateRangePicker.jsx';
+import CheckoutModal from './checkoutModal.jsx';
 
 const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
     const [chaletData, setChaletData] = useState(null);
@@ -27,6 +28,10 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
     const [bookingSuccess, setBookingSuccess] = useState(false);
     const [bookingError, setBookingError] = useState(null);
     const [blockedDates, setBlockedDates] = useState([]);
+
+    // Stripe checkout modal state
+    const [showCheckout, setShowCheckout] = useState(false);
+    const [checkoutBookingData, setCheckoutBookingData] = useState(null);
 
     useEffect(() => {
         if (isOpen && chalet) {
@@ -134,33 +139,31 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
             return;
         }
 
-        setIsSubmittingBooking(true);
-        setBookingError(null);
+        // Open the Stripe Checkout modal instead of creating booking directly
+        setCheckoutBookingData({
+            chaletId: chaletData.key,
+            startDate: checkInDate,
+            endDate: checkOutDate,
+            customerName: guestName,
+            customerEmail: guestEmail,
+            notes: notes,
+        });
+        setShowCheckout(true);
+    };
 
-        try {
-            const booking = await createBooking({
-                chaletId: chaletData.key,
-                startDate: checkInDate,
-                endDate: checkOutDate,
-                customerName: guestName,
-                customerEmail: guestEmail,
-                notes: notes
-            });
-
-            console.log('✅ Reservation created:', booking);
-            setBookingSuccess(true);
-            
-            // Reset form after 3 seconds
-            setTimeout(() => {
-                resetReservationForm();
-            }, 3000);
-
-        } catch (error) {
-            console.error('Error creating reservation:', error);
-            setBookingError(error.message || 'Erreur lors de la création de la réservation');
-        } finally {
-            setIsSubmittingBooking(false);
-        }
+    // Called when payment succeeds
+    const handlePaymentSuccess = (result) => {
+        console.log('✅ Payment successful:', result);
+        setBookingSuccess(true);
+        setShowCheckout(false);
+        
+        // Reload blocked dates to reflect the new booking
+        loadBlockedDates();
+        
+        // Reset form after delay
+        setTimeout(() => {
+            resetReservationForm();
+        }, 5000);
     };
 
     const loadBlockedDates = async () => {
@@ -435,10 +438,10 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
                             {bookingSuccess ? (
                                 <div className="reservation-success-message">
                                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✅</div>
-                                    <h3 style={{ marginBottom: '0.5rem' }}>Réservation confirmée!</h3>
-                                    <p>Votre demande de réservation a été enregistrée avec succès.</p>
+                                    <h3 style={{ marginBottom: '0.5rem' }}>Réservation confirmée et payée!</h3>
+                                    <p>Votre réservation a été confirmée avec succès.</p>
                                     <p style={{ fontSize: '0.9rem', color: '#64748b' }}>
-                                        Un email de confirmation sera envoyé à {guestEmail}
+                                        Un reçu de paiement sera envoyé à {guestEmail}
                                     </p>
                                 </div>
                             ) : (
@@ -590,12 +593,11 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
                                                 disabled={isSubmittingBooking || availabilityStatus !== 'available'}
                                                 className="reserve-button"
                                             >
-                                                {isSubmittingBooking ? 'Réservation en cours...' : 'Réserver'}
+                                                {isSubmittingBooking ? 'Réservation en cours...' : '💳 Réserver et payer'}
                                             </button>
 
                                             <p className="reservation-note">
-                                                💡 Cette réservation est en attente de confirmation. 
-                                                Aucun paiement n'est requis pour le moment.
+                                                💡 Paiement sécurisé par Stripe. Vous serez débité après confirmation.
                                             </p>
                                         </form>
                                     )}
@@ -610,6 +612,15 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
                     </>
                 )}
             </div>
+
+            {/* Stripe Checkout Modal */}
+            <CheckoutModal
+                isOpen={showCheckout}
+                onClose={() => setShowCheckout(false)}
+                chalet={chaletData}
+                bookingData={checkoutBookingData}
+                onSuccess={handlePaymentSuccess}
+            />
         </div>
     );
 };

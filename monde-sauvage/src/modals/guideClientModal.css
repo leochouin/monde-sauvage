@@ -1,0 +1,677 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Guide Client Modal Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Overlay & Modal Shell ──────────────────────────────────────────────── */
+
+.gc-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 20000;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  animation: gc-fadeIn 0.2s ease;
+}
+
+.gc-modal {
+  background: #FFFCF7;
+  border-radius: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: none;
+  animation: gc-slideUp 0.25s ease;
+  overflow: hidden;
+}
+
+@keyframes gc-fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes gc-slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.gc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.5rem 2.5rem;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+  background-color: white;
+}
+
+.gc-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.gc-header h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  color: #2c5530;
+  font-weight: 700;
+}
+
+.gc-back-btn {
+  background: none;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #374151;
+  transition: all 0.15s;
+}
+
+.gc-back-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.gc-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.8rem;
+  cursor: pointer;
+  color: #9ca3af;
+  line-height: 1;
+  padding: 0;
+  transition: color 0.15s;
+}
+
+.gc-close-btn:hover {
+  color: #374151;
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+.gc-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem 2.5rem;
+  display: flex;
+  justify-content: center;
+}
+
+.gc-body > * {
+  width: 100%;
+  max-width: 900px;
+}
+
+/* ── Messages ───────────────────────────────────────────────────────────── */
+
+.gc-message {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  margin: 0 1.5rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  animation: gc-fadeIn 0.2s ease;
+}
+
+.gc-message button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  margin-left: auto;
+  font-size: 1.1rem;
+  opacity: 0.6;
+}
+
+.gc-message button:hover {
+  opacity: 1;
+}
+
+.gc-error {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.gc-success {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+
+.gc-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  align-items: center;
+}
+
+.gc-search-wrapper {
+  flex: 1;
+  position: relative;
+}
+
+.gc-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
+.gc-search {
+  width: 100%;
+  padding: 0.65rem 2.2rem 0.65rem 2.4rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  transition: border-color 0.15s;
+  background: #f9fafb;
+}
+
+.gc-search:focus {
+  outline: none;
+  border-color: #2c5530;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(44, 85, 48, 0.1);
+}
+
+.gc-search-clear {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: #9ca3af;
+  padding: 0 4px;
+}
+
+.gc-search-clear:hover {
+  color: #374151;
+}
+
+/* ── Loading & Empty States ─────────────────────────────────────────────── */
+
+.gc-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 3rem;
+  color: #6b7280;
+}
+
+.gc-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #2c5530;
+  border-radius: 50%;
+  animation: gc-spin 0.7s linear infinite;
+}
+
+.gc-spinner-sm {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #2c5530;
+  border-radius: 50%;
+  animation: gc-spin 0.7s linear infinite;
+}
+
+@keyframes gc-spin {
+  to { transform: rotate(360deg); }
+}
+
+.gc-empty {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: #6b7280;
+}
+
+.gc-empty-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.gc-empty p {
+  margin: 0.25rem 0;
+}
+
+.gc-empty-sub {
+  font-size: 0.85rem;
+  color: #9ca3af;
+  margin-bottom: 1.5rem !important;
+}
+
+/* ── Client List ────────────────────────────────────────────────────────── */
+
+.gc-client-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.gc-client-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  transition: all 0.15s;
+}
+
+.gc-client-card:hover {
+  border-color: #d1d5db;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.gc-client-info {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.gc-client-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2c5530, #4a9b8e);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.gc-client-avatar-lg {
+  width: 56px;
+  height: 56px;
+  font-size: 1.1rem;
+}
+
+.gc-client-details {
+  min-width: 0;
+}
+
+.gc-client-name {
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 0.95rem;
+}
+
+.gc-client-meta {
+  color: #6b7280;
+  font-size: 0.82rem;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gc-client-notes {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  font-style: italic;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+.gc-client-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+.gc-btn {
+  padding: 0.55rem 1rem;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.gc-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gc-btn-primary {
+  background: #2c5530;
+  color: #fff;
+}
+
+.gc-btn-primary:hover:not(:disabled) {
+  background: #1f3d22;
+  box-shadow: 0 2px 8px rgba(44, 85, 48, 0.25);
+}
+
+.gc-btn-secondary {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.gc-btn-secondary:hover:not(:disabled) {
+  background: #e5e7eb;
+}
+
+.gc-btn-book {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.gc-btn-book:hover:not(:disabled) {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.gc-btn-icon {
+  padding: 0.4rem 0.6rem;
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+}
+
+.gc-btn-icon:hover {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+}
+
+.gc-btn-danger-icon:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.gc-btn-danger-sm {
+  background: #ef4444;
+  color: #fff;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+}
+
+.gc-btn-danger-sm:hover {
+  background: #dc2626;
+}
+
+.gc-btn-secondary-sm {
+  background: #f3f4f6;
+  color: #374151;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+}
+
+.gc-btn-secondary-sm:hover {
+  background: #e5e7eb;
+}
+
+.gc-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: #991b1b;
+}
+
+/* ── Forms ───────────────────────────────────────────────────────────────── */
+
+.gc-form-view,
+.gc-book-view {
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.gc-form-section {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.gc-form-section:last-of-type {
+  border-bottom: none;
+}
+
+.gc-form-section h3 {
+  font-size: 1rem;
+  color: #2c5530;
+  margin: 0 0 1rem 0;
+  font-weight: 600;
+}
+
+.gc-form-group {
+  margin-bottom: 1rem;
+}
+
+.gc-form-group label {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.gc-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.gc-input {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  transition: all 0.15s;
+  background: #fff;
+  color: #1f2937;
+  box-sizing: border-box;
+}
+
+.gc-input:focus {
+  outline: none;
+  border-color: #2c5530;
+  box-shadow: 0 0 0 3px rgba(44, 85, 48, 0.1);
+}
+
+.gc-input:disabled {
+  background: #f9fafb;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.gc-textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+
+select.gc-input {
+  cursor: pointer;
+  appearance: auto;
+}
+
+.gc-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* ── Booking: Client Summary ────────────────────────────────────────────── */
+
+.gc-book-client-summary {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  margin-bottom: 1.5rem;
+}
+
+/* ── Availability ───────────────────────────────────────────────────────── */
+
+.gc-availability {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.gc-checking {
+  background: #f0f8ff;
+  color: #0066cc;
+  border: 1px solid #bfdbfe;
+}
+
+.gc-available {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.gc-unavailable {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+/* ── DatePicker overrides ───────────────────────────────────────────────── */
+
+.gc-form-group .react-datepicker-wrapper {
+  width: 100%;
+}
+
+.gc-form-group .react-datepicker__input-container input {
+  width: 100%;
+}
+
+/* ── Booked-day indicator on DatePicker calendar ────────────────────────── */
+.react-datepicker__day.grp-day--booked {
+  position: relative;
+  background-color: rgba(220, 38, 38, 0.08) !important;
+  color: #b91c1c !important;
+  border-radius: 50%;
+  border: 1.5px solid #dc2626 !important;
+}
+
+.react-datepicker__day.grp-day--booked::after {
+  content: '✕';
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #dc2626;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.react-datepicker__day.grp-day--booked:hover {
+  background-color: rgba(220, 38, 38, 0.18) !important;
+}
+
+/* ── Guide Reservations Panel DatePicker ─────────────────────────────────── */
+
+.grp-edit-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1.5px solid #D1D5DB;
+  font-size: 14px;
+  color: #1F3A2E;
+  background-color: #FFFCF7;
+  box-sizing: border-box;
+}
+
+.grp-edit-input:focus {
+  outline: none;
+  border-color: #2D5F4C;
+  box-shadow: 0 0 0 3px rgba(45, 95, 76, 0.1);
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .gc-toolbar {
+    flex-direction: column;
+  }
+
+  .gc-toolbar .gc-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .gc-client-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.85rem;
+  }
+
+  .gc-client-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .gc-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .gc-form-actions {
+    flex-direction: column-reverse;
+  }
+
+  .gc-form-actions .gc-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

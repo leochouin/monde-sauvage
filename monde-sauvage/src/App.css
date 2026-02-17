@@ -645,8 +645,10 @@
   overflow: auto;
 }
 
-/* Events outlined */
-.rbc-event { background: #fff !important; color: #000 !important; border: 1px solid rgba(0,0,0,0.9) !important; box-shadow: none !important; }
+/* Events: Allow custom styling from eventStyleGetter (removed background/color overrides) */
+.rbc-event { 
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important; 
+}
 
 
 /* Form Elements */
@@ -1318,14 +1320,30 @@
   background: #fff;
 }
 
-/* Events: black background, white text for contrast */
+/* Events: allow custom colors from eventStyleGetter */
 .rbc-event {
-  background: #000 !important;
-  color: #fff !important;
-  border: none !important;
   padding: 4px 6px !important;
   border-radius: 4px !important;
   font-size: 13px;
+  /* Remove background/color overrides to allow custom event styling */
+}
+
+/* Improve visibility of overlapping events */
+.rbc-event-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Ensure overlapping events are visible in day/week view */
+.rbc-day-slot .rbc-event,
+.rbc-time-slot .rbc-event {
+  position: absolute;
+}
+
+/* Month view: ensure multiple events on same day are stacked properly */
+.rbc-event-label {
+  font-size: 11px;
 }
 
 .rbc-selected {
