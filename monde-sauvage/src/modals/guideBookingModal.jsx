@@ -14,9 +14,10 @@ import React, { useState, useEffect } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import {
-  checkGuideAvailability,
+  checkGuideConflictsServer,
   createGuideBooking,
-  getGuideBookings
+  getGuideBookings,
+  checkGoogleCalendarConnection,
 } from '../utils/guideBookingService';
 import { getGuideClients, createGuideClient } from '../utils/guideClientService';
 import CheckoutModal from './checkoutModal.jsx';
@@ -42,6 +43,9 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [upcomingBookings, setUpcomingBookings] = useState([]);
+  
+  // Calendar connection state — blocks bookings if disconnected
+  const [calendarStatus, setCalendarStatus] = useState(null); // null = loading, 'connected' | 'disconnected' | 'never_connected'
 
   // Saved clients state
   const [savedClients, setSavedClients] = useState([]);
@@ -56,40 +60,47 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
   const [showCheckout, setShowCheckout] = useState(false);
   const [checkoutBookingData, setCheckoutBookingData] = useState(null);
 
-  // ── UTC ↔ Local Date Conversion Helpers ──────────────────────────────────
+  // ── Timezone-Aware Date Helpers ─────────────────────────────────────────
   // DatePicker works with Date objects in the browser's local timezone.
-  // DB stores TIMESTAMPTZ in UTC. We need to preserve the calendar date/time values.
+  // DB stores TIMESTAMPTZ in UTC. We use proper timezone conversion:
+  //   - Incoming ISO strings → Date objects (browser interprets in local tz)
+  //   - Outgoing Date objects → ISO strings via .toISOString() (always UTC)
+  // This ensures the absolute moment in time is always preserved.
   
-  // Convert UTC ISO string to local Date with same year/month/day/hour/minute
-  // Example: "2026-02-21T10:00:00Z" → Date object showing Feb 21, 10:00 in local picker
-  const utcToLocalDate = (isoString) => {
+  // Parse ISO string to a Date object (browser shows in local timezone)
+  // Example: "2026-03-03T13:00:00.000Z" → Date showing Mar 3, 8:00 AM in Montreal
+  const parseISOToDate = (isoString) => {
     if (!isoString) return null;
     const d = new Date(isoString);
-    return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 
-                    d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds());
+    if (isNaN(d.getTime())) {
+      console.error('[DATE BUG GUARD] Invalid date string:', isoString);
+      return null;
+    }
+    return d;
   };
 
-  // Convert local Date to UTC ISO string with same year/month/day/hour/minute
-  // Example: Date showing Feb 21, 10:00 in local picker → "2026-02-21T10:00:00.000Z"
-  const localDateToUTC = (localDate) => {
+  // Convert local Date to UTC ISO string (preserves the absolute moment)
+  // Example: Date for Mar 3, 8:00 AM Montreal → "2026-03-03T13:00:00.000Z"
+  const dateToISO = (localDate) => {
     if (!localDate) return null;
-    const utcDate = new Date(Date.UTC(
-      localDate.getFullYear(),
-      localDate.getMonth(),
-      localDate.getDate(),
-      localDate.getHours(),
-      localDate.getMinutes(),
-      localDate.getSeconds()
-    ));
-    return utcDate.toISOString();
+    const iso = localDate.toISOString();
+    console.log('[DATE TRACE] dateToISO:', {
+      localDisplay: localDate.toLocaleString(),
+      utcISO: iso,
+      tzOffset: localDate.getTimezoneOffset(),
+    });
+    return iso;
   };
 
   // Pre-fill dates from guide's prefilledStartTime/prefilledEndTime if available
   useEffect(() => {
     if (isOpen && guide) {
       // Reset form with prefilled times if available (convert from UTC if ISO strings)
-      const prefilledStart = guide.prefilledStartTime ? utcToLocalDate(guide.prefilledStartTime) : null;
-      const prefilledEnd = guide.prefilledEndTime ? utcToLocalDate(guide.prefilledEndTime) : null;
+      const prefilledStart = guide.prefilledStartTime ? parseISOToDate(guide.prefilledStartTime) : null;
+      const prefilledEnd = guide.prefilledEndTime ? parseISOToDate(guide.prefilledEndTime) : null;
+      if (prefilledStart) {
+        console.log('[DATE TRACE] Prefilled start:', guide.prefilledStartTime, '→ local:', prefilledStart.toLocaleString());
+      }
       
       setFormData(prev => ({
         ...prev,
@@ -105,8 +116,21 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
       loadUpcomingBookings();
       loadSavedClients();
       loadBusyDates();
+      // Check calendar connection status — gate bookings on connectivity
+      checkCalendarConnection();
     }
   }, [isOpen, guide?.id]);
+
+  const checkCalendarConnection = async () => {
+    if (!guide?.id) return;
+    try {
+      const result = await checkGoogleCalendarConnection(guide.id);
+      setCalendarStatus(result.connection_status || (result.connected ? 'connected' : 'disconnected'));
+    } catch (err) {
+      console.error('Failed to check calendar connection:', err);
+      setCalendarStatus('unknown');
+    }
+  };
 
   const loadBusyDates = async () => {
     if (!guide?.id) return;
@@ -125,9 +149,10 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
               return {
                 start,
                 end,
-                // UTC day boundaries for calendar highlighting
-                startDayUTC: Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()),
-                endDayUTC: Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()),
+                // Use LOCAL day boundaries for calendar highlighting
+                // (match how DatePicker interprets dates in the browser's timezone)
+                startDayLocal: new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime(),
+                endDayLocal: new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime(),
               };
             })
         );
@@ -146,11 +171,11 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
   };
 
   // Helper: return CSS class for days that overlap with existing bookings
-  // Uses UTC day comparison to avoid timezone-induced off-by-one errors
+  // Uses LOCAL day comparison (matches DatePicker's local timezone interpretation)
   const getDayClassName = (date) => {
-    const calDayUTC = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    const calDayLocal = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
     const isBooked = busyDates.some(
-      (b) => calDayUTC >= b.startDayUTC && calDayUTC <= b.endDayUTC
+      (b) => calDayLocal >= b.startDayLocal && calDayLocal <= b.endDayLocal
     );
     return isBooked ? 'grp-day--booked' : undefined;
   };
@@ -212,10 +237,11 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
     setError(null);
 
     try {
-      const result = await checkGuideAvailability(
+      // Use server-side conflict check (bypasses RLS, sees ALL bookings)
+      const result = await checkGuideConflictsServer(
         guide.id,
-        localDateToUTC(formData.startTime),
-        localDateToUTC(formData.endTime)
+        dateToISO(formData.startTime),
+        dateToISO(formData.endTime)
       );
 
       setAvailability(result);
@@ -284,12 +310,34 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
       return;
     }
 
+    // Final server-side conflict check right before proceeding to payment/booking.
+    // This catches race conditions where another user booked between the initial
+    // check and the user pressing "Submit".
+    try {
+      setChecking(true);
+      const finalCheck = await checkGuideConflictsServer(
+        guide.id,
+        dateToISO(formData.startTime),
+        dateToISO(formData.endTime)
+      );
+      if (!finalCheck.available) {
+        setAvailability(finalCheck);
+        setError('Ce créneau vient d\'être réservé par un autre utilisateur. Veuillez choisir un autre horaire.');
+        setChecking(false);
+        return;
+      }
+      setChecking(false);
+    } catch (err) {
+      console.warn('Final conflict check failed — proceeding (server will validate):', err);
+      setChecking(false);
+    }
+
     // If guide has Stripe set up and has an hourly rate, go through payment flow
     if (guide?.stripe_charges_enabled && guide?.hourly_rate > 0) {
       setCheckoutBookingData({
         guideId: guide.id,
-        startTime: localDateToUTC(formData.startTime),
-        endTime: localDateToUTC(formData.endTime),
+        startTime: dateToISO(formData.startTime),
+        endTime: dateToISO(formData.endTime),
         customerName: formData.customerName.trim(),
         customerEmail: formData.customerEmail.trim(),
         customerPhone: formData.customerPhone.trim() || null,
@@ -308,8 +356,8 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
     try {
       const bookingData = {
         guideId: guide.id,
-        startTime: localDateToUTC(formData.startTime),
-        endTime: localDateToUTC(formData.endTime),
+        startTime: dateToISO(formData.startTime),
+        endTime: dateToISO(formData.endTime),
         customerName: formData.customerName.trim(),
         customerEmail: formData.customerEmail.trim(),
         customerPhone: formData.customerPhone.trim() || null,
@@ -374,30 +422,11 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
       }
     }
 
-    // Sync Google Calendar event for the paid booking
-    try {
-      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-      const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          booking_id: result.bookingId,
-          guide_id: guide.id,
-          start_time: checkoutBookingData.startTime,
-          end_time: checkoutBookingData.endTime,
-          customer_name: checkoutBookingData.customerName,
-          customer_email: checkoutBookingData.customerEmail,
-          trip_type: checkoutBookingData.tripType,
-          notes: checkoutBookingData.notes,
-        })
-      });
-    } catch (calendarErr) {
-      console.warn('Could not sync Google Calendar event:', calendarErr);
-    }
+    // NOTE: Google Calendar event creation is handled exclusively by the
+    // Stripe webhook (payment_intent.succeeded). We intentionally do NOT
+    // call retryCalendarSync here to avoid creating duplicate events due to
+    // the webhook, confirmBookingPayment fallback, and this handler all
+    // racing simultaneously.
 
     setSuccess(true);
     setShowCheckout(false);
@@ -448,6 +477,31 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
         </div>
 
         <div className="modal-body">
+          {/* Calendar disconnected — block all bookings */}
+          {(calendarStatus === 'disconnected' || calendarStatus === 'never_connected') && (
+            <div style={{
+              padding: '20px',
+              backgroundColor: '#fff5f5',
+              border: '2px solid #fc8181',
+              borderRadius: '10px',
+              textAlign: 'center',
+              marginBottom: '16px',
+            }}>
+              <div style={{ fontSize: '32px', marginBottom: '8px' }}>⚠️</div>
+              <h3 style={{ color: '#c53030', margin: '0 0 8px 0' }}>
+                Calendrier Google déconnecté
+              </h3>
+              <p style={{ color: '#742a2a', margin: '0 0 12px 0', fontSize: '14px' }}>
+                {calendarStatus === 'never_connected'
+                  ? 'Ce guide n\'a pas encore connecté son Google Calendar. Les réservations sont désactivées.'
+                  : 'La connexion Google Calendar de ce guide a expiré. Les réservations sont temporairement désactivées jusqu\'à la reconnexion.'}
+              </p>
+              <p style={{ color: '#9b2c2c', fontSize: '12px', margin: 0 }}>
+                Le guide doit reconnecter son compte dans ses paramètres.
+              </p>
+            </div>
+          )}
+
           {success ? (
             <div className="success-message">
               <div className="success-icon">✓</div>
@@ -751,7 +805,7 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={loading || !availability?.available || checking}
+                  disabled={loading || !availability?.available || checking || calendarStatus === 'disconnected' || calendarStatus === 'never_connected'}
                 >
                   {loading ? (
                     <>

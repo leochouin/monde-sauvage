@@ -20,6 +20,33 @@ import {
   jsonResponse,
 } from "../_shared/stripeUtils.ts";
 
+// ─── Helper: fire-and-forget confirmation email ────────────────────────────
+async function fireConfirmationEmail(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  bookingId: string,
+  bookingType: "chalet" | "guide"
+) {
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/send-booking-confirmation`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ bookingId, bookingType }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      console.log(`📧 Confirmation email result for ${bookingId}:`, JSON.stringify(data));
+    } else {
+      console.warn(`⚠️ Confirmation email HTTP error for ${bookingId}: ${res.status}`, await res.text());
+    }
+  } catch (err: any) {
+    console.warn(`⚠️ Confirmation email call failed for ${bookingId}:`, err.message);
+  }
+}
+
 Deno.serve(async (req: Request) => {
   // Webhooks are POST only
   if (req.method === "OPTIONS") {
@@ -96,40 +123,101 @@ Deno.serve(async (req: Request) => {
         const bookingId = metadata?.booking_id;
         const bookingType = metadata?.booking_type || "chalet";
 
-        console.log(`💰 Payment succeeded: ${paymentIntentId} for ${bookingType} booking ${bookingId}`);
+        console.log(`💰 payment_intent.succeeded: PI=${paymentIntentId}, type=${bookingType}, booking=${bookingId}`);
 
-        if (bookingId) {
-          if (bookingType === "guide") {
-            const { error } = await supabase
-              .from("guide_booking")
-              .update({
-                status: "confirmed",
-                payment_status: "paid",
-                is_paid: true,
-                stripe_payment_intent_id: paymentIntentId,
-              })
-              .eq("id", bookingId);
+        if (!bookingId) {
+          console.warn("⚠️ payment_intent.succeeded missing booking_id in metadata — skipping DB update");
+          break;
+        }
 
-            if (error) {
-              console.error("Error confirming guide booking:", error);
-            } else {
-              console.log(`✅ Guide booking ${bookingId} confirmed (paid)`);
-            }
+        if (bookingType === "guide") {
+          const { data: updated, error } = await supabase
+            .from("guide_booking")
+            .update({
+              status: "confirmed",
+              payment_status: "paid",
+              is_paid: true,
+              stripe_payment_intent_id: paymentIntentId,
+            })
+            .eq("id", bookingId)
+            .select("id, status, payment_status, guide_id, start_time, end_time, customer_name, customer_email, trip_type, notes, google_event_id")
+            .single();
+
+          if (error) {
+            console.error(`❌ Failed to confirm guide booking ${bookingId}:`, JSON.stringify(error));
           } else {
-            const { error } = await supabase
-              .from("bookings")
-              .update({
-                status: "confirmed",
-                payment_status: "paid",
-                stripe_payment_intent_id: paymentIntentId,
-              })
-              .eq("id", bookingId);
+            console.log(`✅ Guide booking ${bookingId} → status=${updated.status}, payment_status=${updated.payment_status}`);
 
-            if (error) {
-              console.error("Error confirming booking:", error);
-            } else {
-              console.log(`✅ Booking ${bookingId} confirmed (paid)`);
+            // Send confirmation email (fire-and-forget)
+            fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bookingId, "guide");
+
+            // Create Google Calendar event if not already linked
+            if (updated && !updated.google_event_id) {
+              // DATE SHIFT GUARD: Log the exact DB values being forwarded
+              console.log(`🔒 [DATE GUARD] Webhook → calendar event for booking ${bookingId}:`);
+              console.log(`🔒 [DATE GUARD]   DB start_time: "${updated.start_time}"`);
+              console.log(`🔒 [DATE GUARD]   DB end_time:   "${updated.end_time}"`);
+              console.log(`🔒 [DATE GUARD]   Parsed start:  ${new Date(updated.start_time).toISOString()}`);
+              console.log(`🔒 [DATE GUARD]   Parsed end:    ${new Date(updated.end_time).toISOString()}`);
+
+              try {
+                const calRes = await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    booking_id: updated.id,
+                    guide_id: updated.guide_id,
+                    start_time: updated.start_time,
+                    end_time: updated.end_time,
+                    customer_name: updated.customer_name,
+                    customer_email: updated.customer_email,
+                    trip_type: updated.trip_type,
+                    notes: updated.notes,
+                  }),
+                });
+                if (calRes.ok) {
+                  const calData = await calRes.json();
+                  console.log(`📅 Google Calendar event created for guide booking ${bookingId}: ${calData.event_id}`);
+                } else {
+                  const calErrText = await calRes.text();
+                  console.warn(`⚠️ Google Calendar event creation failed for ${bookingId}:`, calErrText);
+                  // Mark sync as failed so the UI can show a retry button
+                  await supabase
+                    .from("guide_booking")
+                    .update({ calendar_sync_failed: true, calendar_sync_error: calErrText.slice(0, 500) })
+                    .eq("id", bookingId);
+                }
+              } catch (calErr: any) {
+                console.warn(`⚠️ Google Calendar sync error for ${bookingId}:`, calErr.message);
+                await supabase
+                  .from("guide_booking")
+                  .update({ calendar_sync_failed: true, calendar_sync_error: calErr.message })
+                  .eq("id", bookingId);
+              }
             }
+          }
+        } else {
+          const { data: updated, error } = await supabase
+            .from("bookings")
+            .update({
+              status: "confirmed",
+              payment_status: "paid",
+              stripe_payment_intent_id: paymentIntentId,
+            })
+            .eq("id", bookingId)
+            .select("id, status, payment_status")
+            .single();
+
+          if (error) {
+            console.error(`❌ Failed to confirm chalet booking ${bookingId}:`, JSON.stringify(error));
+          } else {
+            console.log(`✅ Chalet booking ${bookingId} → status=${updated.status}, payment_status=${updated.payment_status}`);
+
+            // Send confirmation email (fire-and-forget)
+            fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bookingId, "chalet");
           }
         }
         break;
@@ -145,7 +233,7 @@ Deno.serve(async (req: Request) => {
         const bookingType = metadata?.booking_type || "chalet";
         const failureMessage = (dataObject.last_payment_error as Record<string, unknown>)?.message as string;
 
-        console.log(`❌ Payment failed: ${paymentIntentId} — ${failureMessage}`);
+        console.log(`❌ payment_intent.payment_failed: PI=${paymentIntentId}, booking=${bookingId}, reason=${failureMessage}`);
 
         if (bookingId) {
           if (bookingType === "guide") {
@@ -171,6 +259,130 @@ Deno.serve(async (req: Request) => {
               .eq("id", bookingId);
 
             console.log(`❌ Booking ${bookingId} marked as failed`);
+          }
+        }
+        break;
+      }
+
+      // ─────────────────────────────────────────────────────────────────
+      // Checkout Session completed — confirm payment-link bookings
+      // ─────────────────────────────────────────────────────────────────
+      case "checkout.session.completed": {
+        const sessionMetadata = dataObject.metadata as Record<string, string>;
+        const sessionBookingId = sessionMetadata?.booking_id;
+        const sessionBookingType = sessionMetadata?.booking_type || "guide";
+        const paymentStatus = dataObject.payment_status as string;
+        const piId = dataObject.payment_intent as string;
+
+        console.log(`🧾 checkout.session.completed: booking=${sessionBookingId}, type=${sessionBookingType}, payment=${paymentStatus}, PI=${piId}`);
+
+        if (sessionBookingId && paymentStatus === "paid") {
+          if (sessionBookingType === "guide") {
+            const { data: updated, error } = await supabase
+              .from("guide_booking")
+              .update({
+                status: "confirmed",
+                payment_status: "paid",
+                is_paid: true,
+                stripe_payment_intent_id: piId || null,
+                payment_link_url: null, // Clear payment link after successful payment
+              })
+              .eq("id", sessionBookingId)
+              .select("id, status, payment_status, guide_id, start_time, end_time, customer_name, customer_email, trip_type, notes, google_event_id")
+              .single();
+
+            if (error) {
+              console.error(`❌ Failed to confirm guide booking ${sessionBookingId} via checkout:`, JSON.stringify(error));
+            } else {
+              console.log(`✅ Guide booking ${sessionBookingId} confirmed via checkout → status=${updated.status}`);
+
+              // Send confirmation email (fire-and-forget)
+              fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, sessionBookingId, "guide");
+
+              // Create Google Calendar event if not already linked
+              if (updated && !updated.google_event_id) {
+                try {
+                  const calRes = await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      booking_id: updated.id,
+                      guide_id: updated.guide_id,
+                      start_time: updated.start_time,
+                      end_time: updated.end_time,
+                      customer_name: updated.customer_name,
+                      customer_email: updated.customer_email,
+                      trip_type: updated.trip_type,
+                      notes: updated.notes,
+                    }),
+                  });
+                  if (calRes.ok) {
+                    const calData = await calRes.json();
+                    console.log(`📅 Google Calendar event created for guide booking ${sessionBookingId}: ${calData.event_id}`);
+                  } else {
+                    console.warn(`⚠️ Google Calendar event creation failed for ${sessionBookingId}:`, await calRes.text());
+                  }
+                } catch (calErr: any) {
+                  console.warn(`⚠️ Google Calendar sync error for ${sessionBookingId}:`, calErr.message);
+                }
+              }
+            }
+          } else {
+            const { data: updated, error } = await supabase
+              .from("bookings")
+              .update({
+                status: "confirmed",
+                payment_status: "paid",
+                stripe_payment_intent_id: piId || null,
+              })
+              .eq("id", sessionBookingId)
+              .select("id, status, payment_status")
+              .single();
+
+            if (error) {
+              console.error(`❌ Failed to confirm chalet booking ${sessionBookingId} via checkout:`, JSON.stringify(error));
+            } else {
+              console.log(`✅ Chalet booking ${sessionBookingId} confirmed via checkout → status=${updated.status}`);
+
+              // Send confirmation email (fire-and-forget)
+              fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, sessionBookingId, "chalet");
+            }
+          }
+        } else {
+          console.warn(`⚠️ checkout.session.completed: booking=${sessionBookingId} but payment_status=${paymentStatus} — not confirming`);
+        }
+        break;
+      }
+
+      // ─────────────────────────────────────────────────────────────────
+      // Checkout Session expired — cancel the pending booking
+      // ─────────────────────────────────────────────────────────────────
+      case "checkout.session.expired": {
+        const sessionMetadata = dataObject.metadata as Record<string, string>;
+        const sessionBookingId = sessionMetadata?.booking_id;
+
+        console.log(`⏰ checkout.session.expired: booking=${sessionBookingId}`);
+
+        if (sessionBookingId) {
+          const { data: updated } = await supabase
+            .from("guide_booking")
+            .update({
+              status: "cancelled",
+              payment_status: "expired",
+              notes: "Lien de paiement expiré — réservation annulée automatiquement",
+            })
+            .eq("id", sessionBookingId)
+            .eq("status", "pending_payment") // Only cancel if still pending
+            .select("id, status")
+            .single();
+
+          if (updated) {
+            console.log(`❌ Booking ${sessionBookingId} cancelled (checkout expired)`);
+          } else {
+            console.log(`ℹ️ Booking ${sessionBookingId} not in pending_payment status, skip expiry`);
           }
         }
         break;
@@ -268,8 +480,9 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ received: true });
 
   } catch (error) {
-    console.error("stripe-webhook error:", error);
-    // Always return 200 to Stripe to prevent retries on our errors
+    console.error("stripe-webhook UNHANDLED error:", error?.message || error, error?.stack);
+    // Return 200 to prevent Stripe from retrying on our application errors.
+    // Signature / parse failures already returned 4xx above.
     return jsonResponse({ received: true, error: error.message }, 200);
   }
 });

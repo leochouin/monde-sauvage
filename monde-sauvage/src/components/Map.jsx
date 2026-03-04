@@ -75,6 +75,9 @@ const GaspesieMap = ({
 
   const [circleCenter, setCircleCenter] = useState(null);
 
+  // Detect if mobile for responsive button sizing
+  const [isMobile, setIsMobile] = useState(typeof globalThis !== 'undefined' && globalThis.innerWidth < 768);
+
   // Sign out function
   const handleSignOut = async () => {
     const { error } = await supabase.auth.signOut();
@@ -89,6 +92,17 @@ const GaspesieMap = ({
     ? user.user_metadata?.avatar_url || user.raw_user_meta_data?.avatar_url || '/default-avatar.png'
     : '/default-avatar.png';
     
+  // Handle window resize for mobile detection
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(typeof globalThis !== 'undefined' && globalThis.innerWidth < 768);
+    };
+
+    if (typeof globalThis !== 'undefined' && globalThis.addEventListener) {
+      globalThis.addEventListener('resize', handleResize);
+      return () => globalThis.removeEventListener('resize', handleResize);
+    }
+  }, []);
 
   // First useEffect - Initialize map
   useEffect(() => {
@@ -419,6 +433,25 @@ const GaspesieMap = ({
     };
   }, [fishingZones]);
 
+  // Escape key handler - close booking flow
+  useEffect(() => {
+    // Only listen for Escape when booking flow is open (bookingStep > 0)
+    if (bookingStep === 0) return;
+
+    const handleEscapeKey = (event) => {
+      if (event.key === 'Escape' || event.keyCode === 27) {
+        event.preventDefault();
+        resetBookingFlow();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscapeKey);
+
+    return () => {
+      document.removeEventListener('keydown', handleEscapeKey);
+    };
+  }, [bookingStep, resetBookingFlow]);
+
   const initializeMap = () => {
     const mapboxgl = globalThis.mapboxgl;
     const businessLogos = [
@@ -622,26 +655,61 @@ const GaspesieMap = ({
         {/* BOOKING FLOW CONTENT */}
         {bookingStep > 0 ? (
           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {/* Header with back button */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+            {/* Header with close button */}
+            <div style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'space-between',
+              gap: '12px', 
+              marginBottom: '8px',
+              width: '100%'
+            }}>
+              <h2 style={{ 
+                margin: 0, 
+                fontSize: '18px', 
+                color: '#1F3A2E', 
+                fontWeight: '600',
+                flex: 1
+              }}>
+                {browseMode === 'guide' ? 'Trouver un guide' : browseMode === 'chalet' ? 'Trouver un chalet' : 'Planifier votre séjour'}
+              </h2>
+              
+              {/* Close button - visible and accessible */}
               <button
                 type="button"
                 onClick={resetBookingFlow}
+                aria-label="Fermer et retourner au menu principal"
+                title="Fermer (Échap)"
                 style={{
-                  background: 'none',
-                  border: 'none',
+                  background: 'transparent',
+                  border: '1px solid #D1D5DB',
                   cursor: 'pointer',
-                  fontSize: '20px',
-                  padding: '4px',
+                  padding: isMobile ? '10px 12px' : '8px 10px',
                   display: 'flex',
-                  alignItems: 'center'
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '6px',
+                  fontSize: isMobile ? '20px' : '18px',
+                  transition: 'all 0.2s ease',
+                  flexShrink: 0,
+                  color: '#5A7766',
+                  minWidth: isMobile ? '44px' : '36px',
+                  minHeight: isMobile ? '44px' : '36px',
+                  WebkitTapHighlightColor: 'transparent'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+                  e.currentTarget.style.borderColor = '#EF4444';
+                  e.currentTarget.style.color = '#EF4444';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.borderColor = '#D1D5DB';
+                  e.currentTarget.style.color = '#5A7766';
                 }}
               >
-                ←
+                ✕
               </button>
-              <h2 style={{ margin: 0, fontSize: '18px', color: '#1F3A2E', fontWeight: '600' }}>
-                {browseMode === 'guide' ? 'Trouver un guide' : browseMode === 'chalet' ? 'Trouver un chalet' : 'Planifier votre séjour'}
-              </h2>
             </div>
 
             {/* Progress indicator */}

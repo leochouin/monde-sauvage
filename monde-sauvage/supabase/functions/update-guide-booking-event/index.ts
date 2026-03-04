@@ -61,7 +61,7 @@ Deno.serve(async (req: Request) => {
       }
       eventUpdate.start = {
         dateTime: normalizedStartTime,
-        timeZone: "America/Montreal",
+        timeZone: "Europe/Brussels",
       };
     }
     if (updates.end_time) {
@@ -73,7 +73,7 @@ Deno.serve(async (req: Request) => {
       }
       eventUpdate.end = {
         dateTime: normalizedEndTime,
-        timeZone: "America/Montreal",
+        timeZone: "Europe/Brussels",
       };
     }
     if (updates.customer_name) {

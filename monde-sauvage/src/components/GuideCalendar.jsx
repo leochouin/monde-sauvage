@@ -28,6 +28,51 @@ const EVENT_COLORS = {
   syncFailed: { bg: '#e53e3e', border: '#c53030' },     // Red – calendar sync failed
 };
 
+/**
+ * De-duplicate Google Calendar events against DB bookings.
+ *
+ * Since reservation events are copied to the "Monde Sauvage | Disponibilités"
+ * calendar AND shown from the database, we must strip any Google event that
+ * represents the same booking. Three layers of detection:
+ *
+ * 1. google_event_id match (strongest – the DB booking stores the calendar
+ *    event id after creation).
+ * 2. Description markers ("Booking ID:" / "Monde Sauvage booking system")
+ *    inserted by the create-guide-booking-event edge function.
+ * 3. Exact time-window + title pattern match as a last-resort safety net
+ *    (covers edge cases where the id wasn't persisted or the edge function
+ *    returns a stale response with stripped descriptions).
+ */
+function filterDuplicateGoogleEvents(googleEvents, dbBookings) {
+  // Build lookup sets from DB bookings
+  const bookingGoogleIds = new Set(
+    dbBookings.filter((b) => b.googleEventId).map((b) => b.googleEventId)
+  );
+
+  // Build a set of "startMs|endMs" keys for quick time-based comparison
+  const bookingTimeKeys = new Set(
+    dbBookings.map((b) => `${b.start.getTime()}|${b.end.getTime()}`)
+  );
+
+  return googleEvents.filter((ge) => {
+    // 1️⃣ Primary: match by google_event_id
+    if (bookingGoogleIds.has(ge.googleEventId)) return false;
+
+    // 2️⃣ Fallback: description markers (covers null google_event_id cases)
+    const desc = ge.description || ge.resource?.description || '';
+    if (desc.includes('Booking ID:') || desc.includes('Monde Sauvage booking system')) return false;
+
+    // 3️⃣ Safety net: exact time match — if a Google event occupies the exact
+    //    same time window as a DB booking, treat it as a duplicate.
+    //    (Availability windows are split around bookings so they normally
+    //     won't share identical timestamps.)
+    const geTimeKey = `${ge.start.getTime()}|${ge.end.getTime()}`;
+    if (bookingTimeKeys.has(geTimeKey)) return false;
+
+    return true;
+  });
+}
+
 export default function GuideCalendar({ guideId }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -107,12 +152,13 @@ export default function GuideCalendar({ guideId }) {
           if (isAllDay) {
             // For all-day events, Google returns dates in YYYY-MM-DD format
             // The end date is exclusive (day after), so we need to adjust
-            start = new Date(event.start.date + 'T00:00:00');
+            // Use Z suffix for consistent UTC interpretation
+            start = new Date(event.start.date + 'T00:00:00Z');
             // Subtract 1 day from the end to get the actual last day of the event
-            const endDate = new Date(event.end.date + 'T00:00:00');
-            endDate.setDate(endDate.getDate() - 1);
-            // Set to end of day
-            end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59);
+            const endDate = new Date(event.end.date + 'T00:00:00Z');
+            endDate.setUTCDate(endDate.getUTCDate() - 1);
+            // Set to end of day (UTC)
+            end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate(), 23, 59, 59));
           } else {
             start = new Date(event.start.dateTime);
             end = new Date(event.end.dateTime);
@@ -155,32 +201,17 @@ export default function GuideCalendar({ guideId }) {
 
       setFailedSyncs(failedSyncBookings);
 
-      // Collect google_event_ids from DB bookings so we can filter them out of Google events
-      const bookingGoogleIds = new Set(
+      // De-duplicate: strip any Google Calendar event that is already
+      // represented by a DB booking (reservation events are copied to
+      // Google Calendar, so without this filter they'd appear twice).
+      const personalGoogleEvents = filterDuplicateGoogleEvents(
+        googleResult.events || [],
         dbBookings
-          .filter((b) => b.googleEventId)
-          .map((b) => b.googleEventId)
       );
-      console.log('🗄️ DB Bookings count:', dbBookings.length);
-      console.log('🔗 Booking Google IDs:', Array.from(bookingGoogleIds));
-      console.log('📊 Google result events count:', googleResult.events?.length || 0);
 
-      // Keep only Google events that are NOT already represented by a DB booking
-      // Primary check: match by google_event_id
-      // Fallback check: if a Google event description contains "Booking ID:" or
-      //   "Monde Sauvage booking system", it was created by our system and should
-      //   be hidden (the edge function normally filters these, but this is a safety net
-      //   in case a stale response slips through).
-      const personalGoogleEvents = (googleResult.events || []).filter((ge) => {
-        // Primary: filter by matching google_event_id
-        if (bookingGoogleIds.has(ge.googleEventId)) return false;
-        // Fallback: filter by booking description markers (covers null google_event_id cases)
-        const desc = ge.description || ge.resource?.description || '';
-        if (desc.includes('Booking ID:') || desc.includes('Monde Sauvage booking system')) return false;
-        return true;
-      });
+      console.log('🗄️ DB Bookings count:', dbBookings.length);
+      console.log('📊 Google result events count:', googleResult.events?.length || 0);
       console.log('✅ Personal Google events after filtering:', personalGoogleEvents.length);
-      console.log('📋 Personal Google event details:', personalGoogleEvents);
 
       // Merge both sets
       const merged = [...dbBookings, ...personalGoogleEvents];
@@ -237,15 +268,10 @@ export default function GuideCalendar({ guideId }) {
         getFailedSyncBookings(guideId),
       ]);
       setFailedSyncs(failedSyncBookings);
-      const bookingGoogleIds = new Set(
-        dbBookings.filter((b) => b.googleEventId).map((b) => b.googleEventId)
+      const personalGoogleEvents = filterDuplicateGoogleEvents(
+        googleResult.events || [],
+        dbBookings
       );
-      const personalGoogleEvents = (googleResult.events || []).filter((ge) => {
-        if (bookingGoogleIds.has(ge.googleEventId)) return false;
-        const desc = ge.description || '';
-        if (desc.includes('Booking ID:') || desc.includes('Monde Sauvage booking system')) return false;
-        return true;
-      });
       setEvents([...dbBookings, ...personalGoogleEvents]);
     } catch (err) {
       console.error('Sync failed:', err);

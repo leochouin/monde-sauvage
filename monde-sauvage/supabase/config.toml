@@ -17,6 +17,9 @@ verify_jwt = false
 [functions.stripe-refund-booking]
 verify_jwt = false
 
+[functions.stripe-dashboard-link]
+verify_jwt = false
+
 # Stripe webhooks — verified via Stripe signature, not JWT
 [functions.stripe-webhook]
 verify_jwt = false

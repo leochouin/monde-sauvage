@@ -10,9 +10,11 @@ import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guide
 import AccountSettingsModal from "../modals/accountSettingsModal.jsx";
 import HighlightOverlay from "./HighlightOverlay.jsx";
 import supabase from "../utils/supabase.js";
-import { createGuideBooking } from "../utils/guideBookingService.js";
+import { createGuideBooking, checkGuideConflictsServer } from "../utils/guideBookingService.js";
 import { createBooking } from "../utils/bookingService.js";
+import { resumeBookingPayment } from "../utils/stripeService.js";
 import CheckoutModal from "../modals/checkoutModal.jsx";
+import ReservationCart from "./ReservationCart.jsx";
 
 // Fish types available for selection
 const FISH_TYPES = [
@@ -179,7 +181,8 @@ function MapApp({ user, profile, guide }) {
                 let query = supabase
                     .from('guide')
                     .select('*')
-                    .not('google_refresh_token', 'is', null);
+                    .not('google_refresh_token', 'is', null)
+                    .neq('calendar_connection_status', 'disconnected');
                 
                 if (fishType) {
                     query = query.contains('fish_types', [fishType]);
@@ -196,13 +199,14 @@ function MapApp({ user, profile, guide }) {
                 }
 
                 // Now check actual calendar availability for these guides
-                const startISO = new Date(startDate + 'T00:00:00').toISOString();
-                const endISO = new Date(endDate + 'T23:59:59').toISOString();
+                // Use Z-suffix to ensure UTC interpretation (avoids local-timezone day shift)
+                const startISO = `${startDate}T00:00:00Z`;
+                const endISO = `${endDate}T23:59:59Z`;
                 
                 console.log("📆 Date inputs:", { startDate, endDate });
-                console.log("📆 ISO dates:", { startISO, endISO });
+                console.log("📆 ISO dates (UTC):", { startISO, endISO });
                 
-                const availabilityUrl = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability-all?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+                const availabilityUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-availability-all?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
                 console.log("🌐 Availability URL:", availabilityUrl);
                 
                 const availabilityRes = await fetch(availabilityUrl, {
@@ -221,26 +225,86 @@ function MapApp({ user, profile, guide }) {
                 const availabilityMap = new Map();
                 if (Array.isArray(availabilityData)) {
                     availabilityData.forEach(item => {
-                        console.log(`  📊 Guide ${item.guide_id} (${item.name}): is_available=${item.is_available}, events=${item.events?.length || 0}, booked=${item.booked_slots?.length || 0}, error=${item.error || 'none'}`);
+                        console.log(`  📊 Guide ${item.guide_id} (${item.name}): is_available=${item.is_available}, net_windows=${item.net_available_windows ?? '?'}, events=${item.events?.length || 0}, booked=${item.booked_slots?.length || 0}, error=${item.error || 'none'}`);
                         availabilityMap.set(item.guide_id, item);
                     });
                 } else {
                     console.warn("⚠️ availabilityData is not an array:", availabilityData);
                 }
                 
-                // Transform guides — a guide is available unless the API explicitly says they're fully booked
+                // ── Availability keyword matching (same word bank as edge function) ──
+                // Used as a client-side safety net — the server now also does this computation.
+                const AVAILABILITY_KEYWORDS = /dispo|disponible|disponibilit[eé]|available|availability|free|open|slot/i;
+                const normalizeText = (t) => (t || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+                const isAvailabilityEvent = (ev) => {
+                    const raw = `${ev.summary || ''} ${ev.description || ''} ${ev.location || ''}`;
+                    return AVAILABILITY_KEYWORDS.test(normalizeText(raw));
+                };
+
+                // Transform guides — use server-side availability determination as PRIMARY,
+                // with client-side subtraction as a SECONDARY safety net.
                 const formattedGuides = (guides || [])
                     .map(g => {
                         const availability = availabilityMap.get(g.id);
-                        
-                        // If guide is in availability response, use the API's is_available
-                        // If guide is NOT in the response (no calendar connected), they're still available  
-                        const isAvailable = availability 
-                            ? (availability.is_available !== false && !availability.error)
-                            : true; // Guide with refresh token but not in response → available by default
-                        
-                        console.log(`🔍 Guide ${g.name}: inMap=${!!availability}, is_available=${isAvailable}, error=${availability?.error || 'none'}`);
-                        
+
+                        // If the API explicitly returned an error, guide is unavailable
+                        if (availability?.error) {
+                            console.log(`🔍 Guide ${g.name}: error=${availability.error} → hidden`);
+                            return null;
+                        }
+
+                        // If guide is NOT in the response, skip (no calendar data)
+                        if (!availability) {
+                            console.log(`🔍 Guide ${g.name}: not in availability response → hidden`);
+                            return null;
+                        }
+
+                        // ── PRIMARY CHECK: Use server-computed is_available ──
+                        // The server now does full keyword matching + booking subtraction
+                        // and returns is_available=false if all availability is consumed.
+                        if (availability.is_available === false) {
+                            console.log(`🔍 Guide ${g.name}: server says is_available=false (${availability.net_available_windows ?? 0} net windows) → hidden`);
+                            return null;
+                        }
+
+                        const rawEvents = availability.events || [];
+                        const bookedSlots = availability.booked_slots || [];
+
+                        // ── SECONDARY CHECK: Client-side subtraction as safety net ──
+                        const bookedIntervals = bookedSlots.map(slot => {
+                            let s = new Date(slot.start).getTime();
+                            let e = new Date(slot.end).getTime();
+                            // Date-only bookings: start===end (both midnight UTC). Expand to full day.
+                            if (!isNaN(s) && !isNaN(e) && s >= e) e = s + 24 * 60 * 60 * 1000;
+                            return { start: s, end: e };
+                        }).filter(b => !isNaN(b.start) && !isNaN(b.end) && b.start < b.end);
+
+                        let totalNetWindows = 0;
+                        for (const ev of rawEvents) {
+                            if (ev.status === 'cancelled') continue;
+                            if (!isAvailabilityEvent(ev)) continue;
+
+                            const startStr = ev.start?.dateTime || ev.start?.date;
+                            const endStr = ev.end?.dateTime || ev.end?.date;
+                            if (!startStr || !endStr) continue;
+
+                            const evStart = new Date(startStr).getTime();
+                            const evEnd = new Date(endStr).getTime();
+                            if (isNaN(evStart) || isNaN(evEnd) || evStart >= evEnd) continue;
+
+                            const remaining = subtractBookings(evStart, evEnd, bookedIntervals);
+                            totalNetWindows += remaining.length;
+                        }
+
+                        const hasAvailability = totalNetWindows > 0;
+                        console.log(`🔍 Guide ${g.name}: server=${availability.is_available}, client=${hasAvailability} (${rawEvents.length} events, ${bookedSlots.length} bookings, ${totalNetWindows} net windows)`);
+
+                        // Guide must pass BOTH server and client checks
+                        if (!hasAvailability) {
+                            console.log(`🔍 Guide ${g.name}: client-side check says no availability → hidden`);
+                            return null;
+                        }
+
                         return {
                             guide_id: g.id,
                             name: g.name,
@@ -249,12 +313,12 @@ function MapApp({ user, profile, guide }) {
                             hourly_rate: g.hourly_rate,
                             stripe_charges_enabled: g.stripe_charges_enabled || false,
                             stripe_account_id: g.stripe_account_id || null,
-                            is_available: isAvailable,
-                            events: availability?.events || [],
-                            booked_slots: availability?.booked_slots || []
+                            is_available: true,
+                            events: rawEvents,
+                            booked_slots: bookedSlots
                         };
                     })
-                    .filter(g => g.is_available);
+                    .filter(g => g !== null);
                 
                 console.log("✅ Guides with availability:", formattedGuides.length, formattedGuides);
                 setAvailableGuides(formattedGuides);
@@ -267,26 +331,55 @@ function MapApp({ user, profile, guide }) {
         };
 
         fetchGuides();
-    }, [bookingStep, fishType, startDate, endDate]);
+    }, [bookingStep, fishType, startDate, endDate, browseMode]);
+
+    // ── Interval subtraction helper ─────────────────────────────
+    // Given an availability window and a list of booked intervals,
+    // returns the remaining sub-windows after removing all overlaps.
+    // This correctly handles partial overlaps (splits the window).
+    const subtractBookings = useCallback((availStart, availEnd, bookedIntervals) => {
+        const sorted = bookedIntervals
+            .filter(b => b.start < availEnd && b.end > availStart) // only overlapping
+            .sort((a, b) => a.start - b.start);
+
+        if (sorted.length === 0) return [{ start: availStart, end: availEnd }];
+
+        const result = [];
+        let cursor = availStart;
+
+        for (const busy of sorted) {
+            if (busy.start > cursor) {
+                result.push({ start: cursor, end: Math.min(busy.start, availEnd) });
+            }
+            cursor = Math.max(cursor, busy.end);
+            if (cursor >= availEnd) break;
+        }
+        if (cursor < availEnd) {
+            result.push({ start: cursor, end: availEnd });
+        }
+        // Filter out windows shorter than 15 minutes
+        return result.filter(r => r.end - r.start >= 15 * 60 * 1000);
+    }, []);
 
     // Fetch guide availability events when a guide is selected in Step 2
+    // Also refresh every 30 seconds to detect bookings made by other users.
     useEffect(() => {
         if (bookingStep !== 2 || !selectedGuide || !startDate || !endDate) {
             setGuideAvailabilityEvents([]);
             return;
         }
 
-        const fetchGuideAvailability = async () => {
-            setLoadingGuideAvailability(true);
+        const fetchGuideAvailability = async (isRefresh = false) => {
+            if (!isRefresh) setLoadingGuideAvailability(true);
             try {
                 console.log("📅 Fetching availability for guide:", selectedGuide.guide_id, "from", startDate, "to", endDate);
                 
                 // Convert dates to ISO format for Google Calendar API
-                // Add time component: start at beginning of day, end at end of day
-                const startISO = new Date(startDate + 'T00:00:00').toISOString();
-                const endISO = new Date(endDate + 'T23:59:59').toISOString();
+                // Use Z-suffix for explicit UTC (prevents local-tz day boundary shift)
+                const startISO = `${startDate}T00:00:00Z`;
+                const endISO = `${endDate}T23:59:59Z`;
                 
-                const url = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability?guideId=${selectedGuide.guide_id}&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+                const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-availability?guideId=${selectedGuide.guide_id}&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
                 const res = await fetch(url, {
                     method: "GET",
                     headers: {
@@ -300,27 +393,173 @@ function MapApp({ user, profile, guide }) {
                 
                 if (data.items && Array.isArray(data.items)) {
                     // Process events to extract time slots for each day
-                    const events = data.items.map(event => ({
-                        id: event.id,
-                        summary: event.summary || 'Disponible',
-                        start: event.start?.dateTime || event.start?.date,
-                        end: event.end?.dateTime || event.end?.date,
-                        date: event.start?.dateTime ? event.start.dateTime.split('T')[0] : event.start?.date,
-                    }));
-                    setGuideAvailabilityEvents(events);
+                    // IMPORTANT: Use LOCAL date for grouping, not UTC date.
+                    // This prevents events near midnight UTC from being grouped
+                    // under the wrong day relative to the guide's timezone.
+                    const events = data.items.map(event => {
+                        const startStr = event.start?.dateTime || event.start?.date;
+                        const endStr = event.end?.dateTime || event.end?.date;
+                        // Derive local date for display grouping
+                        const startDate_obj = new Date(startStr);
+                        const localDate = !isNaN(startDate_obj.getTime())
+                            ? `${startDate_obj.getFullYear()}-${String(startDate_obj.getMonth()+1).padStart(2,'0')}-${String(startDate_obj.getDate()).padStart(2,'0')}`
+                            : (startStr || '').split('T')[0];
+                        return {
+                            id: event.id,
+                            summary: event.summary || 'Disponible',
+                            start: startStr,
+                            end: endStr,
+                            date: localDate,
+                        };
+                    });
+
+                    // ── Build a combined list of booked intervals ──────────
+                    // Use BOTH the guide's booked_slots (from the -all endpoint,
+                    // fetched with service-role key — reliable) AND a fresh DB
+                    // query as a safety-net.
+                    const bookedIntervals = [];
+
+                    // Source 1: booked_slots already loaded on guide object
+                    if (selectedGuide.booked_slots && selectedGuide.booked_slots.length > 0) {
+                        for (const slot of selectedGuide.booked_slots) {
+                            let s = new Date(slot.start).getTime();
+                            let e = new Date(slot.end).getTime();
+                            // Date-only bookings: start===end. Expand to full day.
+                            if (!isNaN(s) && !isNaN(e) && s >= e) e = s + 24 * 60 * 60 * 1000;
+                            if (!isNaN(s) && !isNaN(e) && s < e) {
+                                bookedIntervals.push({ start: s, end: e });
+                            }
+                        }
+                        console.log('📋 Booked slots from guide object:', selectedGuide.booked_slots.length);
+                    }
+
+                    // Source 2: fresh DB query (may fail due to RLS — that's OK,
+                    // source 1 is the primary defense)
+                    try {
+                        const { data: dbBookings, error: dbError } = await supabase
+                            .from('guide_booking')
+                            .select('id, start_time, end_time, status')
+                            .eq('guide_id', selectedGuide.guide_id)
+                            .is('deleted_at', null)
+                            .not('status', 'in', '("cancelled","deleted")')
+                            .lt('start_time', endISO)
+                            .gt('end_time', startISO);
+
+                        if (dbError) {
+                            console.warn('⚠️ DB booking query error (using booked_slots fallback):', dbError);
+                        } else if (dbBookings && dbBookings.length > 0) {
+                            console.log('📋 Fresh DB bookings found:', dbBookings.length);
+                            for (const booking of dbBookings) {
+                                let s = new Date(booking.start_time).getTime();
+                                let e = new Date(booking.end_time).getTime();
+                                // Date-only bookings: start===end. Expand to full day.
+                                if (!isNaN(s) && !isNaN(e) && s >= e) e = s + 24 * 60 * 60 * 1000;
+                                if (!isNaN(s) && !isNaN(e) && s < e) {
+                                    bookedIntervals.push({ start: s, end: e });
+                                }
+                            }
+                        }
+                    } catch (dbErr) {
+                        console.warn('⚠️ Could not query DB for bookings:', dbErr);
+                    }
+
+                    // De-duplicate overlapping intervals (merge them)
+                    const mergedBookings = [];
+                    if (bookedIntervals.length > 0) {
+                        const sorted = [...bookedIntervals].sort((a, b) => a.start - b.start);
+                        let current = { ...sorted[0] };
+                        for (let i = 1; i < sorted.length; i++) {
+                            if (sorted[i].start <= current.end) {
+                                current.end = Math.max(current.end, sorted[i].end);
+                            } else {
+                                mergedBookings.push(current);
+                                current = { ...sorted[i] };
+                            }
+                        }
+                        mergedBookings.push(current);
+                    }
+
+                    console.log('📋 Total merged booking intervals:', mergedBookings.length);
+
+                    // ── Subtract bookings from each availability event ───
+                    // This handles partial overlaps by splitting events into
+                    // the remaining available sub-windows.
+                    if (mergedBookings.length > 0) {
+                        const resultEvents = [];
+                        for (const event of events) {
+                            const evStart = new Date(event.start).getTime();
+                            const evEnd = new Date(event.end).getTime();
+                            if (isNaN(evStart) || isNaN(evEnd)) continue;
+
+                            const remaining = subtractBookings(evStart, evEnd, mergedBookings);
+                            for (const window of remaining) {
+                                const windowStartDate = new Date(window.start);
+                                // Use LOCAL date for grouping (not UTC split)
+                                const localDate = `${windowStartDate.getFullYear()}-${String(windowStartDate.getMonth()+1).padStart(2,'0')}-${String(windowStartDate.getDate()).padStart(2,'0')}`;
+                                resultEvents.push({
+                                    id: `${event.id}_${window.start}`,
+                                    summary: event.summary,
+                                    start: windowStartDate.toISOString(),
+                                    end: new Date(window.end).toISOString(),
+                                    date: localDate,
+                                });
+                            }
+                        }
+                        console.log(`✅ After subtracting bookings: ${resultEvents.length} available slots (from ${events.length} events)`);
+                        setGuideAvailabilityEvents(resultEvents);
+                    } else {
+                        setGuideAvailabilityEvents(events);
+                    }
                 } else {
                     setGuideAvailabilityEvents([]);
                 }
             } catch (err) {
                 console.error("❌ Error fetching guide availability:", err);
-                setGuideAvailabilityEvents([]);
+                if (!isRefresh) setGuideAvailabilityEvents([]);
             } finally {
                 setLoadingGuideAvailability(false);
             }
         };
 
-        fetchGuideAvailability();
-    }, [bookingStep, selectedGuide, startDate, endDate]);
+        fetchGuideAvailability(false);
+
+        // Refresh availability every 30 seconds to detect bookings by other users.
+        // Silent refresh — doesn't show loading indicator to avoid UI flicker.
+        const refreshInterval = setInterval(() => {
+            console.log('🔄 Auto-refreshing guide availability…');
+            fetchGuideAvailability(true);
+        }, 30_000);
+
+        return () => clearInterval(refreshInterval);
+    }, [bookingStep, selectedGuide, startDate, endDate, subtractBookings]);
+
+    // ── Clean up stale selected time slots when availability refreshes ──
+    // If a selected slot no longer appears in the available events
+    // (e.g. another user booked it), remove it from the selection.
+    useEffect(() => {
+        if (selectedTimeSlots.length === 0 || guideAvailabilityEvents.length === 0) return;
+
+        const stillValid = selectedTimeSlots.filter(slot => {
+            // Check if the slot's time range still overlaps with any available event
+            const slotStart = new Date(slot.startTime).getTime();
+            const slotEnd = new Date(slot.endTime).getTime();
+            return guideAvailabilityEvents.some(event => {
+                const evStart = new Date(event.start).getTime();
+                const evEnd = new Date(event.end).getTime();
+                // The selected slot must be fully contained within an available event
+                return evStart <= slotStart && evEnd >= slotEnd;
+            });
+        });
+
+        if (stillValid.length < selectedTimeSlots.length) {
+            const removedCount = selectedTimeSlots.length - stillValid.length;
+            console.warn(`⚠️ ${removedCount} selected slot(s) no longer available — removing`);
+            setSelectedTimeSlots(stillValid);
+            if (removedCount > 0 && stillValid.length === 0) {
+                setBookingError('Le(s) créneau(x) sélectionné(s) vien(nen)t d\'être réservé(s) par un autre utilisateur. Veuillez en choisir un autre.');
+            }
+        }
+    }, [guideAvailabilityEvents]);
 
     // Fetch ALL chalets within radius (no filtering by capacity/dates)
     // The filtering criteria from step 1 will be used to highlight matching chalets
@@ -385,7 +624,7 @@ function MapApp({ user, profile, guide }) {
             // BUT: Skip this check if user has already selected specific time slots
             // because they've already chosen from the guide's available times
             if (selectedGuide && (!selectedTimeSlots || selectedTimeSlots.length === 0)) {
-                const url = `https://fhpbftdkqnkncsagvsph.supabase.co/functions/v1/google-calendar-availability?guideId=${selectedGuide.guide_id}&start=${startDate}&end=${endDate}`;
+                const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-availability?guideId=${selectedGuide.guide_id}&start=${startDate}&end=${endDate}`;
                 const res = await fetch(url, {
                     method: "GET",
                     headers: {
@@ -474,6 +713,9 @@ function MapApp({ user, profile, guide }) {
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
+        setAvailableGuides([]);
+        setGuideAvailabilityEvents([]);
+        setSelectedTimeSlots([]);
         setChalets([]);
         setFishType('');
         setNeedsChalet(true);
@@ -491,6 +733,9 @@ function MapApp({ user, profile, guide }) {
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
+        setAvailableGuides([]);
+        setGuideAvailabilityEvents([]);
+        setSelectedTimeSlots([]);
         setChalets([]);
         setFishType('');
         setNeedsChalet(false); // No chalet in guide-only mode
@@ -508,6 +753,9 @@ function MapApp({ user, profile, guide }) {
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
+        setAvailableGuides([]);
+        setGuideAvailabilityEvents([]);
+        setSelectedTimeSlots([]);
         setChalets([]);
         setFishType('');
         setNeedsChalet(true); // Always need chalet in chalet mode
@@ -557,13 +805,22 @@ function MapApp({ user, profile, guide }) {
                 return prev.filter(slot => slot.id !== event.id);
             } else {
                 // Add to selection
-                return [...prev, {
+                const slot = {
                     id: event.id,
                     date: event.date,
                     startTime: event.start,
                     endTime: event.end,
                     summary: event.summary
-                }];
+                };
+                console.log('[DATE TRACE] Time slot selected:', {
+                    startTime: slot.startTime,
+                    endTime: slot.endTime,
+                    startLocal: new Date(slot.startTime).toLocaleString(),
+                    endLocal: new Date(slot.endTime).toLocaleString(),
+                    dateGroup: slot.date,
+                    browserTZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                });
+                return [...prev, slot];
             }
         });
     }
@@ -605,6 +862,30 @@ function MapApp({ user, profile, guide }) {
         setIsCreatingBooking(true);
         
         try {
+            // ── Server-side conflict check before proceeding ──────────
+            // Prevents stale-data race conditions: another user may have
+            // booked the same slot since availability was last fetched.
+            if (selectedGuide && selectedTimeSlots.length > 0) {
+                const sortedSlots = [...selectedTimeSlots].sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+                const firstStart = sortedSlots[0].startTime;
+                const lastEnd = sortedSlots[sortedSlots.length - 1].endTime;
+
+                try {
+                    const conflictResult = await checkGuideConflictsServer(
+                        selectedGuide.guide_id,
+                        firstStart,
+                        lastEnd
+                    );
+                    if (!conflictResult.available) {
+                        setBookingError('Ce créneau vient d\'être réservé par un autre utilisateur. Veuillez rafraîchir et choisir un autre horaire.');
+                        setIsCreatingBooking(false);
+                        return;
+                    }
+                } catch (conflictErr) {
+                    console.warn('Server conflict check failed — proceeding (stripe-create-booking will validate):', conflictErr);
+                }
+            }
+
             const guideNeedsStripe = selectedGuide && selectedTimeSlots.length > 0 
                 && selectedGuide.stripe_charges_enabled 
                 && selectedGuide.hourly_rate > 0;
@@ -635,6 +916,15 @@ function MapApp({ user, profile, guide }) {
                     totalAmount: selectedGuide.hourly_rate * totalHours,
                     allSlots: selectedTimeSlots
                 };
+                
+                // DATE SHIFT GUARD: Log the exact values being sent to the backend
+                console.log('[DATE TRACE] Checkout payload:', {
+                    startTime: guideCheckoutData.startTime,
+                    endTime: guideCheckoutData.endTime,
+                    startLocal: new Date(guideCheckoutData.startTime).toLocaleString(),
+                    endLocal: new Date(guideCheckoutData.endTime).toLocaleString(),
+                    browserTZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                });
                 
                 // Save chalet data for after guide payment succeeds
                 if (needsChalet && selectedChalet) {
@@ -725,10 +1015,43 @@ function MapApp({ user, profile, guide }) {
     // Handle payment success from the main booking flow CheckoutModal
     async function handleMainFlowPaymentSuccess(result) {
         console.log('💳 Payment success for', paymentCheckoutType, result);
+
+        // Capture checkout data before clearing state
+        const currentCheckoutData = paymentCheckoutData;
+        const currentCheckoutType = paymentCheckoutType;
+
         setShowPaymentCheckout(false);
         setPaymentCheckoutData(null);
+
+        // Sync Google Calendar event for guide booking (frontend backup — webhook also does this)
+        if (currentCheckoutType === 'guide' && result?.bookingId && currentCheckoutData) {
+            try {
+                const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+                const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+                await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        booking_id: result.bookingId,
+                        guide_id: currentCheckoutData.guideId,
+                        start_time: currentCheckoutData.startTime,
+                        end_time: currentCheckoutData.endTime,
+                        customer_name: currentCheckoutData.customerName,
+                        customer_email: currentCheckoutData.customerEmail,
+                        trip_type: currentCheckoutData.tripType,
+                        notes: currentCheckoutData.notes,
+                    })
+                });
+                console.log('📅 Google Calendar event synced for guide booking');
+            } catch (calendarErr) {
+                console.warn('⚠️ Could not sync Google Calendar event:', calendarErr);
+            }
+        }
         
-        if (paymentCheckoutType === 'guide') {
+        if (currentCheckoutType === 'guide') {
             // Guide payment done. Check if there's a pending chalet booking
             if (pendingChaletBooking) {
                 const chaletData = pendingChaletBooking;
@@ -751,7 +1074,7 @@ function MapApp({ user, profile, guide }) {
             }
             setPaymentCheckoutType(null);
             setBookingStep(4);
-        } else if (paymentCheckoutType === 'chalet') {
+        } else if (currentCheckoutType === 'chalet') {
             setPaymentCheckoutType(null);
             setBookingStep(4);
         }
@@ -971,6 +1294,37 @@ function MapApp({ user, profile, guide }) {
                     bookingType={paymentCheckoutType}
                     title={paymentCheckoutType === 'guide' ? selectedGuide?.name : selectedChalet?.name}
                     onSuccess={handleMainFlowPaymentSuccess}
+                />
+            )}
+
+            {/* Reservation Cart — shows pending unpaid bookings */}
+            {user && (
+                <ReservationCart
+                    userEmail={user.email}
+                    onResumePayment={async (booking) => {
+                        try {
+                            // Get client_secret for existing booking via dedicated endpoint
+                            const result = await resumeBookingPayment(booking.id);
+                            // Open CheckoutModal with pre-fetched result
+                            setPaymentCheckoutData({
+                                guideId: booking.guide_id,
+                                startTime: booking.start_time,
+                                endTime: booking.end_time,
+                                customerName: booking.customer_name,
+                                customerEmail: booking.customer_email,
+                                tripType: booking.trip_type,
+                                numberOfPeople: booking.number_of_people,
+                                notes: booking.notes,
+                                // Attach the pre-fetched result so CheckoutModal skips booking creation
+                                _resumeResult: result,
+                            });
+                            setPaymentCheckoutType('guide');
+                            setShowPaymentCheckout(true);
+                        } catch (err) {
+                            console.error('Failed to resume payment:', err);
+                            alert('Erreur lors de la reprise du paiement: ' + err.message);
+                        }
+                    }}
                 />
             )}
             

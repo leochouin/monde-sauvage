@@ -47,9 +47,10 @@ function callEdgeFunction(functionName, body, method = 'POST') {
  * Check if a guide has valid Google Calendar credentials
  */
 export async function checkGoogleCalendarConnection(guideId) {
+    // First check the stored connection status (fast, no API call)
     const { data: guide, error } = await supabase
         .from('guide')
-        .select('id, email, name, google_refresh_token, availability_calendar_id')
+        .select('id, email, name, google_refresh_token, availability_calendar_id, calendar_connection_status, calendar_disconnected_at, calendar_disconnect_reason')
         .eq('id', guideId)
         .single();
 
@@ -57,7 +58,8 @@ export async function checkGoogleCalendarConnection(guideId) {
         return {
             connected: false,
             error: 'Guide not found',
-            needsAuth: true
+            needsAuth: true,
+            connection_status: 'unknown'
         };
     }
 
@@ -66,6 +68,20 @@ export async function checkGoogleCalendarConnection(guideId) {
             connected: false,
             error: 'No Google Calendar connection',
             needsAuth: true,
+            connection_status: guide.calendar_connection_status || 'never_connected',
+            guide: { id: guide.id, email: guide.email, name: guide.name }
+        };
+    }
+
+    // If calendar is known-disconnected, don't even try to refresh — surface immediately
+    if (guide.calendar_connection_status === 'disconnected') {
+        return {
+            connected: false,
+            error: 'Calendar disconnected — please reconnect Google Calendar',
+            needsAuth: true,
+            connection_status: 'disconnected',
+            disconnected_at: guide.calendar_disconnected_at,
+            disconnect_reason: guide.calendar_disconnect_reason,
             guide: { id: guide.id, email: guide.email, name: guide.name }
         };
     }
@@ -86,6 +102,7 @@ export async function checkGoogleCalendarConnection(guideId) {
                 connected: true,
                 hasToken: true,
                 cached: tokenData.cached || false,
+                connection_status: tokenData.connection_status || 'connected',
                 guide: { id: guide.id, email: guide.email, name: guide.name, calendar_id: guide.availability_calendar_id }
             };
         } else {
@@ -94,6 +111,7 @@ export async function checkGoogleCalendarConnection(guideId) {
                 connected: false,
                 error: errorData.error || 'Token validation failed',
                 needsAuth: errorData.requiresReauth || true,
+                connection_status: errorData.connection_status || 'disconnected',
                 guide: { id: guide.id, email: guide.email, name: guide.name }
             };
         }
@@ -103,6 +121,7 @@ export async function checkGoogleCalendarConnection(guideId) {
             connected: false,
             error: err.message,
             needsAuth: true,
+            connection_status: 'unknown',
             guide: { id: guide.id, email: guide.email, name: guide.name }
         };
     }
@@ -140,6 +159,62 @@ async function clearCalendarSyncFailed(bookingId) {
         })
         .eq('id', bookingId);
 }
+
+/**
+ * Check if a guide is available for a given time range — SERVER-SIDE.
+ * Calls the check-guide-conflicts edge function which uses SERVICE_ROLE_KEY
+ * to bypass RLS, ensuring ALL bookings are visible. This is the recommended
+ * method for conflict checking before creating a booking.
+ *
+ * @param {string} guideId - The guide UUID
+ * @param {string} startTime - ISO format datetime
+ * @param {string} endTime - ISO format datetime
+ * @param {string} excludeBookingId - Optional booking ID to exclude
+ * @returns {Promise<{available: boolean, conflicts?: Array, reason?: string}>}
+ */
+export const checkGuideConflictsServer = async (guideId, startTime, endTime, excludeBookingId = null) => {
+    try {
+        console.log('🔒 Server-side conflict check:', guideId, 'from', startTime, 'to', endTime);
+
+        const params = new URLSearchParams({
+            guideId,
+            start: startTime,
+            end: endTime,
+        });
+        if (excludeBookingId) {
+            params.set('excludeBookingId', excludeBookingId);
+        }
+
+        const url = `${SUPABASE_URL}/functions/v1/check-guide-conflicts?${params.toString()}`;
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                'Content-Type': 'application/json',
+            },
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            console.error('❌ Server conflict check failed:', data);
+            // Fall back to client-side check (better than blocking the user)
+            return checkGuideAvailability(guideId, startTime, endTime, excludeBookingId);
+        }
+
+        if (!data.available) {
+            console.log('❌ Server found conflicts:', data.conflicts);
+        } else {
+            console.log('✅ Server confirms: guide is available');
+        }
+
+        return data;
+    } catch (err) {
+        console.error('❌ Server conflict check error:', err);
+        // Fall back to client-side check
+        return checkGuideAvailability(guideId, startTime, endTime, excludeBookingId);
+    }
+};
 
 /**
  * Check if a guide is available for a given time range
@@ -225,9 +300,20 @@ export const createGuideBooking = async (bookingData) => {
     try {
         console.log('📝 Creating guide booking:', bookingData);
 
+        // DATE SHIFT GUARD: Log input date values
+        console.log('🔒 [DATE GUARD] createGuideBooking input:', {
+            startTime: bookingData.startTime,
+            endTime: bookingData.endTime,
+            startParsed: new Date(bookingData.startTime).toISOString(),
+            endParsed: new Date(bookingData.endTime).toISOString(),
+            startLocal: new Date(bookingData.startTime).toLocaleString(),
+            endLocal: new Date(bookingData.endTime).toLocaleString(),
+            browserTZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        });
+
         // 1️⃣ ALWAYS check availability to prevent double booking
-        // Even if skipAvailabilityCheck is true, we do a final database check
-        const availabilityCheck = await checkGuideAvailability(
+        // Use server-side conflict check (SERVICE_ROLE_KEY, bypasses RLS)
+        const availabilityCheck = await checkGuideConflictsServer(
             bookingData.guideId,
             bookingData.startTime,
             bookingData.endTime
@@ -360,7 +446,7 @@ export const updateGuideBooking = async (bookingId, updates, allowPaidModificati
         const newEndTime = updates.end_time || currentBooking.end_time;
 
         if (updates.start_time || updates.end_time) {
-            const availabilityCheck = await checkGuideAvailability(
+            const availabilityCheck = await checkGuideConflictsServer(
                 currentBooking.guide_id,
                 newStartTime,
                 newEndTime,
@@ -852,4 +938,93 @@ export const retryAllFailedSyncs = async (guideId) => {
 
     console.log(`🔄 Retry results: ${results.succeeded}/${results.retried} succeeded`);
     return results;
+};
+
+// ─── CART: USER PENDING BOOKINGS ─────────────────────────────────────────
+
+/**
+ * Fetch all pending (unpaid) guide bookings for a given customer email.
+ * Used by the cart component to show bookings awaiting payment.
+ * Automatically filters out expired bookings (payment_link_expires_at < now).
+ *
+ * @param {string} customerEmail - The customer's email address
+ * @returns {Promise<Array>} List of pending bookings with guide info
+ */
+export const getUserPendingBookings = async (customerEmail) => {
+    if (!customerEmail) return [];
+
+    try {
+        // 1. Fetch pending bookings (no embedded join — FK not in schema cache)
+        const { data: bookings, error } = await supabase
+            .from('guide_booking')
+            .select(`
+                id, guide_id, start_time, end_time, status,
+                payment_status, customer_name, customer_email,
+                trip_type, number_of_people, notes,
+                payment_amount, payment_link_expires_at,
+                stripe_payment_intent_id, payment_link_url, created_at
+            `)
+            .eq('customer_email', customerEmail)
+            .in('status', ['pending', 'pending_payment'])
+            .eq('is_paid', false)
+            .is('deleted_at', null)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('Error fetching pending bookings:', error);
+            throw error;
+        }
+
+        if (!bookings || bookings.length === 0) return [];
+
+        // 2. Fetch guide names for all unique guide_ids
+        const guideIds = [...new Set(bookings.map(b => b.guide_id).filter(Boolean))];
+        let guidesMap = {};
+        if (guideIds.length > 0) {
+            const { data: guides } = await supabase
+                .from('guide')
+                .select('id, name, hourly_rate')
+                .in('id', guideIds);
+            if (guides) {
+                guidesMap = Object.fromEntries(guides.map(g => [g.id, g]));
+            }
+        }
+
+        // 3. Attach guide info to each booking
+        return bookings.map(b => ({
+            ...b,
+            guide: guidesMap[b.guide_id] || null,
+        }));
+    } catch (error) {
+        console.error('❌ Error in getUserPendingBookings:', error);
+        return [];
+    }
+};
+
+/**
+ * Cancel a pending (unpaid) booking from the cart.
+ * Only allows cancellation of unpaid bookings.
+ *
+ * @param {string} bookingId - Booking UUID
+ * @returns {Promise<boolean>} true if cancelled
+ */
+export const cancelPendingBooking = async (bookingId) => {
+    try {
+        const { error } = await supabase
+            .from('guide_booking')
+            .update({
+                status: 'cancelled',
+                notes: 'Annulé par le client depuis le panier',
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', bookingId)
+            .eq('is_paid', false)
+            .in('status', ['pending', 'pending_payment']);
+
+        if (error) throw error;
+        return true;
+    } catch (error) {
+        console.error('❌ Error cancelling pending booking:', error);
+        throw error;
+    }
 };

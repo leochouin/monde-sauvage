@@ -1,0 +1,2 @@
+-- Superseded by 20260301235204_prevent_guide_booking_overlap.sql
+-- (trigger-based approach instead of EXCLUDE constraint)

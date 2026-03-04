@@ -149,15 +149,19 @@ export async function getAccessToken(
 }
 
 /**
- * Get the guide's calendar ID (availability calendar or email fallback).
+ * Get the guide's availability calendar ID — "Monde Sauvage | Disponibilités".
  * 
  * If `availability_calendar_id` is stored but the calendar no longer exists
- * in Google (404), we create a new "monde sauvage" calendar, persist its ID,
- * and return it.  This keeps create/update/delete in sync with the same
- * calendar that `google-calendar-availability` manages.
+ * in Google (404), we create a new "Monde Sauvage | Disponibilités" calendar,
+ * persist its ID, and return it.
+ * 
+ * Does NOT fall back to the primary (email) calendar — all operations
+ * must happen on the dedicated availability calendar only.
+ * 
+ * For the booking/reservations calendar, use getGuideBookingCalendarId().
  */
 export async function getGuideCalendarId(
-  supabase: { from: (table: string) => { select: (fields: string) => { eq: (col: string, val: string) => { single: () => Promise<{ data: Record<string, unknown> | null; error: unknown }> } } } },
+  supabase: any,
   guideId: string,
   accessToken?: string
 ): Promise<{ calendarId: string; guide: Record<string, unknown> }> {
@@ -171,20 +175,27 @@ export async function getGuideCalendarId(
     throw new Error("Guide not found");
   }
 
-  let calendarId = (guide.availability_calendar_id as string) || (guide.email as string);
+  let calendarId = (guide.availability_calendar_id as string) || '';
 
-  // If we have an access token, verify the calendar still exists
-  if (accessToken && guide.availability_calendar_id) {
+  // If we have an access token, verify the calendar still exists (or create one)
+  if (accessToken) {
     try {
-      const verifyRes = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
+      let needsCreation = !calendarId;
 
-      if (!verifyRes.ok) {
-        console.log(`⚠️ Stored availability_calendar_id returned ${verifyRes.status}, creating new calendar...`);
+      if (calendarId) {
+        const verifyRes = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
 
-        // Try to create a new "monde sauvage" calendar
+        if (!verifyRes.ok) {
+          console.log(`⚠️ Stored availability_calendar_id returned ${verifyRes.status}, creating new calendar...`);
+          needsCreation = true;
+        }
+      }
+
+      if (needsCreation) {
+        // Create the "Monde Sauvage | Disponibilités" calendar
         const createRes = await fetch(
           "https://www.googleapis.com/calendar/v3/calendars",
           {
@@ -194,8 +205,8 @@ export async function getGuideCalendarId(
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              summary: "monde sauvage",
-              timeZone: "UTC",
+              summary: "Monde Sauvage | Disponibilités",
+              timeZone: "Europe/Brussels",
             }),
           }
         );
@@ -205,16 +216,15 @@ export async function getGuideCalendarId(
           calendarId = created.id;
 
           // Persist the new calendar ID
-          await (supabase as any)
+          await supabase
             .from("guide")
             .update({ availability_calendar_id: calendarId })
             .eq("id", guideId);
 
           console.log(`✅ Created & stored new availability calendar: ${calendarId}`);
         } else {
-          // Fall back to guide email (primary calendar)
-          console.warn("⚠️ Could not create calendar, falling back to primary (email)");
-          calendarId = guide.email as string;
+          // Cannot create calendar — fail instead of falling back to primary
+          throw new Error("Could not create or verify the Monde Sauvage | Disponibilités calendar");
         }
       }
     } catch (err) {
@@ -223,6 +233,98 @@ export async function getGuideCalendarId(
   }
 
   return { calendarId, guide };
+}
+
+/**
+ * Get or create the guide's booking calendar — "Monde Sauvage | Réservations".
+ * 
+ * If `booking_calendar_id` is stored but the calendar no longer exists
+ * in Google (404), we create a new calendar, persist its ID, and return it.
+ */
+export async function getGuideBookingCalendarId(
+  supabase: any,
+  guideId: string,
+  accessToken?: string
+): Promise<{ calendarId: string; guide: Record<string, unknown> }> {
+  const { data: guide, error: guideError } = await supabase
+    .from("guide")
+    .select("email, name, booking_calendar_id")
+    .eq("id", guideId)
+    .single();
+
+  if (guideError || !guide) {
+    throw new Error("Guide not found");
+  }
+
+  let calendarId = (guide.booking_calendar_id as string) || '';
+
+  if (accessToken) {
+    try {
+      let needsCreation = !calendarId;
+
+      if (calendarId) {
+        const verifyRes = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+
+        if (!verifyRes.ok) {
+          console.log(`⚠️ Stored booking_calendar_id returned ${verifyRes.status}, creating new calendar...`);
+          needsCreation = true;
+        }
+      }
+
+      if (needsCreation) {
+        const createRes = await fetch(
+          "https://www.googleapis.com/calendar/v3/calendars",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              summary: "Monde Sauvage | Réservations",
+              timeZone: "Europe/Brussels",
+            }),
+          }
+        );
+
+        if (createRes.ok) {
+          const created = await createRes.json();
+          calendarId = created.id;
+
+          await supabase
+            .from("guide")
+            .update({ booking_calendar_id: calendarId })
+            .eq("id", guideId);
+
+          console.log(`✅ Created & stored new booking calendar: ${calendarId}`);
+        } else {
+          throw new Error("Could not create or verify the Monde Sauvage | Réservations calendar");
+        }
+      }
+    } catch (err) {
+      console.warn("⚠️ Booking calendar verification failed, using stored ID:", err);
+    }
+  }
+
+  return { calendarId, guide };
+}
+
+/**
+ * Ensure both calendars (availability + booking) exist for a guide.
+ * Creates any missing calendars idempotently.
+ * Returns both calendar IDs.
+ */
+export async function ensureBothCalendars(
+  supabase: any,
+  guideId: string,
+  accessToken: string
+): Promise<{ availabilityCalendarId: string; bookingCalendarId: string }> {
+  const { calendarId: availabilityCalendarId } = await getGuideCalendarId(supabase, guideId, accessToken);
+  const { calendarId: bookingCalendarId } = await getGuideBookingCalendarId(supabase, guideId, accessToken);
+  return { availabilityCalendarId, bookingCalendarId };
 }
 
 /**

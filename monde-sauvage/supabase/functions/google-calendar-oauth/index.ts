@@ -1,7 +1,10 @@
 // Supabase Edge Function: google-calendar-oauth
 // This function handles Google OAuth for Calendar access
 // It asks for permission and stores the returned tokens.
+// v2: Now stores encrypted tokens and sets calendar_connection_status.
 import { createClient } from "@supabase/supabase-js";
+import { encryptToken } from "../_shared/tokenEncryption.ts";
+import { ensureBothCalendars } from "../_shared/calendarUtils.ts";
 
 // These are the Google API endpoints we'll use
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -216,13 +219,26 @@ Deno.serve(async (req: Request) => {
       if (guideId) {
         console.log("Storing refresh token for guide:", guideId);
         
+        // Encrypt the refresh token before storage
+        const { encrypted, iv } = await encryptToken(tokenData.refresh_token);
+        
         const { error } = await supabase
           .from("guide")
           .upsert(
             {
               id: guideId,
-              google_refresh_token: tokenData.refresh_token,
+              google_refresh_token: tokenData.refresh_token, // Legacy plaintext (for backward compat)
+              encrypted_refresh_token: encrypted,
+              token_encryption_iv: iv,
               google_token_created_at: new Date().toISOString(),
+              calendar_connection_status: "connected",
+              calendar_last_validated_at: new Date().toISOString(),
+              calendar_disconnected_at: null,
+              calendar_disconnect_reason: null,
+              token_refresh_failure_count: 0,
+              // Clear any cached token so next refresh picks up the new one
+              cached_access_token: null,
+              access_token_expires_at: null,
             },
             { onConflict: "id" }
           );
@@ -235,8 +251,22 @@ Deno.serve(async (req: Request) => {
           });
         }
 
-        console.log("Successfully stored refresh token for guide, redirecting to:", redirectTo);
+        console.log("Successfully stored encrypted refresh token for guide, redirecting to:", redirectTo);
         
+        // 4️⃣ Step 4: Eagerly create both calendars (availability + booking)
+        // This ensures they exist immediately after OAuth, rather than lazy-creating later.
+        try {
+          const { availabilityCalendarId, bookingCalendarId } = await ensureBothCalendars(
+            supabase,
+            guideId,
+            tokenData.access_token
+          );
+          console.log(`✅ Both calendars ensured — availability: ${availabilityCalendarId}, booking: ${bookingCalendarId}`);
+        } catch (calErr: any) {
+          // Non-fatal: calendars will be lazy-created on first use
+          console.warn("⚠️ Could not eagerly create calendars (will be lazy-created):", calErr.message);
+        }
+
         return new Response(null, {
           status: 302,
           headers: { Location: redirectTo },

@@ -70,10 +70,10 @@ Deno.serve(async (req: Request) => {
     const tokenData = await tokenRes.json();
     const accessToken = tokenData.access_token;
 
-    // Get guide email
+    // Get guide's availability calendar ID (Monde Sauvage | Disponibilités)
     const { data: guide, error: guideError } = await supabase
       .from("guide")
-      .select("email")
+      .select("email, availability_calendar_id")
       .eq("id", guide_id)
       .single();
 
@@ -81,10 +81,24 @@ Deno.serve(async (req: Request) => {
       throw new Error("Guide not found");
     }
 
-    const calendarId = guide.email;
+    if (!guide.availability_calendar_id) {
+      return new Response(
+        JSON.stringify({ 
+          available: true, 
+          conflicts: [], 
+          message: "No availability calendar configured — guide is available by default" 
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
 
-    // Query Google Calendar for events in time range
-    console.log("📅 Fetching events from Google Calendar...");
+    const calendarId = guide.availability_calendar_id;
+
+    // Query Google Calendar (Monde Sauvage | Disponibilités) for events in time range
+    console.log("📅 Fetching events from Monde Sauvage | Disponibilités calendar...");
     
     const calendarApiUrl = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`);
     calendarApiUrl.searchParams.set("timeMin", start_time);

@@ -119,6 +119,24 @@ export async function checkOnboardingStatus(establishmentId) {
 }
 
 /**
+ * Create a temporary login link to the Stripe Express dashboard for a guide.
+ * The link is single-use and opens the guide's connected account dashboard.
+ * 
+ * @param {string} guideId - The guide UUID
+ * @returns {Promise<{url: string}>}
+ */
+export async function createGuideDashboardLink(guideId) {
+  console.log('🔗 Creating Stripe dashboard link for guide:', guideId);
+
+  const result = await callEdgeFunction('stripe-dashboard-link', {
+    body: { guideId },
+  });
+
+  console.log('✅ Dashboard link created');
+  return result;
+}
+
+/**
  * Check the guide's Stripe onboarding status after returning from Stripe.
  * 
  * @param {string} guideId - The guide UUID
@@ -210,6 +228,53 @@ export async function createGuideBookingWithPayment(bookingData) {
 }
 
 /**
+ * Resume payment for an existing pending booking (from cart).
+ * Retrieves or creates a PaymentIntent and extends the expiry.
+ *
+ * @param {string} bookingId - Existing booking UUID
+ * @returns {Promise<{bookingId, clientSecret, stripeAccountId, pricing, expiresAt}>}
+ */
+export async function resumeBookingPayment(bookingId) {
+  console.log('🔄 Resuming payment for booking:', bookingId);
+
+  const result = await callEdgeFunction('resume-booking-payment', {
+    body: { bookingId },
+  });
+
+  console.log('✅ Payment resumed:', result.bookingId);
+  return result;
+}
+
+/**
+ * Create a payment link for an admin/guide-created booking.
+ * Returns a URL that can be sent to the client.
+ * The booking is created in 'pending_payment' status and only confirmed
+ * when the client completes payment.
+ * 
+ * @param {Object} bookingData
+ * @param {string} bookingData.guideId
+ * @param {string} bookingData.startTime - ISO datetime
+ * @param {string} bookingData.endTime - ISO datetime
+ * @param {string} bookingData.customerName
+ * @param {string} bookingData.customerEmail
+ * @param {string} [bookingData.customerPhone]
+ * @param {string} [bookingData.tripType]
+ * @param {number} [bookingData.numberOfPeople]
+ * @param {string} [bookingData.notes]
+ * @returns {Promise<{bookingId, paymentLinkUrl, expiresAt, pricing}>}
+ */
+export async function createPaymentLink(bookingData) {
+  console.log('🔗 Creating payment link for guide booking:', bookingData);
+
+  const result = await callEdgeFunction('stripe-create-payment-link', {
+    body: bookingData,
+  });
+
+  console.log('✅ Payment link created:', result.paymentLinkUrl);
+  return result;
+}
+
+/**
  * Request a refund for a booking.
  * 
  * @param {string} bookingId - Booking UUID
@@ -226,6 +291,30 @@ export async function refundBooking(bookingId, reason, amount) {
 
   console.log('✅ Refund processed:', result.refundId);
   return result;
+}
+
+/**
+ * Fallback: verify payment with Stripe and update DB.
+ * Called by the frontend after confirmPayment() succeeds, in case the
+ * webhook is delayed. Idempotent — safe to call multiple times.
+ *
+ * @param {string} bookingId - Booking UUID
+ * @param {string} bookingType - "chalet" or "guide"
+ * @param {string} [paymentIntentId] - Optional PI id (looked up from DB if omitted)
+ * @returns {Promise<{confirmed: boolean}>}
+ */
+export async function confirmBookingPayment(bookingId, bookingType = 'chalet', paymentIntentId) {
+  try {
+    const result = await callEdgeFunction('confirm-booking-payment', {
+      body: { bookingId, bookingType, paymentIntentId },
+    });
+    console.log('🔒 Payment confirmation fallback:', result);
+    return result;
+  } catch (err) {
+    // Non-fatal — the webhook should still handle it
+    console.warn('⚠️ Payment confirmation fallback failed (webhook should handle it):', err.message);
+    return { confirmed: false, error: err.message };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

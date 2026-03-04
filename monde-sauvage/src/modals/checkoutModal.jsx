@@ -13,7 +13,7 @@
  *   title — display title (e.g. chalet name or guide name)
  */
 import { useState, useEffect, useRef } from 'react';
-import { createBookingWithPayment, createGuideBookingWithPayment, formatPrice } from '../utils/stripeService.js';
+import { createBookingWithPayment, createGuideBookingWithPayment, confirmBookingPayment, formatPrice } from '../utils/stripeService.js';
 import './checkoutModal.css';
 
 const STRIPE_PK = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
@@ -31,6 +31,9 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
   const cardMountedRef = useRef(false);
   const containerRef = useRef(null);
 
+  // Deduplicate booking creation across React StrictMode double-fire
+  const bookingPromiseRef = useRef(null);
+
   // Determine if we're in test mode
   const isTestMode = STRIPE_PK?.startsWith('pk_test_');
 
@@ -45,42 +48,65 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
         setStep('loading');
         setError(null);
 
-        // 1. Load Stripe.js if not already loaded
+        // 1. Wait for Stripe.js to load (it's loaded async in index.html)
         if (!globalThis.Stripe) {
-          throw new Error('Stripe.js n\'est pas chargé. Veuillez rafraîchir la page.');
+          // Wait up to 10 seconds for Stripe.js to load
+          await new Promise((resolve, reject) => {
+            let waited = 0;
+            const interval = setInterval(() => {
+              if (globalThis.Stripe) {
+                clearInterval(interval);
+                resolve();
+              } else if (waited >= 10000) {
+                clearInterval(interval);
+                reject(new Error('Stripe.js n\'a pas pu être chargé. Veuillez rafraîchir la page.'));
+              }
+              waited += 200;
+            }, 200);
+          });
         }
 
         // 2. Create booking + PaymentIntent via Edge Function
-        const result = bookingType === 'guide'
-          ? await createGuideBookingWithPayment({
-              guideId: bookingData.guideId,
-              startTime: bookingData.startTime,
-              endTime: bookingData.endTime,
-              customerName: bookingData.customerName,
-              customerEmail: bookingData.customerEmail,
-              customerPhone: bookingData.customerPhone,
-              tripType: bookingData.tripType,
-              numberOfPeople: bookingData.numberOfPeople,
-              notes: bookingData.notes,
-            })
-          : await createBookingWithPayment({
-              chaletId: bookingData.chaletId,
-              startDate: bookingData.startDate,
-              endDate: bookingData.endDate,
-              customerName: bookingData.customerName,
-              customerEmail: bookingData.customerEmail,
-              notes: bookingData.notes,
-            });
+        //    Use a shared promise ref so React StrictMode double-fire
+        //    doesn't create two bookings.
+        //    If _resumeResult is provided (cart resume flow), skip creation.
+        if (!bookingPromiseRef.current) {
+          if (bookingData._resumeResult) {
+            bookingPromiseRef.current = Promise.resolve(bookingData._resumeResult);
+          } else if (bookingType === 'guide') {
+            bookingPromiseRef.current = createGuideBookingWithPayment({
+                guideId: bookingData.guideId,
+                startTime: bookingData.startTime,
+                endTime: bookingData.endTime,
+                customerName: bookingData.customerName,
+                customerEmail: bookingData.customerEmail,
+                customerPhone: bookingData.customerPhone,
+                tripType: bookingData.tripType,
+                numberOfPeople: bookingData.numberOfPeople,
+                notes: bookingData.notes,
+              });
+          } else {
+            bookingPromiseRef.current = createBookingWithPayment({
+                chaletId: bookingData.chaletId,
+                startDate: bookingData.startDate,
+                endDate: bookingData.endDate,
+                customerName: bookingData.customerName,
+                customerEmail: bookingData.customerEmail,
+                notes: bookingData.notes,
+              });
+          }
+        }
+
+        const result = await bookingPromiseRef.current;
 
         if (cancelled) return;
 
         setBookingResult(result);
 
-        // 3. Initialize Stripe with the connected account
-        //    For direct charges, we pass stripeAccount to Stripe()
-        stripeRef.current = globalThis.Stripe(STRIPE_PK, {
-          stripeAccount: result.stripeAccountId,
-        });
+        // 3. Initialize Stripe on the platform account.
+        //    We use destination charges so the PaymentIntent lives on the
+        //    platform — no stripeAccount option needed.
+        stripeRef.current = globalThis.Stripe(STRIPE_PK);
 
         // 4. Create Elements instance
         elementsRef.current = stripeRef.current.elements({
@@ -97,21 +123,18 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
           },
         });
 
-        // 5. Create and mount the Payment Element
+        // 5. Create the Payment Element (mount happens in separate useEffect)
         cardRef.current = elementsRef.current.create('payment', {
           layout: 'tabs',
+          paymentMethodOrder: ['card'],
+        });
+
+        // Listen for the element to be fully ready
+        cardRef.current.on('ready', () => {
+          console.log('✅ Stripe Payment Element ready');
         });
 
         setStep('ready');
-
-        // Mount after state update triggers render
-        requestAnimationFrame(() => {
-          const mountPoint = document.getElementById('checkout-payment-element');
-          if (mountPoint && cardRef.current && !cardMountedRef.current) {
-            cardRef.current.mount(mountPoint);
-            cardMountedRef.current = true;
-          }
-        });
 
       } catch (err) {
         if (!cancelled) {
@@ -134,8 +157,44 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
       cardRef.current = null;
       elementsRef.current = null;
       stripeRef.current = null;
+      // NOTE: Do NOT clear bookingPromiseRef here — the re-fired effect
+      //       needs to reuse the same promise to avoid a duplicate booking.
     };
   }, [isOpen, bookingData]);
+
+  // Clear the booking promise when the modal fully closes so a fresh
+  // booking is created the next time the modal opens.
+  useEffect(() => {
+    if (!isOpen) {
+      bookingPromiseRef.current = null;
+    }
+  }, [isOpen]);
+
+  // ─── Mount Payment Element when step becomes 'ready' ──────────────────
+  useEffect(() => {
+    if (step !== 'ready' || !cardRef.current || cardMountedRef.current) return;
+
+    // Poll for the mount point (React may not have rendered it yet)
+    let attempts = 0;
+    const maxAttempts = 20;
+    const tryMount = () => {
+      const mountPoint = document.getElementById('checkout-payment-element');
+      if (mountPoint && cardRef.current && !cardMountedRef.current) {
+        cardRef.current.mount(mountPoint);
+        cardMountedRef.current = true;
+        console.log('✅ Stripe Payment Element mounted');
+      } else if (attempts < maxAttempts) {
+        attempts++;
+        requestAnimationFrame(tryMount);
+      } else {
+        console.error('❌ Could not find #checkout-payment-element after', maxAttempts, 'attempts');
+        setError('Impossible de charger le formulaire de paiement. Veuillez rafraîchir la page.');
+        setStep('error');
+      }
+    };
+
+    tryMount();
+  }, [step]);
 
   // ─── Handle Payment ─────────────────────────────────────────────────────
   const handlePayment = async (e) => {
@@ -169,6 +228,10 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
 
       // Payment succeeded (no redirect needed)
       setStep('success');
+
+      // Fallback: verify with Stripe API and update DB in case the webhook
+      // is delayed.  This is fire-and-forget — non-blocking for the user.
+      confirmBookingPayment(bookingResult.bookingId, bookingType).catch(() => {});
       
       if (onSuccess) {
         onSuccess(bookingResult);
@@ -298,6 +361,10 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
                       </span>
                       <span>{formatPrice(bookingResult.pricing.subtotal)}</span>
                     </div>
+                    <div className="checkout-summary-row" style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                      <span>Frais de service</span>
+                      <span>{formatPrice(bookingResult.pricing.applicationFee)}</span>
+                    </div>
                     <div className="checkout-summary-row total">
                       <span>Total</span>
                       <span>{formatPrice(bookingResult.pricing.total)}</span>
@@ -313,6 +380,10 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
                         🏠 {formatPrice(bookingResult.pricing.pricePerNight)} × {bookingResult.pricing.nights} nuit{bookingResult.pricing.nights > 1 ? 's' : ''}
                       </span>
                       <span>{formatPrice(bookingResult.pricing.subtotal)}</span>
+                    </div>
+                    <div className="checkout-summary-row" style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                      <span>Frais de service</span>
+                      <span>{formatPrice(bookingResult.pricing.applicationFee)}</span>
                     </div>
                     <div className="checkout-summary-row total">
                       <span>Total</span>

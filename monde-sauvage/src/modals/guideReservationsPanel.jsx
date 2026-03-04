@@ -9,7 +9,7 @@
  * Designed to be embedded inside AccountSettingsModal as a tab.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   getGuideBookings,
   createGuideBooking,
@@ -17,12 +17,14 @@ import {
   cancelGuideBooking,
   checkGuideAvailability,
 } from '../utils/guideBookingService.js';
+import { createPaymentLink } from '../utils/stripeService.js';
 import { getGuideClients } from '../utils/guideClientService.js';
 import DatePicker from 'react-datepicker';
 // CSS already loaded from guideClientModal/guideBookingModal
 
 const STATUS_LABELS = {
   pending: { label: 'En attente', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
+  pending_payment: { label: 'En attente de paiement', color: '#f97316', bg: 'rgba(249,115,22,0.12)' },
   confirmed: { label: 'Confirmée', color: '#059669', bg: 'rgba(5,150,105,0.12)' },
   cancelled: { label: 'Annulée', color: '#dc2626', bg: 'rgba(220,38,38,0.12)' },
   completed: { label: 'Terminée', color: '#6b7280', bg: 'rgba(107,114,128,0.12)' },
@@ -80,6 +82,9 @@ export default function GuideReservationsPanel({ guide }) {
   const [clients, setClients] = useState([]);
   const [showClientPicker, setShowClientPicker] = useState(false);
   const [clientSearch, setClientSearch] = useState('');
+
+  // Payment link state
+  const [paymentLinkResult, setPaymentLinkResult] = useState(null);
 
   // ── Load bookings ────────────────────────────────────────────────
   const loadBookings = useCallback(async () => {
@@ -247,18 +252,47 @@ export default function GuideReservationsPanel({ guide }) {
       return;
     }
 
+    const bookingPayload = {
+      guideId: guide.id,
+      startTime: localDateToUTC(createForm.startTime),
+      endTime: localDateToUTC(createForm.endTime),
+      customerName: createForm.customerName.trim(),
+      customerEmail: createForm.customerEmail.trim() || null,
+      customerPhone: createForm.customerPhone.trim() || null,
+      tripType: createForm.tripType || null,
+      numberOfPeople: parseInt(createForm.numberOfPeople) || 1,
+      notes: createForm.notes.trim() || null,
+    };
+
+    // If guide has Stripe enabled and hourly rate, REQUIRE payment
+    if (guide?.stripe_charges_enabled && guide?.hourly_rate > 0) {
+      if (!createForm.customerEmail?.trim()) {
+        setError('Le courriel du client est requis pour envoyer le lien de paiement.');
+        return;
+      }
+
+      setCreating(true);
+      try {
+        const result = await createPaymentLink(bookingPayload);
+        setPaymentLinkResult(result);
+        setSuccess(
+          `Lien de paiement créé! La réservation sera confirmée lorsque le client aura payé.`
+        );
+        closeCreate();
+        await loadBookings();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setCreating(false);
+      }
+      return;
+    }
+
+    // Guide without Stripe — create booking directly (free bookings only)
     setCreating(true);
     try {
       await createGuideBooking({
-        guideId: guide.id,
-        startTime: localDateToUTC(createForm.startTime),
-        endTime: localDateToUTC(createForm.endTime),
-        customerName: createForm.customerName.trim(),
-        customerEmail: createForm.customerEmail.trim() || null,
-        customerPhone: createForm.customerPhone.trim() || null,
-        tripType: createForm.tripType || null,
-        numberOfPeople: parseInt(createForm.numberOfPeople) || 1,
-        notes: createForm.notes.trim() || null,
+        ...bookingPayload,
         status: 'confirmed',
       });
       setSuccess('Réservation créée avec succès.');
@@ -677,6 +711,27 @@ export default function GuideReservationsPanel({ guide }) {
             />
           </div>
 
+          {/* Price Preview (for guides with Stripe + hourly rate) */}
+          {guide?.stripe_charges_enabled && guide?.hourly_rate > 0 && createForm.startTime && createForm.endTime && createForm.endTime > createForm.startTime && (() => {
+            const durationMs = createForm.endTime.getTime() - createForm.startTime.getTime();
+            const durationHours = Math.round(durationMs / (1000 * 60 * 60) * 10) / 10;
+            const total = Math.round(guide.hourly_rate * durationHours * 100) / 100;
+            return (
+              <div style={{ background: '#f0fdf4', padding: '12px 16px', borderRadius: '8px', marginBottom: '16px', border: '1px solid #bbf7d0' }}>
+                <div style={{ fontWeight: '600', fontSize: '14px', color: '#166534', marginBottom: '4px' }}>
+                  💰 Estimation du prix
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#374151' }}>
+                  <span>{guide.hourly_rate}$/h × {durationHours}h</span>
+                  <span style={{ fontWeight: '600' }}>{total}$ CAD</span>
+                </div>
+                <p style={{ fontSize: '12px', color: '#059669', margin: '6px 0 0' }}>
+                  🔗 Un lien de paiement sera généré et envoyé au client
+                </p>
+              </div>
+            );
+          })()}
+
           {/* Actions */}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
             <button
@@ -702,7 +757,7 @@ export default function GuideReservationsPanel({ guide }) {
                 opacity: (creating || (createAvailability && !createAvailability.available)) ? 0.6 : 1,
               }}
             >
-              {creating ? 'Création...' : 'Créer la réservation'}
+              {creating ? 'Création...' : (guide?.stripe_charges_enabled && guide?.hourly_rate > 0) ? '🔗 Créer et envoyer le lien de paiement' : 'Créer la réservation'}
             </button>
           </div>
         </div>
@@ -1030,6 +1085,59 @@ export default function GuideReservationsPanel({ guide }) {
         </div>
       )}
 
+      {/* Payment Link Result Banner */}
+      {paymentLinkResult && (
+        <div style={{
+          padding: '14px 16px', backgroundColor: '#eff6ff', color: '#1e40af',
+          border: '1px solid #bfdbfe', borderRadius: '10px', fontSize: '14px',
+        }}>
+          <div style={{ fontWeight: '600', marginBottom: '6px' }}>🔗 Lien de paiement créé</div>
+          <div style={{ fontSize: '13px', color: '#374151', marginBottom: '8px' }}>
+            Envoyez ce lien au client pour qu'il puisse payer. La réservation sera confirmée automatiquement après le paiement.
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              readOnly
+              value={paymentLinkResult.paymentLinkUrl}
+              style={{
+                flex: 1, padding: '8px 10px', fontSize: '12px', border: '1px solid #d1d5db',
+                borderRadius: '6px', backgroundColor: '#fff', color: '#374151',
+                minWidth: '200px',
+              }}
+              onClick={(e) => e.target.select()}
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(paymentLinkResult.paymentLinkUrl);
+                setSuccess('Lien copié dans le presse-papiers!');
+              }}
+              style={{
+                padding: '8px 14px', backgroundColor: '#2D5F4C', color: '#fff',
+                border: 'none', borderRadius: '6px', cursor: 'pointer',
+                fontSize: '13px', fontWeight: '500', whiteSpace: 'nowrap',
+              }}
+            >
+              📋 Copier le lien
+            </button>
+            <button
+              onClick={() => setPaymentLinkResult(null)}
+              style={{
+                padding: '8px 10px', backgroundColor: 'transparent', color: '#6b7280',
+                border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer',
+                fontSize: '13px',
+              }}
+            >
+              ✕
+            </button>
+          </div>
+          <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '6px' }}>
+            Expire le {new Date(paymentLinkResult.expiresAt).toLocaleString('fr-CA')} • 
+            Total: {paymentLinkResult.pricing.total}$ CAD
+          </div>
+        </div>
+      )}
+
       {/* Loading */}
       {loading && (
         <div style={{ textAlign: 'center', padding: '2rem', color: '#6b7280' }}>
@@ -1086,6 +1194,23 @@ export default function GuideReservationsPanel({ guide }) {
                         <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600', color: '#059669', backgroundColor: 'rgba(5,150,105,0.12)' }}>
                           💰 Payée
                         </span>
+                      )}
+                      {booking.status === 'pending_payment' && booking.payment_link_url && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(booking.payment_link_url);
+                            setSuccess('Lien de paiement copié!');
+                          }}
+                          style={{
+                            padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600',
+                            color: '#1d4ed8', backgroundColor: 'rgba(59,130,246,0.12)',
+                            border: 'none', cursor: 'pointer',
+                          }}
+                          title="Cliquer pour copier le lien de paiement"
+                        >
+                          🔗 Copier lien
+                        </button>
                       )}
                     </div>
 
