@@ -79,6 +79,8 @@ Deno.serve(async (req: Request) => {
           notes,
           payment_amount,
           application_fee,
+          platform_fee_amount,
+          platform_fee_waived,
           stripe_payment_intent_id,
           confirmation_email_sent_at
         `)
@@ -120,7 +122,8 @@ Deno.serve(async (req: Request) => {
       const durationLabel = durationHours > 0 ? `${Math.round(durationHours * 10) / 10}h` : "1 jour";
 
       const total = parseFloat(booking.payment_amount) || 0;
-      const subtotal = total; // For guide bookings, subtotal = total (no separate taxes)
+      const feeAmount = parseFloat(booking.platform_fee_amount ?? booking.application_fee) || 0;
+      const subtotal = Math.max(total - feeAmount, 0);
 
       // Build hourly rate label
       const hourlyRate = durationHours > 0 ? Math.round((total / durationHours) * 100) / 100 : total;
@@ -193,6 +196,8 @@ Deno.serve(async (req: Request) => {
           nights,
           price_per_night,
           application_fee,
+          platform_fee_amount,
+          platform_fee_waived,
           stripe_payment_intent_id,
           confirmation_email_sent_at
         `)

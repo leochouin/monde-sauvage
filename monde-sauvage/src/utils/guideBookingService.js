@@ -25,6 +25,12 @@ import supabase from './supabase.js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+function isMissingSchemaColumn(error, columnName) {
+    const msg = String(error?.message || '').toLowerCase();
+    const target = String(columnName || '').toLowerCase();
+    return msg.includes(`could not find the '${target}' column`) || msg.includes(`column \"${target}\" does not exist`);
+}
+
 /**
  * Call a Supabase edge function with standard headers.
  */
@@ -293,6 +299,15 @@ export const checkGuideAvailability = async (guideId, startTime, endTime, exclud
  * @param {number} bookingData.numberOfPeople - Number of people
  * @param {string} bookingData.notes - Optional notes
  * @param {string} bookingData.status - Status (default: 'pending')
+ * @param {string} bookingData.source - Legacy source (default: 'system')
+ * @param {string} bookingData.bookingOrigin - Business origin ('platform' | 'guide_manual')
+ * @param {string} bookingData.paymentStatus - Payment status override
+ * @param {boolean} bookingData.isPaid - Payment received flag
+ * @param {number} bookingData.paymentAmount - Booking amount in CAD
+ * @param {number} bookingData.applicationFee - Legacy fee column value
+ * @param {number} bookingData.platformFeeAmount - Explicit platform fee amount
+ * @param {boolean} bookingData.platformFeeWaived - Explicit platform fee waiver
+ * @param {string} bookingData.paymentReference - Optional external payment reference
  * @param {boolean} bookingData.skipAvailabilityCheck - Skip availability check if slots pre-selected (default: false)
  * @returns {Promise<Object>} The created booking
  */
@@ -325,27 +340,60 @@ export const createGuideBooking = async (bookingData) => {
         }
 
         // 2️⃣ Create booking in database (SOURCE OF TRUTH)
-        const { data: booking, error: bookingError } = await supabase
+        const source = bookingData.source || 'system';
+        const bookingOrigin = bookingData.bookingOrigin || 'platform';
+        const platformFeeAmount = bookingData.platformFeeAmount ?? bookingData.applicationFee ?? 0;
+        const platformFeeWaived = bookingData.platformFeeWaived ?? (Number(platformFeeAmount) === 0 && bookingOrigin === 'guide_manual');
+
+        const insertPayload = {
+            guide_id: bookingData.guideId,
+            start_time: bookingData.startTime,
+            end_time: bookingData.endTime,
+            status: bookingData.status || 'pending',
+            source,
+            booking_origin: bookingOrigin,
+            customer_name: bookingData.customerName,
+            customer_email: bookingData.customerEmail,
+            customer_phone: bookingData.customerPhone || null,
+            trip_type: bookingData.tripType || null,
+            number_of_people: bookingData.numberOfPeople || 1,
+            notes: bookingData.notes || null,
+            payment_status: bookingData.paymentStatus || 'unpaid',
+            is_paid: bookingData.isPaid === true,
+            payment_amount: bookingData.paymentAmount ?? null,
+            payment_reference: bookingData.paymentReference || null,
+            application_fee: bookingData.applicationFee ?? platformFeeAmount,
+            platform_fee_amount: platformFeeAmount,
+            platform_fee_waived: platformFeeWaived,
+            google_event_id: null,
+            calendar_sync_failed: false,
+            calendar_sync_attempts: 0,
+            calendar_sync_error: null,
+        };
+
+        let { data: booking, error: bookingError } = await supabase
             .from('guide_booking')
-            .insert([{
-                guide_id: bookingData.guideId,
-                start_time: bookingData.startTime,
-                end_time: bookingData.endTime,
-                status: bookingData.status || 'pending',
-                source: 'system', // Created through the system
-                customer_name: bookingData.customerName,
-                customer_email: bookingData.customerEmail,
-                customer_phone: bookingData.customerPhone || null,
-                trip_type: bookingData.tripType || null,
-                number_of_people: bookingData.numberOfPeople || 1,
-                notes: bookingData.notes || null,
-                google_event_id: null, // Will be populated after calendar sync
-                calendar_sync_failed: false,
-                calendar_sync_attempts: 0,
-                calendar_sync_error: null,
-            }])
+            .insert([insertPayload])
             .select()
             .single();
+
+        if (bookingError && (
+            isMissingSchemaColumn(bookingError, 'booking_origin')
+            || isMissingSchemaColumn(bookingError, 'platform_fee_amount')
+            || isMissingSchemaColumn(bookingError, 'platform_fee_waived')
+        )) {
+            const { booking_origin, platform_fee_amount, platform_fee_waived, ...legacyPayload } = insertPayload;
+            console.warn('Schema cache is missing new fee/origin columns; retrying insert with legacy payload.');
+
+            const retry = await supabase
+                .from('guide_booking')
+                .insert([legacyPayload])
+                .select()
+                .single();
+
+            booking = retry.data;
+            bookingError = retry.error;
+        }
 
         if (bookingError) {
             console.error('❌ Error creating booking:', bookingError);

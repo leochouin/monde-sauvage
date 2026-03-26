@@ -2,7 +2,9 @@
 import React, { useState, useEffect } from "react";
 void React;
 import GuideCalendar from "../components/GuideCalendar.jsx";
+import AvatarImage from "../components/AvatarImage.jsx";
 import supabase from "../utils/supabase.js";
+import { resolveAvatarFromSources } from "../utils/avatar.js";
 
 // Fish types available for guides to specialize in
 const FISH_TYPES = [
@@ -16,6 +18,18 @@ const FISH_TYPES = [
     { value: 'plie', label: 'Plie' },
     { value: 'capelan', label: 'Capelan' }
 ];
+
+  const getFishLabel = (fishValue) => FISH_TYPES.find((f) => f.value === fishValue)?.label || fishValue;
+
+  const isMissingGuideServiceLocationsTableError = (error) => {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+      error?.code === '42P01'
+      || error?.code === 'PGRST205'
+      || message.includes("could not find the table 'public.guide_service_locations'")
+      || message.includes('relation "guide_service_locations" does not exist')
+    );
+  };
 
 // -------------------
 // Named export: GuideCalendar
@@ -31,12 +45,18 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
     experience: '',
     bio: '',
     hourly_rate: '',
-    location: '',
     phone: '',
     email: '',
     fish_types: [],
   });
+  const [availableZonesByFishType, setAvailableZonesByFishType] = useState({});
+  const [selectedServiceLocationIds, setSelectedServiceLocationIds] = useState([]);
+  const [selectedLocationRows, setSelectedLocationRows] = useState([]);
+  const [serviceLocationError, setServiceLocationError] = useState('');
+  const [loadingServiceLocations, setLoadingServiceLocations] = useState(false);
+  const [isLocationDropdownOpen, setIsLocationDropdownOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [guideAvatarSrc, setGuideAvatarSrc] = useState('');
   console.log("GuideProfile render, guide =", guide);
 
   useEffect(() => {
@@ -46,13 +66,139 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
         experience: guide.experience || '',
         bio: guide.bio || '',
         hourly_rate: guide.hourly_rate || '',
-        location: guide.location || '',
         phone: guide.phone || '',
         email: guide.email || '',
         fish_types: guide.fish_types || [],
       });
     }
   }, [guide]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadGuideAvatar = async () => {
+      if (!guide) {
+        if (!cancelled) setGuideAvatarSrc('');
+        return;
+      }
+
+      let linkedUser = null;
+      if (guide?.user_id) {
+        const { data: userRow, error: userError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', guide.user_id)
+          .maybeSingle();
+
+        if (!userError) {
+          linkedUser = userRow || null;
+        }
+      }
+
+      let authUser = null;
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (!authError && authData?.user?.id === guide?.user_id) {
+        authUser = authData.user;
+      }
+
+      const { avatarSrc } = await resolveAvatarFromSources([guide, linkedUser, authUser], {
+        supabase,
+        emptySrcFallback: '',
+      });
+
+      if (!cancelled) {
+        setGuideAvatarSrc(avatarSrc);
+      }
+    };
+
+    loadGuideAvatar();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [guide]);
+
+  useEffect(() => {
+    const selectedFishTypes = editedGuide.fish_types || [];
+    const fetchAvailableZones = async () => {
+      if (selectedFishTypes.length === 0) {
+        setAvailableZonesByFishType({});
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('fishing_zones')
+          .select('id, name, fish_type, description')
+          .in('fish_type', selectedFishTypes)
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+
+        const grouped = (data || []).reduce((acc, zone) => {
+          if (!acc[zone.fish_type]) acc[zone.fish_type] = [];
+          acc[zone.fish_type].push(zone);
+          return acc;
+        }, {});
+
+        setAvailableZonesByFishType(grouped);
+        setServiceLocationError('');
+      } catch (err) {
+        console.error('Error fetching fishing zones:', err);
+        setAvailableZonesByFishType({});
+        setServiceLocationError('Impossible de charger les lieux de peche.');
+      }
+    };
+
+    fetchAvailableZones();
+  }, [editedGuide.fish_types]);
+
+  useEffect(() => {
+    if (!guide?.id) return;
+
+    const fetchGuideServiceLocations = async () => {
+      setLoadingServiceLocations(true);
+      try {
+        const { data, error } = await supabase
+          .from('guide_service_locations')
+          .select('fish_type, fishing_zone_id, fishing_zone:fishing_zone_id(id, name, fish_type, description)')
+          .eq('guide_id', guide.id)
+          .order('fish_type', { ascending: true });
+
+        if (error) {
+          if (isMissingGuideServiceLocationsTableError(error)) {
+            setSelectedLocationRows([]);
+            setSelectedServiceLocationIds([]);
+            setServiceLocationError('Le schema des lieux de service n\'est pas encore migre.');
+            return;
+          }
+          throw error;
+        }
+
+        const rows = data || [];
+        setSelectedLocationRows(rows);
+        setSelectedServiceLocationIds(rows.map((row) => row.fishing_zone_id));
+      } catch (err) {
+        console.error('Error fetching guide service locations:', err);
+        setSelectedLocationRows([]);
+        setSelectedServiceLocationIds([]);
+        setServiceLocationError('Impossible de charger les lieux de service sauvegardes.');
+      } finally {
+        setLoadingServiceLocations(false);
+      }
+    };
+
+    fetchGuideServiceLocations();
+  }, [guide?.id]);
+
+  useEffect(() => {
+    const allAvailableZoneIds = new Set(
+      Object.values(availableZonesByFishType)
+        .flat()
+        .map((zone) => zone.id)
+    );
+    setSelectedServiceLocationIds((prev) => prev.filter((id) => allAvailableZoneIds.has(id)));
+  }, [availableZonesByFishType]);
 
 
   if (!isGuideOpen) return null;
@@ -70,7 +216,6 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
       name: editedGuide.name,
       experience: editedGuide.experience,
       bio: editedGuide.bio,
-      location: editedGuide.location,
       phone: editedGuide.phone,
       email: editedGuide.email,
       fish_types: editedGuide.fish_types,
@@ -92,6 +237,52 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
         console.error("Supabase update error:", error);
         alert("Erreur lors de la sauvegarde: " + error.message);
       } else {
+        try {
+          const zoneById = new Map(
+            Object.values(availableZonesByFishType)
+              .flat()
+              .map((zone) => [zone.id, zone])
+          );
+
+          const rows = selectedServiceLocationIds
+            .map((zoneId) => zoneById.get(zoneId))
+            .filter((zone) => zone && (editedGuide.fish_types || []).includes(zone.fish_type))
+            .map((zone) => ({
+              guide_id: guide.id,
+              fish_type: zone.fish_type,
+              fishing_zone_id: zone.id,
+            }));
+
+          const { error: deleteError } = await supabase
+            .from('guide_service_locations')
+            .delete()
+            .eq('guide_id', guide.id);
+
+          if (deleteError) {
+            if (isMissingGuideServiceLocationsTableError(deleteError)) {
+              setServiceLocationError('Le schema des lieux de service n\'est pas encore migre. Lancez la migration Supabase.');
+              return;
+            }
+            throw deleteError;
+          }
+
+          if (rows.length > 0) {
+            const { error: insertError } = await supabase
+              .from('guide_service_locations')
+              .insert(rows);
+            if (insertError) {
+              if (isMissingGuideServiceLocationsTableError(insertError)) {
+                setServiceLocationError('Le schema des lieux de service n\'est pas encore migre. Lancez la migration Supabase.');
+                return;
+              }
+              throw insertError;
+            }
+          }
+        } catch (syncErr) {
+          console.error('Error syncing guide service locations:', syncErr);
+          alert('Profil sauve, mais erreur lors de la sauvegarde des lieux de service: ' + syncErr.message);
+        }
+
         console.log("Guide updated:", data);
         // Update local state with returned row
         setEditedGuide({
@@ -99,7 +290,6 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
           experience: data.experience || "",
           bio: data.bio || "",
           hourly_rate: data.hourly_rate || "",
-          location: data.location || "",
           phone: data.phone || "",
           email: data.email || "",
           fish_types: data.fish_types || [],
@@ -122,7 +312,6 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
       experience: guide?.experience || "",
       bio: guide?.bio || "",
       hourly_rate: guide?.hourly_rate || "",
-      location: guide?.location || "",
       phone: guide?.phone || "",
       email: guide?.email || "",
       fish_types: guide?.fish_types || [],
@@ -139,6 +328,15 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
       } else {
         return { ...prev, fish_types: [...currentTypes, fishValue] };
       }
+    });
+  };
+
+  const toggleServiceLocation = (zoneId) => {
+    setSelectedServiceLocationIds((prev) => {
+      if (prev.includes(zoneId)) {
+        return prev.filter((id) => id !== zoneId);
+      }
+      return [...prev, zoneId];
     });
   };
 
@@ -166,9 +364,14 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
           <button type="button" className="guide-back-button" onClick={closeGuide}>
             ← Retour
           </button>
-          <div className="guide-avatar" aria-hidden>
-            {initials}
-          </div>
+          <AvatarImage
+            src={guideAvatarSrc}
+            name={editedGuide.name || guide?.name || 'Guide'}
+            alt={editedGuide.name || guide?.name || 'Guide'}
+            className="guide-avatar"
+            fallbackClassName="guide-avatar"
+            fallback={initials || 'GU'}
+          />
           <div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Profil</div>
             <h1 className="guide-profile-title">{editedGuide.name || guide?.name || "Mon Profil de Guide"}</h1>
@@ -306,24 +509,6 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
                 )}
               </div>
 
-              {/* Location */}
-              <div className="guide-form-group">
-                <label>Localisation</label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    value={editedGuide.location}
-                    onChange={(e) =>
-                      setEditedGuide({ ...editedGuide, location: e.target.value })
-                    }
-                    className="guide-input"
-                    placeholder="Ex: Charlevoix, QC"
-                  />
-                ) : (
-                  <p className="guide-text">{editedGuide.location || "Non défini"}</p>
-                )}
-              </div>
-
               {/* Phone & Email */}
               <div className="guide-form-row">
                 <div className="guide-form-group">
@@ -451,6 +636,94 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
                       <p className="guide-text" style={{ margin: 0 }}>Aucune spécialisation</p>
                     )}
                   </div>
+                )}
+              </div>
+
+              <div className="guide-form-group">
+                <label>Lieux de service (selection multiple)</label>
+                {(editedGuide.fish_types || []).length === 0 ? (
+                  <p className="guide-text" style={{ margin: 0 }}>
+                    Selectionnez d'abord un ou plusieurs types de poisson.
+                  </p>
+                ) : isEditing ? (
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      onClick={() => setIsLocationDropdownOpen((prev) => !prev)}
+                      className="guide-input"
+                      style={{ textAlign: 'left', cursor: 'pointer' }}
+                    >
+                      {selectedServiceLocationIds.length > 0
+                        ? `${selectedServiceLocationIds.length} lieu(x) selectionne(s)`
+                        : 'Choisir les lieux de service'}
+                      <span style={{ float: 'right' }}>{isLocationDropdownOpen ? '▲' : '▼'}</span>
+                    </button>
+
+                    {isLocationDropdownOpen && (
+                      <div style={{
+                        position: 'absolute',
+                        zIndex: 30,
+                        left: 0,
+                        right: 0,
+                        marginTop: 6,
+                        backgroundColor: '#fff',
+                        border: '1px solid #D1D5DB',
+                        borderRadius: 8,
+                        boxShadow: '0 8px 20px rgba(15, 23, 42, 0.12)',
+                        maxHeight: 260,
+                        overflowY: 'auto',
+                        padding: 8,
+                      }}>
+                        {loadingServiceLocations ? (
+                          <div style={{ fontSize: 13, color: '#6B7280', padding: '6px 4px' }}>Chargement...</div>
+                        ) : (
+                          (editedGuide.fish_types || []).map((fishType) => {
+                            const zones = availableZonesByFishType[fishType] || [];
+                            return (
+                              <div key={fishType} style={{ padding: '6px 4px', borderBottom: '1px solid #F3F4F6' }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: '#2D5F4C', marginBottom: 6 }}>
+                                  🐟 {getFishLabel(fishType)}
+                                </div>
+                                {zones.length === 0 ? (
+                                  <div style={{ fontSize: 12, color: '#9CA3AF', fontStyle: 'italic' }}>
+                                    Aucun lieu disponible pour ce type de poisson.
+                                  </div>
+                                ) : (
+                                  zones.map((zone) => (
+                                    <label key={zone.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 2px', fontSize: 13 }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedServiceLocationIds.includes(zone.id)}
+                                        onChange={() => toggleServiceLocation(zone.id)}
+                                      />
+                                      <span>{zone.name}</span>
+                                    </label>
+                                  ))
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    {selectedLocationRows.length > 0 ? (
+                      selectedLocationRows.map((row) => (
+                        row.fishing_zone && (
+                          <span key={row.fishing_zone_id} style={{ padding: '6px 12px', borderRadius: 16, backgroundColor: 'rgba(74, 155, 142, 0.15)', color: '#2D5F4C', fontSize: 13, fontWeight: 500 }}>
+                            📍 {row.fishing_zone.name}
+                          </span>
+                        )
+                      ))
+                    ) : (
+                      <p className="guide-text" style={{ margin: 0 }}>Aucun lieu de service</p>
+                    )}
+                  </div>
+                )}
+                {serviceLocationError && (
+                  <p style={{ margin: '6px 0 0', fontSize: 12, color: '#B45309' }}>{serviceLocationError}</p>
                 )}
               </div>
             </div>

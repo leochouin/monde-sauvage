@@ -77,6 +77,7 @@ export default function GuideReservationsPanel({ guide }) {
   const [creating, setCreating] = useState(false);
   const [createAvailability, setCreateAvailability] = useState(null);
   const [checkingCreateAvail, setCheckingCreateAvail] = useState(false);
+  const [createPaymentMode, setCreatePaymentMode] = useState('send_link');
 
   // Client picker
   const [clients, setClients] = useState([]);
@@ -229,6 +230,7 @@ export default function GuideReservationsPanel({ guide }) {
       numberOfPeople: 1,
       notes: '',
     });
+    setCreatePaymentMode('send_link');
     setCreateAvailability(null);
   };
 
@@ -264,8 +266,13 @@ export default function GuideReservationsPanel({ guide }) {
       notes: createForm.notes.trim() || null,
     };
 
-    // If guide has Stripe enabled and hourly rate, REQUIRE payment
-    if (guide?.stripe_charges_enabled && guide?.hourly_rate > 0) {
+    const hasStripePayments = guide?.stripe_charges_enabled && guide?.hourly_rate > 0;
+    const durationMs = createForm.endTime.getTime() - createForm.startTime.getTime();
+    const durationHours = Math.round((durationMs / (1000 * 60 * 60)) * 10) / 10;
+    const manualSubtotal = Math.round((guide?.hourly_rate || 0) * durationHours * 100) / 100;
+
+    // If guide has Stripe enabled and chooses payment link, create unpaid manual booking + Stripe link.
+    if (hasStripePayments && createPaymentMode === 'send_link') {
       if (!createForm.customerEmail?.trim()) {
         setError('Le courriel du client est requis pour envoyer le lien de paiement.');
         return;
@@ -276,7 +283,7 @@ export default function GuideReservationsPanel({ guide }) {
         const result = await createPaymentLink(bookingPayload);
         setPaymentLinkResult(result);
         setSuccess(
-          `Lien de paiement créé! La réservation sera confirmée lorsque le client aura payé.`
+          `Lien de paiement créé. Réservation manuelle sans commission plateforme. La réservation sera confirmée quand le client aura payé.`
         );
         closeCreate();
         await loadBookings();
@@ -288,14 +295,23 @@ export default function GuideReservationsPanel({ guide }) {
       return;
     }
 
-    // Guide without Stripe — create booking directly (free bookings only)
+    // Direct manual entry (already paid off-platform or guide without Stripe)
     setCreating(true);
     try {
       await createGuideBooking({
         ...bookingPayload,
         status: 'confirmed',
+        source: 'system',
+        bookingOrigin: 'guide_manual',
+        paymentStatus: hasStripePayments ? 'paid' : 'unpaid',
+        isPaid: hasStripePayments,
+        paymentAmount: manualSubtotal > 0 ? manualSubtotal : null,
+        applicationFee: 0,
+        platformFeeAmount: 0,
+        platformFeeWaived: true,
+        paymentReference: hasStripePayments ? 'off_platform_manual' : null,
       });
-      setSuccess('Réservation créée avec succès.');
+      setSuccess('Réservation manuelle créée. Commission Monde Sauvage: 0 $.');
       closeCreate();
       await loadBookings();
     } catch (err) {
@@ -715,7 +731,7 @@ export default function GuideReservationsPanel({ guide }) {
           {guide?.stripe_charges_enabled && guide?.hourly_rate > 0 && createForm.startTime && createForm.endTime && createForm.endTime > createForm.startTime && (() => {
             const durationMs = createForm.endTime.getTime() - createForm.startTime.getTime();
             const durationHours = Math.round(durationMs / (1000 * 60 * 60) * 10) / 10;
-            const total = Math.round(guide.hourly_rate * durationHours * 100) / 100;
+            const subtotal = Math.round(guide.hourly_rate * durationHours * 100) / 100;
             return (
               <div style={{ background: '#f0fdf4', padding: '12px 16px', borderRadius: '8px', marginBottom: '16px', border: '1px solid #bbf7d0' }}>
                 <div style={{ fontWeight: '600', fontSize: '14px', color: '#166534', marginBottom: '4px' }}>
@@ -723,10 +739,48 @@ export default function GuideReservationsPanel({ guide }) {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#374151' }}>
                   <span>{guide.hourly_rate}$/h × {durationHours}h</span>
-                  <span style={{ fontWeight: '600' }}>{total}$ CAD</span>
+                  <span style={{ fontWeight: '600' }}>{subtotal}$ CAD</span>
+                </div>
+                <div style={{ marginTop: '10px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setCreatePaymentMode('send_link')}
+                    disabled={creating}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border: createPaymentMode === 'send_link' ? '1px solid #2D5F4C' : '1px solid #bbf7d0',
+                      background: createPaymentMode === 'send_link' ? '#dcfce7' : '#ffffff',
+                      color: '#166534',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🔗 Envoyer un lien Stripe
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCreatePaymentMode('already_paid')}
+                    disabled={creating}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border: createPaymentMode === 'already_paid' ? '1px solid #2D5F4C' : '1px solid #bbf7d0',
+                      background: createPaymentMode === 'already_paid' ? '#dcfce7' : '#ffffff',
+                      color: '#166534',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ✅ Déjà payé hors plateforme
+                  </button>
                 </div>
                 <p style={{ fontSize: '12px', color: '#059669', margin: '6px 0 0' }}>
-                  🔗 Un lien de paiement sera généré et envoyé au client
+                  {createPaymentMode === 'send_link'
+                    ? 'Le client paiera via Stripe. Commission Monde Sauvage: 0 $ (réservation manuelle).'
+                    : 'Paiement déjà reçu hors plateforme. Commission Monde Sauvage: 0 $.'}
                 </p>
               </div>
             );
@@ -757,7 +811,11 @@ export default function GuideReservationsPanel({ guide }) {
                 opacity: (creating || (createAvailability && !createAvailability.available)) ? 0.6 : 1,
               }}
             >
-              {creating ? 'Création...' : (guide?.stripe_charges_enabled && guide?.hourly_rate > 0) ? '🔗 Créer et envoyer le lien de paiement' : 'Créer la réservation'}
+              {creating
+                ? 'Création...'
+                : (guide?.stripe_charges_enabled && guide?.hourly_rate > 0)
+                  ? (createPaymentMode === 'send_link' ? '🔗 Créer et envoyer le lien de paiement' : '✅ Créer comme déjà payée')
+                  : 'Créer la réservation'}
             </button>
           </div>
         </div>
@@ -1193,6 +1251,16 @@ export default function GuideReservationsPanel({ guide }) {
                       {booking.is_paid && (
                         <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600', color: '#059669', backgroundColor: 'rgba(5,150,105,0.12)' }}>
                           💰 Payée
+                        </span>
+                      )}
+                      {booking.booking_origin === 'guide_manual' && (
+                        <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600', color: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.12)' }}>
+                          📝 Saisie manuelle
+                        </span>
+                      )}
+                      {booking.platform_fee_waived && (
+                        <span style={{ padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '600', color: '#155e75', backgroundColor: 'rgba(6,182,212,0.12)' }}>
+                          Commission MS: 0 $
                         </span>
                       )}
                       {booking.status === 'pending_payment' && booking.payment_link_url && (

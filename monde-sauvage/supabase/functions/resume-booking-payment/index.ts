@@ -15,6 +15,11 @@ import {
   errorResponse,
   jsonResponse,
 } from "../_shared/stripeUtils.ts";
+import {
+  calculatePlatformFeeAmount,
+  getBookingOrigin,
+  requiresPayment,
+} from "../_shared/bookingRules.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -49,7 +54,7 @@ Deno.serve(async (req: Request) => {
       return errorResponse("Booking not found", 404);
     }
 
-    if (booking.is_paid || booking.status === "confirmed") {
+    if (!requiresPayment(booking) || booking.status === "confirmed") {
       return errorResponse("Booking is already paid", 400);
     }
 
@@ -69,9 +74,20 @@ Deno.serve(async (req: Request) => {
     }
 
     const totalPrice = Number(booking.payment_amount) || 0;
-    const applicationFee = Math.round(totalPrice * APPLICATION_FEE_PERCENT * 100) / 100;
+    const bookingOrigin = getBookingOrigin(booking);
+    const persistedPlatformFee = Number(booking.platform_fee_amount ?? booking.application_fee ?? 0);
+    const fallbackFee = calculatePlatformFeeAmount(
+      totalPrice,
+      { booking_origin: bookingOrigin },
+      APPLICATION_FEE_PERCENT,
+    );
+    const applicationFee = Math.round(
+      (Number.isFinite(persistedPlatformFee) && persistedPlatformFee > 0
+        ? persistedPlatformFee
+        : fallbackFee) * 100,
+    ) / 100;
     // totalPrice already includes the fee (stored as full amount)
-    const subtotal = Math.round((totalPrice - applicationFee) * 100) / 100;
+    const subtotal = Math.round(Math.max(totalPrice - applicationFee, 0) * 100) / 100;
     const amountInCents = Math.round(totalPrice * 100);
     const applicationFeeInCents = Math.round(applicationFee * 100);
 
@@ -134,7 +150,9 @@ Deno.serve(async (req: Request) => {
       amount: String(amountInCents),
       currency: "cad",
       payment_method_types: ["card"],
-      application_fee_amount: String(applicationFeeInCents),
+      ...(applicationFeeInCents > 0
+        ? { application_fee_amount: String(applicationFeeInCents) }
+        : {}),
       transfer_data: {
         destination: guide.stripe_account_id,
       },
@@ -142,6 +160,7 @@ Deno.serve(async (req: Request) => {
       metadata: {
         booking_type: "guide",
         booking_id: booking.id,
+        booking_origin: bookingOrigin,
         guide_id: booking.guide_id,
         guide_name: guide.name || "",
         customer_name: booking.customer_name || "",

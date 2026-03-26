@@ -1,18 +1,25 @@
 import { useEffect, useState, useCallback } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import GaspesieMap from "./Map.jsx";
 import LoginModal from "../modals/loginModal.jsx";
 import JoinUs from "../modals/joinUsModal.jsx";
 import EtablissementModal from "../modals/etablissementModal.jsx";
 import GuideBookingModal from "../modals/guideBookingModal.jsx";
+import GuideProfilePreviewModal from "../modals/guideProfilePreviewModal.jsx";
 import GuideClientModal from "../modals/guideClientModal.jsx";
 import ChaletDetailModal from "../modals/chaletDetailModal.jsx";
 import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guideOnboardingModal.jsx";
 import AccountSettingsModal from "../modals/accountSettingsModal.jsx";
 import HighlightOverlay from "./HighlightOverlay.jsx";
+import SocialFeedPage from "../pages/SocialFeedPage.jsx";
 import supabase from "../utils/supabase.js";
 import { createGuideBooking, checkGuideConflictsServer } from "../utils/guideBookingService.js";
 import { createBooking } from "../utils/bookingService.js";
 import { resumeBookingPayment } from "../utils/stripeService.js";
+import { getGuideByUserId } from "../utils/socialFeedService.js";
+import {
+    resolveAvatarFromSources,
+} from "../utils/avatar.js";
 import CheckoutModal from "../modals/checkoutModal.jsx";
 import ReservationCart from "./ReservationCart.jsx";
 
@@ -30,6 +37,10 @@ const FISH_TYPES = [
 ];
 
 function MapApp({ user, profile, guide }) {
+    const navigate = useNavigate();
+    const location = useLocation();
+    const isSocialRoute = location.pathname === '/social';
+
     // NEW FLOW: Step 1 (preferences) -> Step 2 (guide+chalet selection) -> Step 3 (dates) -> Step 4 (confirmation)
     
     // Browse mode: 'trip' = full flow, 'guide' = guide-only, 'chalet' = chalet-only
@@ -85,6 +96,7 @@ function MapApp({ user, profile, guide }) {
     const [isRejoindreOpen, setIsRejoindreOpen] = useState(false);
     const [isEtablissementOpen, setIsEtablissementOpen] = useState(false);
     const [isGuideBookingModalOpen, setIsGuideBookingModalOpen] = useState(false);
+    const [isGuideProfilePreviewOpen, setIsGuideProfilePreviewOpen] = useState(false);
     const [guideForBooking, setGuideForBooking] = useState(null);
     const [isGuideClientModalOpen, setIsGuideClientModalOpen] = useState(false);
     const [settingsWasOpenBeforeClients, setSettingsWasOpenBeforeClients] = useState(false);
@@ -120,15 +132,15 @@ function MapApp({ user, profile, guide }) {
     
     // Check URL parameters on mount to reopen establishment modal if needed
     useEffect(() => {
-        const urlParams = new URLSearchParams(window.location.search);
+        const urlParams = new URLSearchParams(globalThis.location.search);
         if (urlParams.get('openEstablishment') === 'true') {
             setIsEtablissementOpen(true);
             // Clean up URL parameter
             urlParams.delete('openEstablishment');
             const newUrl = urlParams.toString() 
-                ? `${window.location.pathname}?${urlParams.toString()}`
-                : window.location.pathname;
-            window.history.replaceState({}, document.title, newUrl);
+                ? `${globalThis.location.pathname}?${urlParams.toString()}`
+                : globalThis.location.pathname;
+            globalThis.history.replaceState({}, document.title, newUrl);
         }
     }, []);
 
@@ -191,6 +203,21 @@ function MapApp({ user, profile, guide }) {
                 const { data: guides, error } = await query;
                 
                 if (error) throw error;
+
+                const guideUserIds = [...new Set((guides || []).map((g) => g.user_id).filter(Boolean))];
+                let usersById = new Map();
+                if (guideUserIds.length > 0) {
+                    const { data: usersData, error: usersError } = await supabase
+                        .from('users')
+                        .select('*')
+                        .in('id', guideUserIds);
+
+                    if (usersError) {
+                        console.warn('Unable to load user profile rows for guide avatars:', usersError.message);
+                    } else {
+                        usersById = new Map((usersData || []).map((row) => [row.id, row]));
+                    }
+                }
                 
                 console.log("👤 Guides found from DB:", guides);
                 console.log("👤 Number of guides:", guides?.length || 0);
@@ -243,8 +270,8 @@ function MapApp({ user, profile, guide }) {
 
                 // Transform guides — use server-side availability determination as PRIMARY,
                 // with client-side subtraction as a SECONDARY safety net.
-                const formattedGuides = (guides || [])
-                    .map(g => {
+                const formattedGuides = (await Promise.all((guides || [])
+                    .map(async (g) => {
                         const availability = availabilityMap.get(g.id);
 
                         // If the API explicitly returned an error, guide is unavailable
@@ -272,7 +299,7 @@ function MapApp({ user, profile, guide }) {
 
                         // ── SECONDARY CHECK: Client-side subtraction as safety net ──
                         const bookedIntervals = bookedSlots.map(slot => {
-                            let s = new Date(slot.start).getTime();
+                            const s = new Date(slot.start).getTime();
                             let e = new Date(slot.end).getTime();
                             // Date-only bookings: start===end (both midnight UTC). Expand to full day.
                             if (!isNaN(s) && !isNaN(e) && s >= e) e = s + 24 * 60 * 60 * 1000;
@@ -305,6 +332,12 @@ function MapApp({ user, profile, guide }) {
                             return null;
                         }
 
+                        const linkedUser = usersById.get(g.user_id);
+                        const { avatarSrc } = await resolveAvatarFromSources([g, linkedUser], {
+                            supabase,
+                            emptySrcFallback: '',
+                        });
+
                         return {
                             guide_id: g.id,
                             name: g.name,
@@ -315,9 +348,10 @@ function MapApp({ user, profile, guide }) {
                             stripe_account_id: g.stripe_account_id || null,
                             is_available: true,
                             events: rawEvents,
-                            booked_slots: bookedSlots
+                            booked_slots: bookedSlots,
+                            avatarSrc,
                         };
-                    })
+                    })))
                     .filter(g => g !== null);
                 
                 console.log("✅ Guides with availability:", formattedGuides.length, formattedGuides);
@@ -422,7 +456,7 @@ function MapApp({ user, profile, guide }) {
                     // Source 1: booked_slots already loaded on guide object
                     if (selectedGuide.booked_slots && selectedGuide.booked_slots.length > 0) {
                         for (const slot of selectedGuide.booked_slots) {
-                            let s = new Date(slot.start).getTime();
+                            const s = new Date(slot.start).getTime();
                             let e = new Date(slot.end).getTime();
                             // Date-only bookings: start===end. Expand to full day.
                             if (!isNaN(s) && !isNaN(e) && s >= e) e = s + 24 * 60 * 60 * 1000;
@@ -450,7 +484,7 @@ function MapApp({ user, profile, guide }) {
                         } else if (dbBookings && dbBookings.length > 0) {
                             console.log('📋 Fresh DB bookings found:', dbBookings.length);
                             for (const booking of dbBookings) {
-                                let s = new Date(booking.start_time).getTime();
+                                const s = new Date(booking.start_time).getTime();
                                 let e = new Date(booking.end_time).getTime();
                                 // Date-only bookings: start===end. Expand to full day.
                                 if (!isNaN(s) && !isNaN(e) && s >= e) e = s + 24 * 60 * 60 * 1000;
@@ -697,11 +731,6 @@ function MapApp({ user, profile, guide }) {
         });
     }
 
-    function onClose() {
-        setIsModalOpen(false);
-        console.log("closebdwiubwdiub");
-    }
-
     function login() {
         console.log("login");
         setIsLoginOpen(true);
@@ -865,21 +894,22 @@ function MapApp({ user, profile, guide }) {
             // ── Server-side conflict check before proceeding ──────────
             // Prevents stale-data race conditions: another user may have
             // booked the same slot since availability was last fetched.
+            // Check EACH slot individually to avoid false positives from
+            // a merged range (e.g. Mar 11 9-10 + Mar 13 9-10 would falsely
+            // flag anything on Mar 12 if checked as one range).
             if (selectedGuide && selectedTimeSlots.length > 0) {
-                const sortedSlots = [...selectedTimeSlots].sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
-                const firstStart = sortedSlots[0].startTime;
-                const lastEnd = sortedSlots[sortedSlots.length - 1].endTime;
-
                 try {
-                    const conflictResult = await checkGuideConflictsServer(
-                        selectedGuide.guide_id,
-                        firstStart,
-                        lastEnd
-                    );
-                    if (!conflictResult.available) {
-                        setBookingError('Ce créneau vient d\'être réservé par un autre utilisateur. Veuillez rafraîchir et choisir un autre horaire.');
-                        setIsCreatingBooking(false);
-                        return;
+                    for (const slot of selectedTimeSlots) {
+                        const conflictResult = await checkGuideConflictsServer(
+                            selectedGuide.guide_id,
+                            slot.startTime,
+                            slot.endTime
+                        );
+                        if (!conflictResult.available) {
+                            setBookingError('Ce créneau vient d\'être réservé par un autre utilisateur. Veuillez rafraîchir et choisir un autre horaire.');
+                            setIsCreatingBooking(false);
+                            return;
+                        }
                     }
                 } catch (conflictErr) {
                     console.warn('Server conflict check failed — proceeding (stripe-create-booking will validate):', conflictErr);
@@ -899,13 +929,20 @@ function MapApp({ user, profile, guide }) {
                     return sum + (end - start) / (1000 * 60 * 60);
                 }, 0);
                 
-                // Use the first/last slot for the combined booking timerange
-                const sortedSlots = [...selectedTimeSlots].sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+                // Build allSlots array with individual start/end per slot.
+                // The edge function will create one booking per slot and
+                // one combined PaymentIntent for the total amount.
+                const allSlots = selectedTimeSlots.map(slot => ({
+                    startTime: slot.startTime,
+                    endTime: slot.endTime,
+                }));
                 
                 const guideCheckoutData = {
                     guideId: selectedGuide.guide_id,
-                    startTime: sortedSlots[0].startTime,
-                    endTime: sortedSlots[sortedSlots.length - 1].endTime,
+                    // These are kept for display / pricing calculation only;
+                    // the edge function uses allSlots to create per-slot bookings.
+                    startTime: allSlots[0].startTime,
+                    endTime: allSlots[allSlots.length - 1].endTime,
                     customerName: user?.user_metadata?.name || 'Guest',
                     customerEmail: user?.email || '',
                     tripType: `Pêche ${FISH_TYPES.find(f => f.value === fishType)?.label || fishType}`,
@@ -914,15 +951,13 @@ function MapApp({ user, profile, guide }) {
                     durationHours: totalHours,
                     hourlyRate: selectedGuide.hourly_rate,
                     totalAmount: selectedGuide.hourly_rate * totalHours,
-                    allSlots: selectedTimeSlots
+                    allSlots: allSlots,
                 };
                 
                 // DATE SHIFT GUARD: Log the exact values being sent to the backend
                 console.log('[DATE TRACE] Checkout payload:', {
-                    startTime: guideCheckoutData.startTime,
-                    endTime: guideCheckoutData.endTime,
-                    startLocal: new Date(guideCheckoutData.startTime).toLocaleString(),
-                    endLocal: new Date(guideCheckoutData.endTime).toLocaleString(),
+                    allSlots: guideCheckoutData.allSlots,
+                    slotCount: allSlots.length,
                     browserTZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
                 });
                 
@@ -1012,6 +1047,28 @@ function MapApp({ user, profile, guide }) {
         setBookingStep(4);
     }
 
+    async function handleOpenGuideProfileFromSocial(guideUserId) {
+        try {
+            const guideData = await getGuideByUserId(guideUserId);
+
+            if (!guideData) {
+                alert('Profil guide introuvable.');
+                return;
+            }
+
+            setGuideForBooking(guideData);
+            setIsGuideProfilePreviewOpen(true);
+        } catch (error) {
+            console.error('Error opening guide profile from social:', error);
+            alert(error.message || 'Impossible d\'ouvrir le profil du guide.');
+        }
+    }
+
+    function handleReserveFromGuideProfilePreview() {
+        setIsGuideProfilePreviewOpen(false);
+        setIsGuideBookingModalOpen(true);
+    }
+
     // Handle payment success from the main booking flow CheckoutModal
     async function handleMainFlowPaymentSuccess(result) {
         console.log('💳 Payment success for', paymentCheckoutType, result);
@@ -1024,30 +1081,40 @@ function MapApp({ user, profile, guide }) {
         setPaymentCheckoutData(null);
 
         // Sync Google Calendar event for guide booking (frontend backup — webhook also does this)
-        if (currentCheckoutType === 'guide' && result?.bookingId && currentCheckoutData) {
-            try {
-                const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-                const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-                await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        booking_id: result.bookingId,
-                        guide_id: currentCheckoutData.guideId,
-                        start_time: currentCheckoutData.startTime,
-                        end_time: currentCheckoutData.endTime,
-                        customer_name: currentCheckoutData.customerName,
-                        customer_email: currentCheckoutData.customerEmail,
-                        trip_type: currentCheckoutData.tripType,
-                        notes: currentCheckoutData.notes,
-                    })
-                });
-                console.log('📅 Google Calendar event synced for guide booking');
-            } catch (calendarErr) {
-                console.warn('⚠️ Could not sync Google Calendar event:', calendarErr);
+        // Handle both single booking (bookingId) and multi-slot (allBookingIds)
+        if (currentCheckoutType === 'guide' && currentCheckoutData) {
+            const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+            const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+            // Determine which booking IDs + slots to sync
+            const bookingIds = result?.allBookingIds || (result?.bookingId ? [result.bookingId] : []);
+            const slots = currentCheckoutData.allSlots || [{ startTime: currentCheckoutData.startTime, endTime: currentCheckoutData.endTime }];
+
+            for (let i = 0; i < bookingIds.length; i++) {
+                const bId = bookingIds[i];
+                const slot = slots[i] || slots[0]; // fallback to first slot
+                try {
+                    await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            booking_id: bId,
+                            guide_id: currentCheckoutData.guideId,
+                            start_time: slot.startTime,
+                            end_time: slot.endTime,
+                            customer_name: currentCheckoutData.customerName,
+                            customer_email: currentCheckoutData.customerEmail,
+                            trip_type: currentCheckoutData.tripType,
+                            notes: currentCheckoutData.notes,
+                        })
+                    });
+                    console.log(`📅 Google Calendar event synced for guide booking ${bId}`);
+                } catch (calendarErr) {
+                    console.warn(`⚠️ Could not sync Google Calendar event for ${bId}:`, calendarErr);
+                }
             }
         }
         
@@ -1141,72 +1208,82 @@ function MapApp({ user, profile, guide }) {
     
     return (
         <div>
-            <GaspesieMap 
-                onClick={onClick}
-                radius={radius}
-                login={login}
-                isTripOpen={startBookingFlow}
-                isGuideFlowOpen={startGuideFlow}
-                isChaletFlowOpen={startChaletFlow}
-                isAccountSettingsOpen={() => setIsAccountSettingsOpen(true)}
-                user={user}
-                profile={profile}
-                guide={guide}
-                isRejoindreOpen={setIsRejoindreOpen}
-                isEtablissementOpen={setIsEtablissementOpen}
-                // Pass booking flow state to control the sidebar
-                browseMode={browseMode}
-                bookingStep={bookingStep}
-                setBookingStep={setBookingStep}
-                startDate={startDate}
-                setStartDate={setStartDate}
-                endDate={endDate}
-                setEndDate={setEndDate}
-                numberOfPeople={numberOfPeople}
-                setNumberOfPeople={setNumberOfPeople}
-                setRadius={setRadius}
-                selectedChalet={selectedChalet}
-                availableGuides={availableGuides}
-                loadingGuides={loadingGuides}
-                selectedGuide={selectedGuide}
-                selectedGuideEvent={selectedGuideEvent}
-                handleSelectGuideEvent={handleSelectGuideEvent}
-                handleSelectGuide={handleSelectGuide}
-                handleBookGuide={handleBookGuide}
-                resetBookingFlow={resetBookingFlow}
-                canProceedStep1={canProceedStep1}
-                canProceedStep2={canProceedStep2}
-                canProceedStep3={canProceedStep3}
-                // Chalet search props for Step 2
-                chalets={chalets}
-                loadingChalets={loadingChalets}
-                chaletError={chaletError}
-                expandedEstablishments={expandedEstablishments}
-                toggleEstablishment={toggleEstablishment}
-                handleVoirPlus={handleVoirPlus}
-                handleSelectedChalet={handleSelectedChalet}
-                selectedPoint={selectedPoint}
-                // NEW: Step 1 preferences props
-                fishType={fishType}
-                setFishType={setFishType}
-                needsChalet={needsChalet}
-                setNeedsChalet={setNeedsChalet}
-                fishingZones={fishingZones}
-                loadingZones={loadingZones}
-                FISH_TYPES={FISH_TYPES}
-                proceedToStep3={proceedToStep3}
-                // NEW: Step 3 date conflict props
-                dateConflicts={dateConflicts}
-                checkingAvailability={checkingAvailability}
-                // NEW: Booking creation state
-                isCreatingBooking={isCreatingBooking}
-                bookingError={bookingError}
-                // NEW: Guide availability time slots
-                guideAvailabilityEvents={guideAvailabilityEvents}
-                loadingGuideAvailability={loadingGuideAvailability}
-                selectedTimeSlots={selectedTimeSlots}
-                handleSelectTimeSlot={handleSelectTimeSlot}
-            />
+            {isSocialRoute ? (
+                <SocialFeedPage
+                    user={user}
+                    guide={guide}
+                    onOpenGuideProfile={handleOpenGuideProfileFromSocial}
+                    onBack={() => navigate({ pathname: '/map', search: location.search })}
+                />
+            ) : (
+                <GaspesieMap 
+                    onClick={onClick}
+                    radius={radius}
+                    login={login}
+                    isTripOpen={startBookingFlow}
+                    isGuideFlowOpen={startGuideFlow}
+                    isChaletFlowOpen={startChaletFlow}
+                    isAccountSettingsOpen={() => setIsAccountSettingsOpen(true)}
+                    isSocialFeedOpen={() => navigate({ pathname: '/social', search: location.search })}
+                    user={user}
+                    profile={profile}
+                    guide={guide}
+                    isRejoindreOpen={setIsRejoindreOpen}
+                    isEtablissementOpen={setIsEtablissementOpen}
+                    // Pass booking flow state to control the sidebar
+                    browseMode={browseMode}
+                    bookingStep={bookingStep}
+                    setBookingStep={setBookingStep}
+                    startDate={startDate}
+                    setStartDate={setStartDate}
+                    endDate={endDate}
+                    setEndDate={setEndDate}
+                    numberOfPeople={numberOfPeople}
+                    setNumberOfPeople={setNumberOfPeople}
+                    setRadius={setRadius}
+                    selectedChalet={selectedChalet}
+                    availableGuides={availableGuides}
+                    loadingGuides={loadingGuides}
+                    selectedGuide={selectedGuide}
+                    selectedGuideEvent={selectedGuideEvent}
+                    handleSelectGuideEvent={handleSelectGuideEvent}
+                    handleSelectGuide={handleSelectGuide}
+                    handleBookGuide={handleBookGuide}
+                    resetBookingFlow={resetBookingFlow}
+                    canProceedStep1={canProceedStep1}
+                    canProceedStep2={canProceedStep2}
+                    canProceedStep3={canProceedStep3}
+                    // Chalet search props for Step 2
+                    chalets={chalets}
+                    loadingChalets={loadingChalets}
+                    chaletError={chaletError}
+                    expandedEstablishments={expandedEstablishments}
+                    toggleEstablishment={toggleEstablishment}
+                    handleVoirPlus={handleVoirPlus}
+                    handleSelectedChalet={handleSelectedChalet}
+                    selectedPoint={selectedPoint}
+                    // NEW: Step 1 preferences props
+                    fishType={fishType}
+                    setFishType={setFishType}
+                    needsChalet={needsChalet}
+                    setNeedsChalet={setNeedsChalet}
+                    fishingZones={fishingZones}
+                    loadingZones={loadingZones}
+                    FISH_TYPES={FISH_TYPES}
+                    proceedToStep3={proceedToStep3}
+                    // NEW: Step 3 date conflict props
+                    dateConflicts={dateConflicts}
+                    checkingAvailability={checkingAvailability}
+                    // NEW: Booking creation state
+                    isCreatingBooking={isCreatingBooking}
+                    bookingError={bookingError}
+                    // NEW: Guide availability time slots
+                    guideAvailabilityEvents={guideAvailabilityEvents}
+                    loadingGuideAvailability={loadingGuideAvailability}
+                    selectedTimeSlots={selectedTimeSlots}
+                    handleSelectTimeSlot={handleSelectTimeSlot}
+                />
+            )}
             <ChaletDetailModal
                 isOpen={chaletDetailModalOpen}
                 onClose={() => setChaletDetailModalOpen(false)}
@@ -1259,6 +1336,13 @@ function MapApp({ user, profile, guide }) {
                 isOpen={isGuideBookingModalOpen}
                 onClose={() => setIsGuideBookingModalOpen(false)}
                 onBookingCreated={handleGuideBookingCreated}
+            />
+
+            <GuideProfilePreviewModal
+                guide={guideForBooking}
+                isOpen={isGuideProfilePreviewOpen}
+                onClose={() => setIsGuideProfilePreviewOpen(false)}
+                onReserve={handleReserveFromGuideProfilePreview}
             />
 
             {/* Guide Onboarding */}

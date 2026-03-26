@@ -84,6 +84,9 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
                 tripType: bookingData.tripType,
                 numberOfPeople: bookingData.numberOfPeople,
                 notes: bookingData.notes,
+                // Pass individual time slots so edge function creates
+                // one booking per slot instead of one merged booking
+                allSlots: bookingData.allSlots || null,
               });
           } else {
             bookingPromiseRef.current = createBookingWithPayment({
@@ -213,7 +216,7 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
       const { error: confirmError } = await stripeRef.current.confirmPayment({
         elements: elementsRef.current,
         confirmParams: {
-          return_url: `${window.location.origin}/map?payment=success&booking=${bookingResult.bookingId}`,
+          return_url: `${globalThis.location.origin}/map?payment=success&booking=${bookingResult.bookingId}`,
         },
         redirect: 'if_required',
       });
@@ -274,6 +277,7 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
               </div>
             )}
             <button
+              type="button"
               onClick={handleClose}
               style={{
                 marginTop: '20px',
@@ -310,6 +314,7 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
               {error}
             </div>
             <button
+              type="button"
               onClick={handleClose}
               style={{
                 marginTop: '12px',

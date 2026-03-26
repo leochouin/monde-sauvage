@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
+import AvatarImage from './AvatarImage.jsx';
 import supabase from '../utils/supabase.js';
+import useAvatarSource from '../utils/useAvatarSource.js';
 
 const GaspesieMap = ({ 
   onClick, 
   login, 
   user, 
   profile, 
-  guide,
+  guide: _guide,
   isTripOpen,
   isGuideFlowOpen,
   isChaletFlowOpen,
   isAccountSettingsOpen,
+  isSocialFeedOpen,
   radius, 
   isRejoindreOpen, 
   isEtablissementOpen,
@@ -29,8 +32,8 @@ const GaspesieMap = ({
   availableGuides,
   loadingGuides,
   selectedGuide,
-  selectedGuideEvent,
-  handleSelectGuideEvent,
+  selectedGuideEvent: _selectedGuideEvent,
+  handleSelectGuideEvent: _handleSelectGuideEvent,
   handleSelectGuide,
   handleBookGuide,
   resetBookingFlow,
@@ -43,7 +46,7 @@ const GaspesieMap = ({
   chaletError,
   expandedEstablishments,
   toggleEstablishment,
-  handleVoirPlus,
+  handleVoirPlus: _handleVoirPlus,
   handleSelectedChalet,
   selectedPoint,
   // NEW: Step 1 preferences props
@@ -62,7 +65,7 @@ const GaspesieMap = ({
   isCreatingBooking,
   bookingError,
   // Help/onboarding
-  onOpenHelp,
+  onOpenHelp: _onOpenHelp,
   // NEW: Guide availability time slots
   guideAvailabilityEvents,
   loadingGuideAvailability,
@@ -88,9 +91,7 @@ const GaspesieMap = ({
     }
   };
 
-  const avatarUrl = user
-    ? user.user_metadata?.avatar_url || user.raw_user_meta_data?.avatar_url || '/default-avatar.png'
-    : '/default-avatar.png';
+  const { avatarSrc, handleAvatarError } = useAvatarSource(user);
     
   // Handle window resize for mobile detection
   useEffect(() => {
@@ -619,42 +620,50 @@ const GaspesieMap = ({
 
   return (
     <div style={{ 
-      position: 'absolute',
+      position: 'fixed',
       display: 'flex',
-      justifyContent: 'flex-end',
-      alignItems: 'center',
+      flexDirection: isMobile ? 'column' : 'row',
+      justifyContent: 'stretch',
+      alignItems: 'stretch',
       top: 0,
       left: 0,
       right: 0,
       bottom: 0,
       width: '100%', 
-      height: '100vh', 
+      height: '100dvh', 
+      minHeight: '100vh',
       margin: 0, 
       padding: 0,
-      backgroundColor: '#f0f0f0'
+      backgroundColor: '#f0f0f0',
+      overflow: 'hidden'
     }}>
       {/* Left Menu Panel - 20% */}
       <div style={{
-        position: 'absolute',
-        left: 0,
-        top: 0,
-        width: '20vw',
-        height: '100vh',
-        background: '#ffffff',
+        position: 'relative',
+        flex: isMobile ? '0 0 min(52dvh, 460px)' : '0 0 clamp(300px, 30vw, 420px)',
+        width: isMobile ? '100%' : 'clamp(300px, 30vw, 420px)',
+        maxWidth: '100%',
+        height: isMobile ? 'min(52dvh, 460px)' : '100%',
+        minHeight: 0,
+        background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'flex-start',
         alignItems: 'center',
         gap: '0',
-        padding: '60px 24px 40px',
-        boxShadow: '4px 0 24px rgba(45, 95, 76, 0.08)',
+        boxSizing: 'border-box',
+        padding: isMobile
+          ? 'clamp(10px, 2vh, 16px) clamp(12px, 3vw, 16px) clamp(10px, 2vh, 16px)'
+          : 'clamp(14px, 3vh, 30px) clamp(12px, 2vw, 24px) clamp(12px, 2.2vh, 22px)',
+        boxShadow: '6px 0 26px rgba(31, 58, 46, 0.14)',
+        borderRight: '1px solid rgba(72, 102, 86, 0.16)',
         zIndex: 100,
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        overflowY: 'auto'
+        fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
+        overflow: 'hidden'
       }}>
         {/* BOOKING FLOW CONTENT */}
         {bookingStep > 0 ? (
-          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ width: '100%', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', paddingRight: '2px' }}>
             {/* Header with close button */}
             <div style={{ 
               display: 'flex', 
@@ -922,7 +931,7 @@ const GaspesieMap = ({
 
             {/* Step 2: Combined Guide + Chalet Selection (NEW FLOW) */}
             {bookingStep === 2 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: 'calc(100vh - 200px)', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E', flexShrink: 0 }}>
                   2. {browseMode === 'guide' ? 'Sélectionnez un guide' : browseMode === 'chalet' ? 'Sélectionnez un chalet' : 'Sélectionnez guide et hébergement'}
                 </h3>
@@ -1009,20 +1018,31 @@ const GaspesieMap = ({
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                              <div style={{
-                                width: '32px',
-                                height: '32px',
-                                borderRadius: '50%',
-                                backgroundColor: '#4A9B8E',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                color: 'white',
-                                fontWeight: '600',
-                                fontSize: '12px'
-                              }}>
-                                {guide.name?.charAt(0) || 'G'}
-                              </div>
+                              <AvatarImage
+                                src={guide.avatarSrc}
+                                name={guide.name || 'Guide'}
+                                alt={guide.name || 'Guide'}
+                                imgStyle={{
+                                  width: '32px',
+                                  height: '32px',
+                                  borderRadius: '50%',
+                                  objectFit: 'cover',
+                                  border: '1px solid rgba(74, 155, 142, 0.35)',
+                                }}
+                                fallbackStyle={{
+                                  width: '32px',
+                                  height: '32px',
+                                  borderRadius: '50%',
+                                  backgroundColor: '#4A9B8E',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  color: 'white',
+                                  fontWeight: '600',
+                                  fontSize: '12px',
+                                }}
+                                fallback="GU"
+                              />
                               <div>
                                 <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
                                   {guide.name}
@@ -1816,413 +1836,427 @@ const GaspesieMap = ({
           </div>
         ) : (
           /* DEFAULT MENU CONTENT */
-          <>
-            {/* User Profile Section */}
-            {user && (
-              <div style={{
-                width: '100%',
-                marginBottom: '32px',
-                padding: '20px',
-                backgroundColor: 'rgba(255, 252, 247, 0.7)',
-                borderRadius: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '12px',
-                boxShadow: '0 2px 8px rgba(45, 95, 76, 0.06)'
-              }}>
-                <img
-                  src={avatarUrl}
-                  alt="Profile"
-                  style={{ 
-                    width: 64, 
-                    height: 64, 
-                    borderRadius: '50%',
-                    border: '3px solid #4A9B8E',
-                    objectFit: 'cover'
-                  }}
-                />
-                <p style={{ 
-                  margin: 0, 
-                  fontWeight: '500', 
-                  fontSize: '15px',
-                  color: '#1F3A2E',
-                  textAlign: 'center'
-                }}>
-                  {user.user_metadata.name}
-                </p>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  <button
-                    type="button"
-                    onClick={isAccountSettingsOpen}
-                    data-onboarding="account-settings"
-                    style={{
-                      padding: '6px 14px',
-                      backgroundColor: 'transparent',
-                      color: '#5A7766',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: '500',
-                      fontSize: '13px',
-                      transition: 'color 0.2s ease',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}
-                    onMouseOver={(e) => { e.target.style.color = '#2D5F4C'; }}
-                    onMouseOut={(e) => { e.target.style.color = '#5A7766'; }}
-                  >
-                    ⚙️ Paramètres
-                  </button>
-                  <span style={{ color: '#D1D5DB' }}>|</span>
-                  <button
-                    type="button"
-                    onClick={handleSignOut}
-                    style={{
-                      padding: '6px 14px',
-                      backgroundColor: 'transparent',
-                      color: '#5A7766',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: '500',
-                      fontSize: '13px',
-                      textDecoration: 'underline',
-                      transition: 'color 0.2s ease'
-                    }}
-                    onMouseOver={(e) => { e.target.style.color = '#1F3A2E'; }}
-                    onMouseOut={(e) => { e.target.style.color = '#5A7766'; }}
-                  >
-                    Se déconnecter
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Floating Icon Menu - Modern Minimal Design */}
+          <div style={{
+            width: '100%',
+            flex: '1 1 auto',
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            color: '#1F3A2E'
+          }}>
             <div style={{
-              width: '100%',
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              paddingRight: '2px',
               display: 'flex',
               flexDirection: 'column',
-              gap: '36px',
-              marginBottom: '40px',
-              padding: '20px 0'
+              gap: isMobile ? '10px' : '12px'
             }}>
-              {/* Trip Icon - Right Aligned */}
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'center',
-                alignItems: 'center'
+              <div style={{
+                width: '100%',
+                paddingBottom: '10px',
+                borderBottom: '1px solid rgba(90, 119, 102, 0.24)'
               }}>
-                <button
-                  type="button"
-                  onClick={() => isTripOpen(true)}
-                  style={{
-                    background: '#5b6854',
-                    border: '2px solid #4A9B8E',
-                    padding: '16px 24px',
-                    borderRadius: '12px',
-                    cursor: 'pointer',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    opacity: 1,
-                    transform: 'scale(1)',
-                    display: 'flex',
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: '16px',
-                    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.1)',
-                    width: '100%'
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.transform = 'scale(1.03)';
-                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(45, 95, 76, 0.2)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.transform = 'scale(1)';
-                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 95, 76, 0.1)';
-                  }}
-                >
-                  <span style={{
-                    fontSize: '15px',
-                    fontWeight: '600',
-                    color: '#ffffff',
-                    pointerEvents: 'none',
-                    whiteSpace: 'nowrap',
-                    fontFamily: "'Cabin', 'Georgia', 'Trebuchet MS', sans-serif",
-                    letterSpacing: '0.3px',
-                    textTransform: 'uppercase',
-                    flex: 1
-                  }}>
-                    Planifiez votre séjour
-                  </span>
-                  
-                </button>
+                <p style={{
+                  margin: 0,
+                  fontSize: '11px',
+                  letterSpacing: '0.16em',
+                  textTransform: 'uppercase',
+                  color: '#5A7766',
+                  fontWeight: '600'
+                }}>
+                  Monde Sauvage
+                </p>
+                <h1 style={{
+                  margin: '6px 0 0',
+                  fontSize: isMobile ? '22px' : '26px',
+                  lineHeight: 1.1,
+                  fontFamily: '"Iowan Old Style", "Palatino Linotype", serif',
+                  fontWeight: '600',
+                  color: '#173428'
+                }}>
+                  Carte des aventures
+                </h1>
+                <p style={{
+                  margin: '4px 0 0',
+                  fontSize: '12px',
+                  color: '#4E695B'
+                }}>
+                    Séjours et expériences en Gaspésie
+                </p>
               </div>
 
-              {/* Fish Icon - Left Aligned */}
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'center',
-                alignItems: 'center'
+              <div style={{
+                width: '100%',
+                padding: isMobile ? '12px 12px 13px' : '13px 14px 14px',
+                borderRadius: '14px',
+                background: 'linear-gradient(145deg, rgba(255, 252, 247, 0.94), rgba(244, 238, 227, 0.96))',
+                boxShadow: '0 5px 14px rgba(46, 68, 56, 0.09)'
+              }}>
+                <h2 style={{
+                  margin: 0,
+                  fontSize: isMobile ? '18px' : '20px',
+                  lineHeight: 1.2,
+                  fontFamily: '"Iowan Old Style", "Palatino Linotype", serif',
+                  color: '#193629'
+                }}>
+                    Explorez la Gaspésie
+                </h2>
+                <p style={{
+                  margin: '6px 0 0',
+                  fontSize: '12.5px',
+                  lineHeight: 1.35,
+                  color: '#4D685A'
+                }}>
+                    Réservez un guide, un chalet ou planifiez votre séjour.
+                </p>
+              </div>
+
+              <div style={{
+                width: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+              <p style={{
+                margin: 0,
+                fontSize: '11px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+                color: '#5A7766',
+                fontWeight: '600'
+              }}>
+                Planification
+              </p>
+              <button
+                type="button"
+                onClick={() => isTripOpen(true)}
+                style={{
+                  width: '100%',
+                  border: 'none',
+                  borderRadius: '14px',
+                  padding: isMobile ? '13px 13px' : '14px 15px',
+                  background: 'linear-gradient(145deg, #214537, #2F5C49)',
+                  color: '#FFFCF7',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  fontSize: '15px',
+                  letterSpacing: '0.02em',
+                  textAlign: 'left',
+                  boxShadow: '0 10px 20px rgba(22, 43, 34, 0.24)',
+                  transition: 'transform 0.2s ease, box-shadow 0.2s ease'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                  e.currentTarget.style.boxShadow = '0 14px 24px rgba(22, 43, 34, 0.3)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = '0 10px 20px rgba(22, 43, 34, 0.24)';
+                }}
+              >
+                Planifiez votre séjour
+              </button>
+
+              <div style={{
+                width: '100%',
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+                gap: '8px'
               }}>
                 <button
                   type="button"
                   onClick={() => isGuideFlowOpen(true)}
                   style={{
-                    background: '#FFFCF7',
-                    border: '2px solid #4A9B8E',
-                    padding: '16px 24px',
+                    width: '100%',
+                    border: '1px solid rgba(74, 117, 98, 0.32)',
                     borderRadius: '12px',
+                    padding: isMobile ? '10px 11px' : '11px',
+                    backgroundColor: 'rgba(255, 252, 247, 0.72)',
+                    color: '#214337',
                     cursor: 'pointer',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    opacity: 1,
-                    transform: 'scale(1)',
+                    fontWeight: '600',
+                    fontSize: '14px',
+                    textAlign: 'left',
                     display: 'flex',
-                    flexDirection: 'row',
                     alignItems: 'center',
-                    gap: '16px',
-                    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.1)',
-                    width: '100%'
+                    gap: '10px',
+                    transition: 'border-color 0.2s ease, background-color 0.2s ease'
                   }}
                   onMouseOver={(e) => {
-                    e.currentTarget.style.transform = 'scale(1.03)';
-                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(45, 95, 76, 0.2)';
+                    e.currentTarget.style.backgroundColor = 'rgba(250, 245, 234, 0.9)';
+                    e.currentTarget.style.borderColor = '#2D5F4C';
                   }}
                   onMouseOut={(e) => {
-                    e.currentTarget.style.transform = 'scale(1)';
-                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 95, 76, 0.1)';
+                    e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.72)';
+                    e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.32)';
                   }}
                 >
-                  <img 
-                    src="/fish.png" 
-                    alt="Trouvez un guide" 
-                    style={{ 
-                      width: '60px', 
-                      height: '60px', 
-                      display: 'block',
-                      pointerEvents: 'none'
-                    }} 
+                  <img
+                    src="/fish.png"
+                    alt="Trouvez un guide"
+                    style={{ width: '28px', height: '28px', flexShrink: 0 }}
                   />
-                  <span style={{
-                    fontSize: '15px',
-                    fontWeight: '600',
-                    color: '#2D5F4C',
-                    pointerEvents: 'none',
-                    whiteSpace: 'nowrap',
-                    fontFamily: "'Cabin', 'Georgia', 'Trebuchet MS', sans-serif",
-                    letterSpacing: '0.3px',
-                    textTransform: 'uppercase',
-                    flex: 1
-                  }}>
-                    Trouvez un guide
-                  </span>
+                  <span>Trouvez un guide</span>
                 </button>
-              </div>
 
-              {/* Chalet Icon - Right Aligned */}
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'center',
-                alignItems: 'center'
-              }}>
                 <button
                   type="button"
                   onClick={() => isChaletFlowOpen(true)}
                   style={{
-                    background: '#FFFCF7',
-                    border: '2px solid #4A9B8E',
-                    padding: '16px 24px',
+                    width: '100%',
+                    border: '1px solid rgba(74, 117, 98, 0.32)',
                     borderRadius: '12px',
+                    padding: isMobile ? '10px 11px' : '11px',
+                    backgroundColor: 'rgba(255, 252, 247, 0.72)',
+                    color: '#214337',
                     cursor: 'pointer',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    opacity: 1,
-                    transform: 'scale(1)',
+                    fontWeight: '600',
+                    fontSize: '14px',
+                    textAlign: 'left',
                     display: 'flex',
-                    flexDirection: 'row',
                     alignItems: 'center',
-                    gap: '16px',
-                    boxShadow: '0 2px 8px rgba(45, 95, 76, 0.1)',
-                    width: '100%'
+                    gap: '10px',
+                    transition: 'border-color 0.2s ease, background-color 0.2s ease'
                   }}
                   onMouseOver={(e) => {
-                    e.currentTarget.style.transform = 'scale(1.03)';
-                    e.currentTarget.style.boxShadow = '0 4px 16px rgba(45, 95, 76, 0.2)';
+                    e.currentTarget.style.backgroundColor = 'rgba(250, 245, 234, 0.9)';
+                    e.currentTarget.style.borderColor = '#2D5F4C';
                   }}
                   onMouseOut={(e) => {
-                    e.currentTarget.style.transform = 'scale(1)';
-                    e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 95, 76, 0.1)';
+                    e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.72)';
+                    e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.32)';
                   }}
                 >
-                  <span style={{
-                    fontSize: '15px',
-                    fontWeight: '600',
-                    color: '#2D5F4C',
-                    pointerEvents: 'none',
-                    whiteSpace: 'nowrap',
-                    fontFamily: "'Cabin', 'Georgia', 'Trebuchet MS', sans-serif",
-                    letterSpacing: '0.3px',
-                    textTransform: 'uppercase',
-                    flex: 1
-                  }}>
-                    Réservez un chalet
-                  </span>
-                  <img 
-                    src="/chalet.png" 
-                    alt="Réservez un chalet" 
-                    style={{ 
-                      width: '60px', 
-                      height: '60px', 
-                      display: 'block',
-                      pointerEvents: 'none'
-                    }} 
+                  <img
+                    src="/chalet.png"
+                    alt="Réservez un chalet"
+                    style={{ width: '28px', height: '28px', flexShrink: 0 }}
                   />
+                  <span>Réservez un chalet</span>
                 </button>
               </div>
-            </div>
+              </div>
 
-            {/* Divider - only show if there are admin/establishment actions */}
-            {(profile?.type === "establishment" || profile?.type === "admin") && (
-              <div style={{
-                width: '60%',
-                height: '1px',
-                background: 'linear-gradient(90deg, transparent, #4A9B8E, transparent)',
-                margin: '0 0 24px 0',
-                opacity: 0.3
-              }}></div>
-            )}
-
-            {/* Admin/Establishment Actions */}
-            {(profile?.type === "establishment" || profile?.type === "admin") && (
               <div style={{
                 width: '100%',
+                marginTop: '2px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '16px',
-                marginBottom: '32px'
+                gap: '8px'
               }}>
+              <p style={{
+                margin: 0,
+                fontSize: '11px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+                color: '#5A7766',
+                fontWeight: '600'
+              }}>
+                Decouvrir
+              </p>
+
+              <button
+                type="button"
+                onClick={isSocialFeedOpen}
+                style={{
+                  width: '100%',
+                  border: '1px solid rgba(74, 117, 98, 0.28)',
+                  borderRadius: '12px',
+                  padding: '10px 13px',
+                  backgroundColor: 'rgba(255, 252, 247, 0.68)',
+                  color: '#1F3A2E',
+                  cursor: 'pointer',
+                  fontWeight: '500',
+                  fontSize: '14px',
+                  textAlign: 'left',
+                  transition: 'background-color 0.2s ease, border-color 0.2s ease'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(245, 238, 225, 0.95)';
+                  e.currentTarget.style.borderColor = 'rgba(45, 95, 76, 0.5)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.68)';
+                  e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
+                }}
+              >
+                Section sociale
+              </button>
+
+              {(profile?.type === 'establishment' || profile?.type === 'admin') && (
                 <button
                   type="button"
                   onClick={() => isEtablissementOpen(true)}
                   style={{
                     width: '100%',
-                    padding: '14px 20px',
-                    backgroundColor: '#FFFCF7',
-                    color: '#2D5F4C',
-                    border: '2px solid #2D5F4C',
+                    border: '1px solid rgba(74, 117, 98, 0.28)',
                     borderRadius: '12px',
+                    padding: '10px 13px',
+                    backgroundColor: 'rgba(255, 252, 247, 0.68)',
+                    color: '#1F3A2E',
                     cursor: 'pointer',
                     fontWeight: '500',
-                    fontSize: '15px',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    boxShadow: '0 2px 6px rgba(45, 95, 76, 0.08)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '10px'
+                    fontSize: '14px',
+                    textAlign: 'left',
+                    transition: 'background-color 0.2s ease, border-color 0.2s ease'
                   }}
                   onMouseOver={(e) => {
-                    e.target.style.backgroundColor = 'rgba(74, 155, 142, 0.12)';
-                    e.target.style.transform = 'translateY(-1px)';
-                    e.target.style.boxShadow = '0 4px 12px rgba(45, 95, 76, 0.15)';
+                    e.currentTarget.style.backgroundColor = 'rgba(245, 238, 225, 0.95)';
+                    e.currentTarget.style.borderColor = 'rgba(45, 95, 76, 0.5)';
                   }}
                   onMouseOut={(e) => {
-                    e.target.style.backgroundColor = '#FFFCF7';
-                    e.target.style.transform = 'translateY(0)';
-                    e.target.style.boxShadow = '0 2px 6px rgba(45, 95, 76, 0.08)';
+                    e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.68)';
+                    e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
                   }}
                 >
-                  <span style={{ fontSize: '18px' }}></span>
-                  Établissement
+                  Etablissement
                 </button>
-              </div>
-            )}
+              )}
 
-            {/* Divider */}
-            <div style={{
-              width: '60%',
-              height: '1px',
-              background: 'linear-gradient(90deg, transparent, #4A9B8E, transparent)',
-              margin: '0 0 24px 0',
-              opacity: 0.3
-            }}></div>
-
-            {/* Tertiary Actions Group */}
-            <div style={{
-              width: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px'
-            }}>
               <button
                 type="button"
                 onClick={() => isRejoindreOpen(true)}
                 style={{
                   width: '100%',
-                  padding: '14px 20px',
-                  backgroundColor: 'transparent',
-                  color: '#1F3A2E',
-                  border: '1.5px solid #5A7766',
+                  border: '1px solid rgba(74, 117, 98, 0.28)',
                   borderRadius: '12px',
+                  padding: '10px 13px',
+                  backgroundColor: 'rgba(255, 252, 247, 0.68)',
+                  color: '#1F3A2E',
                   cursor: 'pointer',
                   fontWeight: '500',
-                  fontSize: '15px',
-                  transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '10px'
+                  fontSize: '14px',
+                  textAlign: 'left',
+                  transition: 'background-color 0.2s ease, border-color 0.2s ease'
                 }}
                 onMouseOver={(e) => {
-                  e.target.style.backgroundColor = 'rgba(90, 119, 102, 0.08)';
-                  e.target.style.borderColor = '#2D5F4C';
-                  e.target.style.color = '#2D5F4C';
+                  e.currentTarget.style.backgroundColor = 'rgba(245, 238, 225, 0.95)';
+                  e.currentTarget.style.borderColor = 'rgba(45, 95, 76, 0.5)';
                 }}
                 onMouseOut={(e) => {
-                  e.target.style.backgroundColor = 'transparent';
-                  e.target.style.borderColor = '#5A7766';
-                  e.target.style.color = '#1F3A2E';
+                  e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.68)';
+                  e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
                 }}
               >
-                <span style={{ fontSize: '18px' }}></span>
-                Rejoindre monde sauvage
+                Rejoindre Monde Sauvage
               </button>
+              </div>
+            </div>
+
+            <div style={{
+              width: '100%',
+              flexShrink: 0,
+              marginTop: '8px',
+              borderTop: '1px solid rgba(90, 119, 102, 0.24)',
+              paddingTop: '10px'
+            }}>
+              {user && (
+                <div style={{
+                  borderRadius: '12px',
+                  backgroundColor: 'rgba(255, 252, 247, 0.62)',
+                  padding: '9px 11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '9px'
+                }}>
+                  <img
+                    src={avatarSrc}
+                    alt="Profile"
+                    referrerPolicy="no-referrer"
+                    onError={handleAvatarError}
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: '50%',
+                      border: '2px solid rgba(74, 155, 142, 0.8)',
+                      objectFit: 'cover',
+                      flexShrink: 0
+                    }}
+                  />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <p style={{
+                      margin: 0,
+                      fontWeight: '600',
+                      fontSize: '13px',
+                      color: '#173428',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      {user.user_metadata?.name || user.user_metadata?.full_name || user.email}
+                    </p>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      marginTop: '3px'
+                    }}>
+                      <button
+                        type="button"
+                        onClick={isAccountSettingsOpen}
+                        data-onboarding="account-settings"
+                        style={{
+                          padding: 0,
+                          backgroundColor: 'transparent',
+                          color: '#4D685A',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          fontSize: '12px'
+                        }}
+                        onMouseOver={(e) => { e.currentTarget.style.color = '#2D5F4C'; }}
+                        onMouseOut={(e) => { e.currentTarget.style.color = '#4D685A'; }}
+                      >
+                        Paramètres
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSignOut}
+                        style={{
+                          padding: 0,
+                          backgroundColor: 'transparent',
+                          color: '#4D685A',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          fontSize: '12px',
+                          textDecoration: 'underline'
+                        }}
+                        onMouseOver={(e) => { e.currentTarget.style.color = '#1F3A2E'; }}
+                        onMouseOut={(e) => { e.currentTarget.style.color = '#4D685A'; }}
+                      >
+                        Se déconnecter
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <button
                 type="button"
                 onClick={() => console.log('Nos affiliation clicked')}
                 style={{
                   width: '100%',
-                  padding: '14px 20px',
-                  backgroundColor: 'transparent',
-                  color: '#1F3A2E',
-                  border: '1.5px solid #5A7766',
-                  borderRadius: '12px',
+                  marginTop: user ? '4px' : 0,
+                  border: 'none',
+                  background: 'transparent',
+                  color: '#5A7766',
                   cursor: 'pointer',
                   fontWeight: '500',
-                  fontSize: '15px',
-                  transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '10px'
+                  fontSize: '12px',
+                  textAlign: 'left',
+                  letterSpacing: '0.02em',
+                  padding: '2px 4px'
                 }}
-                onMouseOver={(e) => {
-                  e.target.style.backgroundColor = 'rgba(90, 119, 102, 0.08)';
-                  e.target.style.borderColor = '#2D5F4C';
-                  e.target.style.color = '#2D5F4C';
-                }}
-                onMouseOut={(e) => {
-                  e.target.style.backgroundColor = 'transparent';
-                  e.target.style.borderColor = '#5A7766';
-                  e.target.style.color = '#1F3A2E';
-                }}
+                onMouseOver={(e) => { e.currentTarget.style.color = '#2D5F4C'; }}
+                onMouseOut={(e) => { e.currentTarget.style.color = '#5A7766'; }}
               >
-                <span style={{ fontSize: '18px' }}>🤝</span>
                 Nos affiliations
               </button>
             </div>
-          </>
+          </div>
         )}
       </div>
 
@@ -2233,7 +2267,8 @@ const GaspesieMap = ({
           position: 'relative',
           top: 0,
           left: 0,
-          width: '80vw', 
+          flex: '1 1 auto',
+          minWidth: 0,
           justifyContent: 'flex-end',
           height: '100%' 
         }} 

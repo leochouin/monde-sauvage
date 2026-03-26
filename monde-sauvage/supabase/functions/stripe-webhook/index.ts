@@ -19,6 +19,10 @@ import {
   errorResponse,
   jsonResponse,
 } from "../_shared/stripeUtils.ts";
+import {
+  getBookingOrigin,
+  shouldApplyPlatformFee,
+} from "../_shared/bookingRules.ts";
 
 // ─── Helper: fire-and-forget confirmation email ────────────────────────────
 async function fireConfirmationEmail(
@@ -122,6 +126,9 @@ Deno.serve(async (req: Request) => {
         const metadata = dataObject.metadata as Record<string, string>;
         const bookingId = metadata?.booking_id;
         const bookingType = metadata?.booking_type || "chalet";
+        const bookingOrigin = getBookingOrigin({ booking_origin: metadata?.booking_origin, source: metadata?.source });
+        const platformFeeAmount = Math.round(((Number(dataObject.application_fee_amount || 0) / 100) || 0) * 100) / 100;
+        const platformFeeWaived = !shouldApplyPlatformFee({ booking_origin: bookingOrigin }) || platformFeeAmount === 0;
 
         console.log(`💰 payment_intent.succeeded: PI=${paymentIntentId}, type=${bookingType}, booking=${bookingId}`);
 
@@ -131,34 +138,48 @@ Deno.serve(async (req: Request) => {
         }
 
         if (bookingType === "guide") {
-          const { data: updated, error } = await supabase
-            .from("guide_booking")
-            .update({
-              status: "confirmed",
-              payment_status: "paid",
-              is_paid: true,
-              stripe_payment_intent_id: paymentIntentId,
-            })
-            .eq("id", bookingId)
-            .select("id, status, payment_status, guide_id, start_time, end_time, customer_name, customer_email, trip_type, notes, google_event_id")
-            .single();
+          // ── Multi-slot support ──────────────────────────────────────
+          // If metadata contains all_booking_ids, confirm ALL bookings
+          // and create calendar events for each one individually.
+          const allBookingIdsRaw = metadata?.all_booking_ids;
+          const bookingIdsToConfirm = allBookingIdsRaw
+            ? allBookingIdsRaw.split(",").filter(Boolean)
+            : [bookingId];
 
-          if (error) {
-            console.error(`❌ Failed to confirm guide booking ${bookingId}:`, JSON.stringify(error));
-          } else {
-            console.log(`✅ Guide booking ${bookingId} → status=${updated.status}, payment_status=${updated.payment_status}`);
+          console.log(`📋 [GUIDE] Confirming ${bookingIdsToConfirm.length} booking(s): ${bookingIdsToConfirm.join(", ")}`);
+
+          for (const bId of bookingIdsToConfirm) {
+            const { data: updated, error } = await supabase
+              .from("guide_booking")
+              .update({
+                status: "confirmed",
+                payment_status: "paid",
+                is_paid: true,
+                stripe_payment_intent_id: paymentIntentId,
+                booking_origin: bookingOrigin,
+                application_fee: platformFeeAmount,
+                platform_fee_amount: platformFeeAmount,
+                platform_fee_waived: platformFeeWaived,
+              })
+              .eq("id", bId)
+              .select("id, status, payment_status, guide_id, start_time, end_time, customer_name, customer_email, trip_type, notes, google_event_id")
+              .single();
+
+            if (error) {
+              console.error(`❌ Failed to confirm guide booking ${bId}:`, JSON.stringify(error));
+              continue; // Don't block other bookings
+            }
+
+            console.log(`✅ Guide booking ${bId} → status=${updated.status}, payment_status=${updated.payment_status}`);
 
             // Send confirmation email (fire-and-forget)
-            fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bookingId, "guide");
+            fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bId, "guide");
 
             // Create Google Calendar event if not already linked
             if (updated && !updated.google_event_id) {
-              // DATE SHIFT GUARD: Log the exact DB values being forwarded
-              console.log(`🔒 [DATE GUARD] Webhook → calendar event for booking ${bookingId}:`);
+              console.log(`🔒 [DATE GUARD] Webhook → calendar event for booking ${bId}:`);
               console.log(`🔒 [DATE GUARD]   DB start_time: "${updated.start_time}"`);
               console.log(`🔒 [DATE GUARD]   DB end_time:   "${updated.end_time}"`);
-              console.log(`🔒 [DATE GUARD]   Parsed start:  ${new Date(updated.start_time).toISOString()}`);
-              console.log(`🔒 [DATE GUARD]   Parsed end:    ${new Date(updated.end_time).toISOString()}`);
 
               try {
                 const calRes = await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
@@ -180,22 +201,21 @@ Deno.serve(async (req: Request) => {
                 });
                 if (calRes.ok) {
                   const calData = await calRes.json();
-                  console.log(`📅 Google Calendar event created for guide booking ${bookingId}: ${calData.event_id}`);
+                  console.log(`📅 Google Calendar event created for guide booking ${bId}: ${calData.event_id}`);
                 } else {
                   const calErrText = await calRes.text();
-                  console.warn(`⚠️ Google Calendar event creation failed for ${bookingId}:`, calErrText);
-                  // Mark sync as failed so the UI can show a retry button
+                  console.warn(`⚠️ Google Calendar event creation failed for ${bId}:`, calErrText);
                   await supabase
                     .from("guide_booking")
                     .update({ calendar_sync_failed: true, calendar_sync_error: calErrText.slice(0, 500) })
-                    .eq("id", bookingId);
+                    .eq("id", bId);
                 }
               } catch (calErr: any) {
-                console.warn(`⚠️ Google Calendar sync error for ${bookingId}:`, calErr.message);
+                console.warn(`⚠️ Google Calendar sync error for ${bId}:`, calErr.message);
                 await supabase
                   .from("guide_booking")
                   .update({ calendar_sync_failed: true, calendar_sync_error: calErr.message })
-                  .eq("id", bookingId);
+                  .eq("id", bId);
               }
             }
           }
@@ -206,6 +226,10 @@ Deno.serve(async (req: Request) => {
               status: "confirmed",
               payment_status: "paid",
               stripe_payment_intent_id: paymentIntentId,
+              booking_origin: bookingOrigin,
+              application_fee: platformFeeAmount,
+              platform_fee_amount: platformFeeAmount,
+              platform_fee_waived: platformFeeWaived,
             })
             .eq("id", bookingId)
             .select("id, status, payment_status")
@@ -237,17 +261,25 @@ Deno.serve(async (req: Request) => {
 
         if (bookingId) {
           if (bookingType === "guide") {
-            await supabase
-              .from("guide_booking")
-              .update({
-                status: "cancelled",
-                payment_status: "failed",
-                is_paid: false,
-                notes: `Payment failed: ${failureMessage || "Unknown error"}`,
-              })
-              .eq("id", bookingId);
+            // Handle multi-slot: cancel ALL bookings linked to this PI
+            const allBookingIdsRaw = metadata?.all_booking_ids;
+            const bookingIdsToCancel = allBookingIdsRaw
+              ? allBookingIdsRaw.split(",").filter(Boolean)
+              : [bookingId];
 
-            console.log(`❌ Guide booking ${bookingId} marked as failed`);
+            for (const bId of bookingIdsToCancel) {
+              await supabase
+                .from("guide_booking")
+                .update({
+                  status: "cancelled",
+                  payment_status: "failed",
+                  is_paid: false,
+                  notes: `Payment failed: ${failureMessage || "Unknown error"}`,
+                })
+                .eq("id", bId);
+
+              console.log(`❌ Guide booking ${bId} marked as failed`);
+            }
           } else {
             await supabase
               .from("bookings")
@@ -271,6 +303,8 @@ Deno.serve(async (req: Request) => {
         const sessionMetadata = dataObject.metadata as Record<string, string>;
         const sessionBookingId = sessionMetadata?.booking_id;
         const sessionBookingType = sessionMetadata?.booking_type || "guide";
+        const sessionBookingOrigin = getBookingOrigin({ booking_origin: sessionMetadata?.booking_origin });
+        const sessionPlatformFeeWaived = !shouldApplyPlatformFee({ booking_origin: sessionBookingOrigin });
         const paymentStatus = dataObject.payment_status as string;
         const piId = dataObject.payment_intent as string;
 
@@ -286,6 +320,10 @@ Deno.serve(async (req: Request) => {
                 is_paid: true,
                 stripe_payment_intent_id: piId || null,
                 payment_link_url: null, // Clear payment link after successful payment
+                booking_origin: sessionBookingOrigin,
+                platform_fee_waived: sessionPlatformFeeWaived,
+                platform_fee_amount: sessionPlatformFeeWaived ? 0 : undefined,
+                application_fee: sessionPlatformFeeWaived ? 0 : undefined,
               })
               .eq("id", sessionBookingId)
               .select("id, status, payment_status, guide_id, start_time, end_time, customer_name, customer_email, trip_type, notes, google_event_id")

@@ -5,6 +5,7 @@ import supabase from "../utils/supabase.js";
 import GuideCalendar from "../components/GuideCalendar.jsx";
 import GuideReservationsPanel from "./guideReservationsPanel.jsx";
 import { startGuideOnboarding, checkGuideOnboardingStatus, createGuideDashboardLink } from "../utils/stripeService.js";
+import useAvatarSource from "../utils/useAvatarSource.js";
 
 // Fish types - shared constant
 const FISH_TYPES = [
@@ -19,9 +20,25 @@ const FISH_TYPES = [
   { value: 'capelan', label: 'Capelan' }
 ];
 
+const getFishLabel = (fishValue) => FISH_TYPES.find((f) => f.value === fishValue)?.label || fishValue;
+
+const isMissingGuideServiceLocationsTableError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error?.code === '42P01'
+    || error?.code === 'PGRST205'
+    || message.includes("could not find the table 'public.guide_service_locations'")
+    || message.includes('relation "guide_service_locations" does not exist')
+  );
+};
+
 export default function AccountSettingsModal({ isOpen, onClose, user, profile, guide, onOpenClients, onOpenHelp }) {
   const [activeTab, setActiveTab] = useState('profile');
   const [activeGuideSection, setActiveGuideSection] = useState('profil');
+  const { avatarSrc, handleAvatarError } = useAvatarSource(user);
+  const [isCompactLayout, setIsCompactLayout] = useState(
+    typeof globalThis !== 'undefined' && globalThis.innerWidth < 1100
+  );
   
   // Profile editing state
   const [editedProfile, setEditedProfile] = useState({
@@ -37,17 +54,20 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     experience: '',
     bio: '',
     hourly_rate: '',
-    location: '',
     phone: '',
     email: '',
     fish_types: [],
   });
   const [isSavingGuide, setIsSavingGuide] = useState(false);
 
-  // Fish type locations state
-  const [fishTypeLocations, setFishTypeLocations] = useState({}); // { fish_type: [{ id, location_name, description }] }
-  const [loadingLocations, setLoadingLocations] = useState(false);
-  const [newLocationInputs, setNewLocationInputs] = useState({}); // { fish_type: { name: '', description: '' } }
+  // Service locations state (normalized via fishing_zones + guide_service_locations)
+  const [availableZonesByFishType, setAvailableZonesByFishType] = useState({}); // { fish_type: [{ id, name, fish_type, description }] }
+  const [selectedServiceLocationIds, setSelectedServiceLocationIds] = useState([]); // UUID[] of fishing_zones.id
+  const [selectedLocationRows, setSelectedLocationRows] = useState([]); // joined rows from guide_service_locations
+  const [legacyFishTypeLocations, setLegacyFishTypeLocations] = useState({}); // fallback from guide_fish_type_locations
+  const [loadingServiceLocations, setLoadingServiceLocations] = useState(false);
+  const [serviceLocationError, setServiceLocationError] = useState('');
+  const [isLocationDropdownOpen, setIsLocationDropdownOpen] = useState(false);
 
   // Stripe onboarding state
   const [stripeLoading, setStripeLoading] = useState(false);
@@ -79,7 +99,6 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
         experience: guide.experience || '',
         bio: guide.bio || '',
         hourly_rate: guide.hourly_rate || '',
-        location: guide.location || '',
         phone: guide.phone || '',
         email: guide.email || '',
         fish_types: guide.fish_types || [],
@@ -100,6 +119,17 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
       handleCheckStripeStatus();
     }
   }, [guide?.stripe_account_id]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsCompactLayout(typeof globalThis !== 'undefined' && globalThis.innerWidth < 1100);
+    };
+
+    if (typeof globalThis !== 'undefined' && globalThis.addEventListener) {
+      globalThis.addEventListener('resize', handleResize);
+      return () => globalThis.removeEventListener('resize', handleResize);
+    }
+  }, []);
 
   // Check if returning from Stripe onboarding
   useEffect(() => {
@@ -159,40 +189,184 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     }
   };
 
-  // Fetch fish type locations for guide
-  const fetchFishTypeLocations = useCallback(async () => {
-    if (!guide?.id) return;
-    
-    setLoadingLocations(true);
+  // Fetch available fishing zones based on selected fish types
+  const fetchAvailableZones = useCallback(async (fishTypes) => {
+    const selectedFishTypes = fishTypes || [];
+    if (selectedFishTypes.length === 0) {
+      setAvailableZonesByFishType({});
+      return;
+    }
+
     try {
       const { data, error } = await supabase
-        .from('guide_fish_type_locations')
-        .select('*')
-        .eq('guide_id', guide.id)
-        .order('fish_type', { ascending: true });
+        .from('fishing_zones')
+        .select('id, name, fish_type, description')
+        .in('fish_type', selectedFishTypes)
+        .order('name', { ascending: true });
 
       if (error) throw error;
 
-      // Group by fish_type
-      const grouped = (data || []).reduce((acc, item) => {
-        if (!acc[item.fish_type]) acc[item.fish_type] = [];
-        acc[item.fish_type].push(item);
+      const grouped = (data || []).reduce((acc, zone) => {
+        if (!acc[zone.fish_type]) acc[zone.fish_type] = [];
+        acc[zone.fish_type].push(zone);
         return acc;
       }, {});
-      
-      setFishTypeLocations(grouped);
+
+      setAvailableZonesByFishType(grouped);
+      setServiceLocationError('');
     } catch (err) {
-      console.error('Error fetching fish type locations:', err);
+      console.error('Error fetching fishing zones:', err);
+      setAvailableZonesByFishType({});
+      setServiceLocationError('Impossible de charger les lieux de peche pour les types selectionnes.');
+    }
+  }, []);
+
+  // Fetch selected service locations (normalized table) for guide
+  const fetchGuideServiceLocations = useCallback(async () => {
+    if (!guide?.id) return;
+
+    setLoadingServiceLocations(true);
+    try {
+      const { data, error } = await supabase
+        .from('guide_service_locations')
+        .select('fish_type, fishing_zone_id, fishing_zone:fishing_zone_id(id, name, fish_type, description)')
+        .eq('guide_id', guide.id)
+        .order('fish_type', { ascending: true });
+
+      if (error) {
+        // Table may not exist in older environments. Keep UI usable with graceful fallback.
+        if (isMissingGuideServiceLocationsTableError(error)) {
+          setSelectedLocationRows([]);
+          setSelectedServiceLocationIds([]);
+          setServiceLocationError('Le schema des lieux de service n\'est pas encore migre.');
+          return;
+        }
+        throw error;
+      }
+
+      const rows = data || [];
+      setSelectedLocationRows(rows);
+      setSelectedServiceLocationIds(rows.map((row) => row.fishing_zone_id));
+      setServiceLocationError('');
+    } catch (err) {
+      console.error('Error fetching guide service locations:', err);
+      setSelectedLocationRows([]);
+      setSelectedServiceLocationIds([]);
+      setServiceLocationError('Impossible de charger les lieux de service sauvegardes.');
     } finally {
-      setLoadingLocations(false);
+      setLoadingServiceLocations(false);
+    }
+  }, [guide?.id]);
+
+  // Fetch legacy free-text locations for migration hint visibility
+  const fetchLegacyFishTypeLocations = useCallback(async () => {
+    if (!guide?.id) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('guide_fish_type_locations')
+        .select('fish_type, location_name')
+        .eq('guide_id', guide.id)
+        .order('fish_type', { ascending: true });
+
+      if (error) {
+        if (error.code === '42P01') {
+          setLegacyFishTypeLocations({});
+          return;
+        }
+        throw error;
+      }
+
+      const grouped = (data || []).reduce((acc, item) => {
+        if (!acc[item.fish_type]) acc[item.fish_type] = [];
+        acc[item.fish_type].push(item.location_name);
+        return acc;
+      }, {});
+
+      setLegacyFishTypeLocations(grouped);
+    } catch (err) {
+      console.error('Error fetching legacy fish type locations:', err);
+      setLegacyFishTypeLocations({});
     }
   }, [guide?.id]);
 
   useEffect(() => {
-    if (isOpen && guide?.id && activeTab === 'guide') {
-      fetchFishTypeLocations();
+    if (!isOpen || !guide?.id || activeTab !== 'guide') return;
+    fetchGuideServiceLocations();
+    fetchLegacyFishTypeLocations();
+  }, [isOpen, guide?.id, activeTab, fetchGuideServiceLocations, fetchLegacyFishTypeLocations]);
+
+  useEffect(() => {
+    fetchAvailableZones(editedGuide.fish_types || []);
+  }, [editedGuide.fish_types, fetchAvailableZones]);
+
+  useEffect(() => {
+    const allAvailableZoneIds = new Set(
+      Object.values(availableZonesByFishType)
+        .flat()
+        .map((zone) => zone.id)
+    );
+    setSelectedServiceLocationIds((prev) => prev.filter((id) => allAvailableZoneIds.has(id)));
+  }, [availableZonesByFishType]);
+
+  const toggleServiceLocation = (zoneId) => {
+    setSelectedServiceLocationIds((prev) => {
+      if (prev.includes(zoneId)) {
+        return prev.filter((id) => id !== zoneId);
+      }
+      return [...prev, zoneId];
+    });
+  };
+
+  const syncGuideServiceLocations = async (guideId, fishTypes) => {
+    const zoneById = new Map(
+      Object.values(availableZonesByFishType)
+        .flat()
+        .map((zone) => [zone.id, zone])
+    );
+
+    const normalizedRows = selectedServiceLocationIds
+      .map((zoneId) => zoneById.get(zoneId))
+      .filter((zone) => zone && fishTypes.includes(zone.fish_type))
+      .map((zone) => ({
+        guide_id: guideId,
+        fish_type: zone.fish_type,
+        fishing_zone_id: zone.id,
+      }));
+
+    const { error: deleteError } = await supabase
+      .from('guide_service_locations')
+      .delete()
+      .eq('guide_id', guideId);
+
+    if (deleteError) {
+      if (isMissingGuideServiceLocationsTableError(deleteError)) {
+        setServiceLocationError('Le schema des lieux de service n\'est pas encore migre. Lancez la migration Supabase.');
+        return;
+      }
+      throw deleteError;
     }
-  }, [isOpen, guide?.id, activeTab, fetchFishTypeLocations]);
+
+    if (normalizedRows.length === 0) {
+      setSelectedLocationRows([]);
+      return;
+    }
+
+    const { data: insertedRows, error: insertError } = await supabase
+      .from('guide_service_locations')
+      .insert(normalizedRows)
+      .select('fish_type, fishing_zone_id, fishing_zone:fishing_zone_id(id, name, fish_type, description)');
+
+    if (insertError) {
+      if (isMissingGuideServiceLocationsTableError(insertError)) {
+        setServiceLocationError('Le schema des lieux de service n\'est pas encore migre. Lancez la migration Supabase.');
+        return;
+      }
+      throw insertError;
+    }
+
+    setSelectedLocationRows(insertedRows || []);
+  };
 
   // Toggle fish type
   const toggleFishType = (fishValue) => {
@@ -215,7 +389,6 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
         name: editedGuide.name,
         experience: editedGuide.experience,
         bio: editedGuide.bio,
-        location: editedGuide.location,
         phone: editedGuide.phone,
         email: editedGuide.email,
         fish_types: editedGuide.fish_types,
@@ -229,72 +402,14 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
         .eq("id", guide.id);
 
       if (error) throw error;
+
+      await syncGuideServiceLocations(guide.id, editedGuide.fish_types || []);
       console.log('Guide profile saved successfully');
     } catch (err) {
       console.error('Error saving guide:', err);
       alert('Erreur lors de la sauvegarde: ' + err.message);
     } finally {
       setIsSavingGuide(false);
-    }
-  };
-
-  // Add location for a fish type
-  const handleAddLocation = async (fishType) => {
-    if (!guide?.id) return;
-    const input = newLocationInputs[fishType];
-    if (!input?.name?.trim()) return;
-
-    try {
-      const { data, error } = await supabase
-        .from('guide_fish_type_locations')
-        .insert({
-          guide_id: guide.id,
-          fish_type: fishType,
-          location_name: input.name.trim(),
-          description: input.description?.trim() || null,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      // Update local state
-      setFishTypeLocations(prev => ({
-        ...prev,
-        [fishType]: [...(prev[fishType] || []), data]
-      }));
-      
-      // Clear input
-      setNewLocationInputs(prev => ({
-        ...prev,
-        [fishType]: { name: '', description: '' }
-      }));
-    } catch (err) {
-      console.error('Error adding location:', err);
-      if (err.code === '23505') {
-        alert('Ce lieu existe déjà pour ce type de poisson.');
-      } else {
-        alert('Erreur lors de l\'ajout: ' + err.message);
-      }
-    }
-  };
-
-  // Remove a location
-  const handleRemoveLocation = async (locationId, fishType) => {
-    try {
-      const { error } = await supabase
-        .from('guide_fish_type_locations')
-        .delete()
-        .eq('id', locationId);
-
-      if (error) throw error;
-
-      setFishTypeLocations(prev => ({
-        ...prev,
-        [fishType]: (prev[fishType] || []).filter(loc => loc.id !== locationId)
-      }));
-    } catch (err) {
-      console.error('Error removing location:', err);
     }
   };
 
@@ -307,8 +422,6 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     ? `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(guide.google_calendar_id)}`
     : "https://calendar.google.com";
 
-  const avatarUrl = user?.user_metadata?.avatar_url || user?.raw_user_meta_data?.avatar_url || '/default-avatar.png';
-
   return (
     <div style={{
       position: 'fixed',
@@ -320,8 +433,9 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
       justifyContent: 'stretch',
     }}>
       <div style={{
-        width: '100vw',
-        height: '100vh',
+        width: '100%',
+        height: '100dvh',
+        minHeight: '100vh',
         backgroundColor: '#FFFCF7',
         boxShadow: '0 24px 48px rgba(0,0,0,0.2)',
         display: 'flex',
@@ -333,15 +447,19 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '32px 40px',
+          padding: 'clamp(14px, 3vh, 32px) clamp(14px, 3vw, 40px)',
           borderBottom: '1px solid #E5E7EB',
           flexShrink: 0,
           backgroundColor: 'white',
+          gap: '12px',
+          flexWrap: 'wrap',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <img
-              src={avatarUrl}
+              src={avatarSrc}
               alt="Avatar"
+              referrerPolicy="no-referrer"
+              onError={handleAvatarError}
               style={{ width: 56, height: 56, borderRadius: '50%', border: '3px solid #4A9B8E', objectFit: 'cover' }}
             />
             <div>
@@ -373,9 +491,11 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
         <div style={{
           display: 'flex',
           borderBottom: '1px solid #E5E7EB',
-          padding: '0 40px',
+          padding: '0 clamp(10px, 3vw, 40px)',
           flexShrink: 0,
           backgroundColor: 'white',
+          overflowX: 'auto',
+          whiteSpace: 'nowrap',
         }}>
           <button
             type="button"
@@ -457,7 +577,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
         <div style={{ 
           flex: 1, 
           overflowY: 'auto', 
-          padding: '40px',
+          padding: 'clamp(12px, 3vw, 40px)',
           display: 'flex',
           justifyContent: 'center'
         }}>
@@ -542,18 +662,18 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
 
           {/* GUIDE TAB */}
           {activeTab === 'guide' && isGuide && (
-            <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', flexDirection: isCompactLayout ? 'column' : 'row', gap: '24px', alignItems: 'flex-start' }}>
 
               {/* Left Sidebar Nav */}
               <div style={{
                 flexShrink: 0,
-                width: '200px',
+                width: isCompactLayout ? '100%' : '200px',
                 backgroundColor: 'white',
                 borderRadius: '12px',
                 border: '1px solid #E5E7EB',
                 overflow: 'hidden',
-                position: 'sticky',
-                top: '0',
+                position: isCompactLayout ? 'relative' : 'sticky',
+                top: isCompactLayout ? 'auto' : '0',
               }}>
                 {[
                   { key: 'profil', icon: '👤', label: 'Profil de guide' },
@@ -635,8 +755,8 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                 </h3>
                 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <div style={{ flex: '1 1 280px' }}>
                       <label style={labelStyle}>Nom</label>
                       <input
                         type="text"
@@ -645,7 +765,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                         style={inputStyle}
                       />
                     </div>
-                    <div style={{ flex: 1 }}>
+                    <div style={{ flex: '1 1 280px' }}>
                       <label style={labelStyle}>Tarif horaire ($)</label>
                       <input
                         type="number"
@@ -657,8 +777,8 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <div style={{ flex: '1 1 280px' }}>
                       <label style={labelStyle}>Téléphone</label>
                       <input
                         type="tel"
@@ -667,7 +787,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                         style={inputStyle}
                       />
                     </div>
-                    <div style={{ flex: 1 }}>
+                    <div style={{ flex: '1 1 280px' }}>
                       <label style={labelStyle}>Courriel</label>
                       <input
                         type="email"
@@ -676,17 +796,6 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                         style={inputStyle}
                       />
                     </div>
-                  </div>
-
-                  <div>
-                    <label style={labelStyle}>Localisation</label>
-                    <input
-                      type="text"
-                      value={editedGuide.location}
-                      onChange={(e) => setEditedGuide(p => ({ ...p, location: e.target.value }))}
-                      placeholder="Ex: Gaspésie, QC"
-                      style={inputStyle}
-                    />
                   </div>
 
                   <div>
@@ -743,7 +852,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                   Spécialisations & Lieux de pêche
                 </h3>
                 <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#5A7766' }}>
-                  Sélectionnez vos types de poissons, puis associez des lieux spécifiques pour chacun.
+                  Sélectionnez vos types de poissons, puis choisissez des lieux valides depuis la base de donnees.
                 </p>
 
                 {/* Fish type selection pills */}
@@ -777,110 +886,171 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                   })}
                 </div>
 
-                {/* Location assignments per selected fish type */}
-                {(editedGuide.fish_types || []).length > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                    {(editedGuide.fish_types || []).map(ft => {
-                      const fishLabel = FISH_TYPES.find(f => f.value === ft)?.label || ft;
-                      const locations = fishTypeLocations[ft] || [];
-                      const inputVal = newLocationInputs[ft] || { name: '', description: '' };
+                <div style={{ marginBottom: '14px' }}>
+                  <label style={{ ...labelStyle, marginBottom: '6px' }}>Lieux de service (selection multiple)</label>
+                  {(editedGuide.fish_types || []).length === 0 ? (
+                    <div style={{
+                      border: '1px dashed #D1D5DB',
+                      borderRadius: '8px',
+                      padding: '10px 12px',
+                      color: '#9CA3AF',
+                      fontSize: '13px',
+                      backgroundColor: '#F9FAFB',
+                    }}>
+                      Selectionnez d'abord un ou plusieurs types de poisson.
+                    </div>
+                  ) : (
+                    <div style={{ position: 'relative' }}>
+                      <button
+                        type="button"
+                        onClick={() => setIsLocationDropdownOpen((prev) => !prev)}
+                        style={{
+                          width: '100%',
+                          textAlign: 'left',
+                          border: '1px solid #D1D5DB',
+                          borderRadius: '8px',
+                          padding: '10px 12px',
+                          fontSize: '13px',
+                          color: '#1F3A2E',
+                          backgroundColor: 'white',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {selectedServiceLocationIds.length > 0
+                          ? `${selectedServiceLocationIds.length} lieu(x) selectionne(s)`
+                          : 'Choisir les lieux de service'}
+                        <span style={{ float: 'right', color: '#6B7280' }}>{isLocationDropdownOpen ? '▲' : '▼'}</span>
+                      </button>
 
-                      return (
-                        <div key={ft} style={{
-                          padding: '14px',
-                          backgroundColor: 'rgba(74, 155, 142, 0.05)',
-                          borderRadius: '10px',
-                          border: '1px solid rgba(74, 155, 142, 0.2)',
+                      {isLocationDropdownOpen && (
+                        <div style={{
+                          position: 'absolute',
+                          zIndex: 30,
+                          left: 0,
+                          right: 0,
+                          marginTop: '6px',
+                          backgroundColor: 'white',
+                          border: '1px solid #D1D5DB',
+                          borderRadius: '8px',
+                          boxShadow: '0 8px 20px rgba(15, 23, 42, 0.12)',
+                          maxHeight: '280px',
+                          overflowY: 'auto',
+                          padding: '8px',
                         }}>
-                          <h4 style={{ margin: '0 0 10px', fontSize: '14px', color: '#1F3A2E' }}>
-                            🐟 {fishLabel}
-                          </h4>
-
-                          {/* Existing locations */}
-                          {locations.length > 0 && (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
-                              {locations.map(loc => (
-                                <div
-                                  key={loc.id}
-                                  style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                    padding: '6px 10px',
-                                    backgroundColor: 'rgba(45, 95, 76, 0.1)',
-                                    borderRadius: '16px',
-                                    fontSize: '12px',
-                                    color: '#2D5F4C',
-                                  }}
-                                >
-                                  📍 {loc.location_name}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveLocation(loc.id, ft)}
-                                    style={{
-                                      background: 'none', border: 'none',
-                                      cursor: 'pointer', fontSize: '12px',
-                                      color: '#DC2626', padding: '0 2px',
-                                      lineHeight: 1,
-                                    }}
-                                  >
-                                    ✕
-                                  </button>
+                          {loadingServiceLocations ? (
+                            <div style={{ padding: '8px', fontSize: '13px', color: '#6B7280' }}>Chargement...</div>
+                          ) : (
+                            (editedGuide.fish_types || []).map((fishType) => {
+                              const fishZones = availableZonesByFishType[fishType] || [];
+                              return (
+                                <div key={fishType} style={{ padding: '6px 4px', borderBottom: '1px solid #F3F4F6' }}>
+                                  <div style={{ fontSize: '12px', fontWeight: '600', color: '#2D5F4C', marginBottom: '6px' }}>
+                                    🐟 {getFishLabel(fishType)}
+                                  </div>
+                                  {fishZones.length === 0 ? (
+                                    <div style={{ fontSize: '12px', color: '#9CA3AF', fontStyle: 'italic', paddingBottom: '6px' }}>
+                                      Aucun lieu disponible pour ce type de poisson.
+                                    </div>
+                                  ) : (
+                                    fishZones.map((zone) => {
+                                      const checked = selectedServiceLocationIds.includes(zone.id);
+                                      return (
+                                        <label
+                                          key={zone.id}
+                                          style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            padding: '6px 4px',
+                                            fontSize: '13px',
+                                            color: '#1F3A2E',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() => toggleServiceLocation(zone.id)}
+                                          />
+                                          <span>{zone.name}</span>
+                                        </label>
+                                      );
+                                    })
+                                  )}
                                 </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Add new location */}
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
-                            <div style={{ flex: 1 }}>
-                              <input
-                                type="text"
-                                value={inputVal.name}
-                                onChange={(e) => setNewLocationInputs(prev => ({
-                                  ...prev,
-                                  [ft]: { ...prev[ft], name: e.target.value }
-                                }))}
-                                placeholder="Nom du lieu (ex: Rivière Cascapédia)"
-                                style={{
-                                  width: '100%', padding: '8px 10px', borderRadius: '8px',
-                                  border: '1px solid #D1D5DB', fontSize: '13px',
-                                  color: '#1F3A2E', backgroundColor: 'white',
-                                  boxSizing: 'border-box',
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') handleAddLocation(ft);
-                                }}
-                              />
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleAddLocation(ft)}
-                              disabled={!inputVal.name?.trim()}
-                              style={{
-                                padding: '8px 14px',
-                                backgroundColor: inputVal.name?.trim() ? '#2D5F4C' : '#9CA3AF',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '8px',
-                                cursor: inputVal.name?.trim() ? 'pointer' : 'not-allowed',
-                                fontSize: '13px',
-                                fontWeight: '500',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              + Ajouter
-                            </button>
-                          </div>
-
-                          {locations.length === 0 && (
-                            <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#9CA3AF', fontStyle: 'italic' }}>
-                              Aucun lieu associé. Ajoutez des rivières, lacs ou zones.
-                            </p>
+                              );
+                            })
                           )}
                         </div>
-                      );
-                    })}
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {selectedServiceLocationIds.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                    {selectedLocationRows
+                      .filter((row) => selectedServiceLocationIds.includes(row.fishing_zone_id) && row.fishing_zone)
+                      .map((row) => (
+                        <span
+                          key={row.fishing_zone_id}
+                          style={{
+                            padding: '6px 10px',
+                            backgroundColor: 'rgba(45, 95, 76, 0.1)',
+                            borderRadius: '16px',
+                            fontSize: '12px',
+                            color: '#2D5F4C',
+                          }}
+                        >
+                          📍 {row.fishing_zone.name}
+                        </span>
+                      ))}
+                    {Object.values(availableZonesByFishType)
+                      .flat()
+                      .filter((zone) => selectedServiceLocationIds.includes(zone.id))
+                      .filter((zone, index, arr) => arr.findIndex((z) => z.id === zone.id) === index)
+                      .filter((zone) => !selectedLocationRows.some((row) => row.fishing_zone_id === zone.id))
+                      .map((zone) => (
+                        <span
+                          key={zone.id}
+                          style={{
+                            padding: '6px 10px',
+                            backgroundColor: 'rgba(45, 95, 76, 0.1)',
+                            borderRadius: '16px',
+                            fontSize: '12px',
+                            color: '#2D5F4C',
+                          }}
+                        >
+                          📍 {zone.name}
+                        </span>
+                      ))}
+                  </div>
+                )}
+
+                {serviceLocationError && (
+                  <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#B45309' }}>
+                    {serviceLocationError}
+                  </p>
+                )}
+
+                {Object.keys(legacyFishTypeLocations).length > 0 && (
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '10px',
+                    borderRadius: '8px',
+                    border: '1px solid #FCD34D',
+                    backgroundColor: '#FFFBEB',
+                  }}>
+                    <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#92400E', fontWeight: '600' }}>
+                      Anciens lieux texte detectes (migration recommandee)
+                    </p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {Object.entries(legacyFishTypeLocations).map(([fishType, names]) => (
+                        <p key={fishType} style={{ margin: 0, fontSize: '12px', color: '#92400E' }}>
+                          🐟 {getFishLabel(fishType)}: {names.join(', ')}
+                        </p>
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -1091,7 +1261,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                       fontSize: '12px',
                       color: '#64748b',
                     }}>
-                      ℹ️ Une commission de 10% est prélevée sur chaque paiement pour le fonctionnement de la plateforme.
+                      ℹ️ Une commission de 10% s'applique aux réservations générées par la plateforme. Les réservations saisies manuellement par le guide n'ont pas de commission Monde Sauvage.
                     </div>
                   </div>
                 )}

@@ -23,6 +23,28 @@ import {
   errorResponse,
   jsonResponse,
 } from "../_shared/stripeUtils.ts";
+import {
+  BOOKING_ORIGIN_PLATFORM,
+  calculatePlatformFeeAmount,
+} from "../_shared/bookingRules.ts";
+
+type SupabaseClientLike = ReturnType<typeof createClient<Record<string, unknown>>>;
+
+function isMissingSchemaColumn(error: unknown, columnName: string): boolean {
+  const msg = String((error as { message?: string })?.message || "").toLowerCase();
+  const target = columnName.toLowerCase();
+  return msg.includes(`could not find the '${target}' column`) || msg.includes(`column \"${target}\" does not exist`);
+}
+
+function stripFeeOriginColumns(payload: Record<string, unknown>): Record<string, unknown> {
+  const {
+    booking_origin: _booking_origin,
+    platform_fee_amount: _platform_fee_amount,
+    platform_fee_waived: _platform_fee_waived,
+    ...legacy
+  } = payload;
+  return legacy;
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -60,7 +82,8 @@ Deno.serve(async (req: Request) => {
 
   } catch (error) {
     console.error("stripe-create-booking error:", error);
-    return errorResponse(error.message || "Internal server error", 500);
+    const message = error instanceof Error ? error.message : String(error);
+    return errorResponse(message || "Internal server error", 500);
   }
 });
 
@@ -68,7 +91,7 @@ Deno.serve(async (req: Request) => {
 // CHALET BOOKING
 // =============================================================================
 async function handleChaletBooking(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClientLike,
   body: Record<string, unknown>,
   userId: string | null
 ) {
@@ -180,7 +203,11 @@ async function handleChaletBooking(
       existingPricingRules || []
     );
 
-    const existingFee = Math.round(existingPricing.totalPrice * APPLICATION_FEE_PERCENT * 100) / 100;
+    const existingFee = calculatePlatformFeeAmount(
+      existingPricing.totalPrice,
+      { booking_origin: BOOKING_ORIGIN_PLATFORM },
+      APPLICATION_FEE_PERCENT,
+    );
     const existingTotal = Math.round((existingPricing.totalPrice + existingFee) * 100) / 100;
 
     return jsonResponse({
@@ -233,7 +260,11 @@ async function handleChaletBooking(
 
   // Fee is added ON TOP of the chalet price (customer pays 110%)
   const chaletSubtotal = pricing.totalPrice;
-  const chaletApplicationFee = Math.round(chaletSubtotal * APPLICATION_FEE_PERCENT * 100) / 100;
+  const chaletApplicationFee = calculatePlatformFeeAmount(
+    chaletSubtotal,
+    { booking_origin: BOOKING_ORIGIN_PLATFORM },
+    APPLICATION_FEE_PERCENT,
+  );
   const chaletTotal = Math.round((chaletSubtotal + chaletApplicationFee) * 100) / 100;
 
   // Convert to cents for Stripe (CAD)
@@ -241,26 +272,46 @@ async function handleChaletBooking(
   const applicationFeeInCents = Math.round(chaletApplicationFee * 100);
 
   // 7. Create the booking record (pending payment)
-  const { data: booking, error: bookingError } = await supabase
+  const bookingInsertPayload = {
+    chalet_id: chaletId,
+    start_date: startDate,
+    end_date: endDate,
+    status: "pending",
+    payment_status: "processing",
+    source: "website",
+    booking_origin: BOOKING_ORIGIN_PLATFORM,
+    customer_name: customerName,
+    customer_email: customerEmail,
+    notes: notes || null,
+    user_id: userId,
+    total_price: chaletTotal,
+    nights: pricing.nights,
+    price_per_night: pricing.pricePerNight,
+    application_fee: chaletApplicationFee,
+    platform_fee_amount: chaletApplicationFee,
+    platform_fee_waived: chaletApplicationFee === 0,
+  };
+
+  let { data: booking, error: bookingError } = await supabase
     .from("bookings")
-    .insert({
-      chalet_id: chaletId,
-      start_date: startDate,
-      end_date: endDate,
-      status: "pending",
-      payment_status: "processing",
-      source: "website",
-      customer_name: customerName,
-      customer_email: customerEmail,
-      notes: notes || null,
-      user_id: userId,
-      total_price: chaletTotal,
-      nights: pricing.nights,
-      price_per_night: pricing.pricePerNight,
-      application_fee: chaletApplicationFee,
-    })
+    .insert(bookingInsertPayload)
     .select()
     .single();
+
+  if (bookingError && (
+    isMissingSchemaColumn(bookingError, "booking_origin")
+    || isMissingSchemaColumn(bookingError, "platform_fee_amount")
+    || isMissingSchemaColumn(bookingError, "platform_fee_waived")
+  )) {
+    console.warn("Schema cache missing new bookings columns; retrying chalet insert with legacy payload");
+    const retry = await supabase
+      .from("bookings")
+      .insert(stripFeeOriginColumns(bookingInsertPayload))
+      .select()
+      .single();
+    booking = retry.data;
+    bookingError = retry.error;
+  }
 
   if (bookingError) {
     console.error("Error creating booking:", bookingError);
@@ -290,6 +341,7 @@ async function handleChaletBooking(
       start_date: startDate,
       end_date: endDate,
       nights: String(pricing.nights),
+      booking_origin: BOOKING_ORIGIN_PLATFORM,
     },
     receipt_email: customerEmail,
     description: `Réservation: ${chalet.Name || "Chalet"} — ${pricing.nights} nuit(s) du ${startDate} au ${endDate}`,
@@ -324,10 +376,15 @@ async function handleChaletBooking(
 // =============================================================================
 // GUIDE BOOKING
 // =============================================================================
+// Supports multi-slot bookings via the optional `allSlots` array.
+// When `allSlots` is provided with > 0 entries, one booking record is
+// created per slot and a single combined PaymentIntent covers the total.
+// The PI metadata stores all booking IDs so the webhook can confirm them all.
+// =============================================================================
 async function handleGuideBooking(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClientLike,
   body: Record<string, unknown>,
-  userId: string | null
+  _userId: string | null
 ) {
   const {
     guideId,
@@ -339,6 +396,7 @@ async function handleGuideBooking(
     tripType,
     numberOfPeople,
     notes,
+    allSlots: rawAllSlots,
   } = body as {
     guideId: string;
     startTime: string;
@@ -349,36 +407,42 @@ async function handleGuideBooking(
     tripType?: string;
     numberOfPeople?: number;
     notes?: string;
+    allSlots?: Array<{ startTime: string; endTime: string }>;
   };
 
   // Validate required fields
-  if (!guideId || !startTime || !endTime || !customerName || !customerEmail) {
+  if (!guideId || !customerName || !customerEmail) {
     return errorResponse(
-      "Missing required fields: guideId, startTime, endTime, customerName, customerEmail"
+      "Missing required fields: guideId, customerName, customerEmail"
     );
   }
 
-  // ── DATE SHIFT GUARD ──────────────────────────────────────
-  // Log raw input values for debugging timezone issues
-  console.log(`🔒 [DATE GUARD] Raw input startTime: "${startTime}"`);
-  console.log(`🔒 [DATE GUARD] Raw input endTime:   "${endTime}"`);
+  // Build the list of slots to book.
+  // If allSlots is provided and has entries, use those.
+  // Otherwise fall back to the single startTime/endTime pair.
+  const slots: Array<{ startTime: string; endTime: string }> =
+    Array.isArray(rawAllSlots) && rawAllSlots.length > 0
+      ? rawAllSlots
+      : [{ startTime, endTime }];
 
-  // Validate dates
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-    return errorResponse("Invalid date format");
-  }
-  if (end <= start) {
-    return errorResponse("endTime must be after startTime");
+  // Validate every slot
+  for (const slot of slots) {
+    if (!slot.startTime || !slot.endTime) {
+      return errorResponse("Each slot must have startTime and endTime");
+    }
+    const s = new Date(slot.startTime);
+    const e = new Date(slot.endTime);
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) {
+      return errorResponse(`Invalid date format in slot: ${slot.startTime} / ${slot.endTime}`);
+    }
+    if (e <= s) {
+      return errorResponse(`endTime must be after startTime in slot: ${slot.startTime} / ${slot.endTime}`);
+    }
   }
 
-  console.log(`🔒 [DATE GUARD] Parsed start UTC: ${start.toISOString()}`);
-  console.log(`🔒 [DATE GUARD] Parsed end UTC:   ${end.toISOString()}`);
-  
-  // Assert: the stored value should match the input (no silent conversion)
-  if (start.toISOString() !== new Date(startTime).toISOString()) {
-    console.error(`❌ [DATE GUARD] DATE MISMATCH! Input="${startTime}" Parsed="${start.toISOString()}"`);
+  console.log(`📋 [GUIDE] ${slots.length} slot(s) to book for guide=${guideId}`);
+  for (const slot of slots) {
+    console.log(`   🔒 [DATE GUARD] slot: ${slot.startTime} → ${slot.endTime}`);
   }
 
   // 3. Fetch guide (need Stripe account ID + hourly rate)
@@ -410,150 +474,118 @@ async function handleGuideBooking(
     return errorResponse("Ce guide n'a pas défini de taux horaire.");
   }
 
-  // 4. Calculate total price based on hours
-  const durationMs = end.getTime() - start.getTime();
-  const durationHours = durationMs / (1000 * 60 * 60);
-  const subtotal = Math.round(guide.hourly_rate * durationHours * 100) / 100;
+  // 4. Calculate total price across ALL slots
+  let totalDurationHours = 0;
+  for (const slot of slots) {
+    const s = new Date(slot.startTime);
+    const e = new Date(slot.endTime);
+    totalDurationHours += (e.getTime() - s.getTime()) / (1000 * 60 * 60);
+  }
+  const subtotal = Math.round(guide.hourly_rate * totalDurationHours * 100) / 100;
 
   if (subtotal <= 0) {
     return errorResponse("Calculated price is invalid");
   }
 
   // Fee is added ON TOP of the guide's price (customer pays 110%)
-  const applicationFee = Math.round(subtotal * APPLICATION_FEE_PERCENT * 100) / 100;
+  const applicationFee = calculatePlatformFeeAmount(
+    subtotal,
+    { booking_origin: BOOKING_ORIGIN_PLATFORM },
+    APPLICATION_FEE_PERCENT,
+  );
   const totalPrice = Math.round((subtotal + applicationFee) * 100) / 100;
 
   // Convert to cents for Stripe (CAD)
   const amountInCents = Math.round(totalPrice * 100);
   const applicationFeeInCents = Math.round(applicationFee * 100);
 
-  // ── IDEMPOTENCY: reuse existing pending booking with same parameters ──
-  // Do NOT require stripe_payment_intent_id to exist — a parallel request
-  // (e.g. React StrictMode double-fire) may have created the row but not
-  // yet attached the PaymentIntent.
-  const { data: existingGuideBooking } = await supabase
-    .from("guide_booking")
-    .select("id, stripe_payment_intent_id")
-    .eq("guide_id", guideId)
-    .eq("customer_email", customerEmail)
-    .eq("start_time", startTime)
-    .eq("end_time", endTime)
-    .eq("status", "pending")
-    .is("deleted_at", null)
-    .maybeSingle();
+  // ── IDEMPOTENCY: check for existing pending bookings for ALL slots ────
+  // If every slot already has a pending booking with a PI, reuse.
+  if (slots.length === 1) {
+    // Single-slot: original idempotency logic
+    const slot = slots[0];
+    const { data: existingGuideBooking } = await supabase
+      .from("guide_booking")
+      .select("id, stripe_payment_intent_id")
+      .eq("guide_id", guideId)
+      .eq("customer_email", customerEmail)
+      .eq("start_time", slot.startTime)
+      .eq("end_time", slot.endTime)
+      .eq("status", "pending")
+      .is("deleted_at", null)
+      .maybeSingle();
 
-  if (existingGuideBooking) {
-    // If the existing booking already has a PaymentIntent, reuse it as-is
-    if (existingGuideBooking.stripe_payment_intent_id) {
+    if (existingGuideBooking?.stripe_payment_intent_id) {
       console.log(`⏩ Reusing existing pending guide booking ${existingGuideBooking.id} (has PI)`);
       const existingPI = await stripeRequest("GET", `/payment_intents/${existingGuideBooking.stripe_payment_intent_id}`);
+      const slotDuration = (new Date(slot.endTime).getTime() - new Date(slot.startTime).getTime()) / (1000 * 60 * 60);
 
       return jsonResponse({
         bookingId: existingGuideBooking.id,
+        allBookingIds: [existingGuideBooking.id],
         bookingType: "guide",
         clientSecret: existingPI.client_secret,
         stripeAccountId: guide.stripe_account_id,
         pricing: {
-          hours: Math.round(durationHours * 10) / 10,
+          hours: Math.round(slotDuration * 10) / 10,
           hourlyRate: guide.hourly_rate,
-          subtotal: subtotal,
-          applicationFee: applicationFee,
+          subtotal,
+          applicationFee,
           total: totalPrice,
         },
       });
     }
+  }
 
-    // Existing booking without a PI yet (parallel request in progress).
-    // Create a PaymentIntent and attach it to the existing booking.
-    console.log(`⏩ Reusing existing pending guide booking ${existingGuideBooking.id} (creating PI)`);
-
-    const paymentIntent = await stripeRequest("POST", "/payment_intents", {
-      amount: String(amountInCents),
-      currency: "cad",
-      payment_method_types: ["card"],
-      application_fee_amount: String(applicationFeeInCents),
-      transfer_data: {
-        destination: guide.stripe_account_id,
-      },
-      on_behalf_of: guide.stripe_account_id,
-      metadata: {
-        booking_type: "guide",
-        booking_id: existingGuideBooking.id,
-        guide_id: guideId,
-        guide_name: guide.name || "",
-        customer_name: customerName,
-        customer_email: customerEmail,
-        start_time: startTime,
-        end_time: endTime,
-        hours: String(durationHours.toFixed(1)),
-      },
-      receipt_email: customerEmail,
-      description: `Guide: ${guide.name || "Guide"} — ${durationHours.toFixed(1)}h le ${start.toISOString().split("T")[0]}`,
-    });
-
-    await supabase
+  // 5. Check availability for EACH slot individually
+  for (const slot of slots) {
+    console.log(`🔍 [GUIDE] Pre-check: overlapping bookings for guide=${guideId} start=${slot.startTime} end=${slot.endTime}`);
+    const { data: overlapping, error: overlapError } = await supabase
       .from("guide_booking")
-      .update({ stripe_payment_intent_id: paymentIntent.id })
-      .eq("id", existingGuideBooking.id);
+      .select("id, start_time, end_time, status")
+      .eq("guide_id", guideId)
+      .in("status", ["confirmed", "pending", "pending_payment", "booked"])
+      .is("deleted_at", null)
+      .lt("start_time", slot.endTime)
+      .gt("end_time", slot.startTime);
 
-    console.log(`✅ PI ${paymentIntent.id} attached to existing guide booking ${existingGuideBooking.id}`);
+    if (overlapError) {
+      console.error(`❌ [GUIDE] Overlap check query error:`, overlapError);
+    }
 
-    return jsonResponse({
-      bookingId: existingGuideBooking.id,
-      bookingType: "guide",
-      clientSecret: paymentIntent.client_secret,
-      stripeAccountId: guide.stripe_account_id,
-      pricing: {
-        hours: Math.round(durationHours * 10) / 10,
-        hourlyRate: guide.hourly_rate,
-        subtotal: subtotal,
-        applicationFee: applicationFee,
-        total: totalPrice,
-      },
-    });
+    if (overlapping && overlapping.length > 0) {
+      console.log(`❌ [GUIDE] Found ${overlapping.length} overlapping booking(s) for slot ${slot.startTime}:`, JSON.stringify(overlapping));
+      return errorResponse("Le guide n'est pas disponible pour ce créneau. Un autre utilisateur a déjà réservé.", 409);
+    }
   }
 
-  // 5. Check availability (no overlapping confirmed/pending bookings)
-  //    This is a fast pre-check; the DB trigger is the real safety net.
-  console.log(`🔍 [GUIDE] Pre-check: looking for overlapping bookings for guide=${guideId} start=${startTime} end=${endTime}`);
-  const { data: overlapping, error: overlapError } = await supabase
-    .from("guide_booking")
-    .select("id, start_time, end_time, status")
-    .eq("guide_id", guideId)
-    .in("status", ["confirmed", "pending", "pending_payment", "booked"])
-    .is("deleted_at", null)
-    .lt("start_time", endTime)
-    .gt("end_time", startTime);
+  console.log(`✅ [GUIDE] No overlapping bookings found for any slot — proceeding to insert`);
 
-  if (overlapError) {
-    console.error(`❌ [GUIDE] Overlap check query error:`, overlapError);
-  }
-
-  if (overlapping && overlapping.length > 0) {
-    console.log(`❌ [GUIDE] Found ${overlapping.length} overlapping booking(s):`, JSON.stringify(overlapping));
-    return errorResponse("Le guide n'est pas disponible pour ce créneau. Un autre utilisateur a déjà réservé.", 409);
-  }
-
-  console.log(`✅ [GUIDE] No overlapping bookings found — proceeding to insert`);
-
-  // 6. Create the guide booking record (pending payment)
-  //    Set a 30-minute expiry so unpaid bookings are auto-cleaned up.
-  //    The DB trigger (prevent_guide_booking_overlap) prevents
-  //    overlapping active bookings even if two requests race past step 5.
+  // 6. Create one booking record per slot
   const PENDING_EXPIRY_MINUTES = 30;
   const pendingExpiresAt = new Date(Date.now() + PENDING_EXPIRY_MINUTES * 60 * 1000);
+  const createdBookings: Array<{ id: string; start_time: string; end_time: string }> = [];
 
-  console.log(`📝 [GUIDE] Inserting booking: guide=${guideId} start=${startTime} end=${endTime} status=pending`);
+  for (const slot of slots) {
+    const slotDuration = (new Date(slot.endTime).getTime() - new Date(slot.startTime).getTime()) / (1000 * 60 * 60);
+    const slotSubtotal = Math.round(guide.hourly_rate * slotDuration * 100) / 100;
+    const slotFee = calculatePlatformFeeAmount(
+      slotSubtotal,
+      { booking_origin: BOOKING_ORIGIN_PLATFORM },
+      APPLICATION_FEE_PERCENT,
+    );
+    const slotTotal = Math.round((slotSubtotal + slotFee) * 100) / 100;
 
-  const { data: booking, error: bookingError } = await supabase
-    .from("guide_booking")
-    .insert({
+    console.log(`📝 [GUIDE] Inserting booking: guide=${guideId} start=${slot.startTime} end=${slot.endTime} status=pending`);
+
+    const guideInsertPayload = {
       guide_id: guideId,
-      start_time: startTime,
-      end_time: endTime,
+      start_time: slot.startTime,
+      end_time: slot.endTime,
       status: "pending",
       payment_status: "processing",
       source: "website",
+      booking_origin: BOOKING_ORIGIN_PLATFORM,
       customer_name: customerName,
       customer_email: customerEmail,
       customer_phone: customerPhone || null,
@@ -561,35 +593,66 @@ async function handleGuideBooking(
       number_of_people: numberOfPeople || 1,
       notes: notes || null,
       is_paid: false,
-      payment_amount: totalPrice,
-      application_fee: applicationFee,
+      payment_amount: slotTotal,
+      application_fee: slotFee,
+      platform_fee_amount: slotFee,
+      platform_fee_waived: slotFee === 0,
       payment_link_expires_at: pendingExpiresAt.toISOString(),
       google_event_id: null,
-    })
-    .select()
-    .single();
+    };
 
-  if (bookingError) {
-    console.error("❌ [GUIDE] Error creating guide booking:", JSON.stringify(bookingError));
-    console.error("❌ [GUIDE] Error code:", bookingError.code);
-    console.error("❌ [GUIDE] Error message:", bookingError.message);
-    console.error("❌ [GUIDE] Error details:", bookingError.details);
-    console.error("❌ [GUIDE] Error hint:", bookingError.hint);
+    let { data: booking, error: bookingError } = await supabase
+      .from("guide_booking")
+      .insert(guideInsertPayload)
+      .select()
+      .single();
 
-    // Catch exclusion constraint violation (23P01) or trigger overlap rejection
-    const errorMsg = bookingError.message || bookingError.code || JSON.stringify(bookingError);
-    if (bookingError.code === "23P01" || errorMsg.includes("guide_booking_no_overlap") || errorMsg.includes("exclusion") || errorMsg.includes("chevauche")) {
-      return errorResponse(
-        "Ce créneau vient d'être réservé par un autre utilisateur. Veuillez choisir un autre horaire.",
-        409
-      );
+    if (bookingError && (
+      isMissingSchemaColumn(bookingError, "booking_origin")
+      || isMissingSchemaColumn(bookingError, "platform_fee_amount")
+      || isMissingSchemaColumn(bookingError, "platform_fee_waived")
+    )) {
+      console.warn("Schema cache missing new guide_booking columns; retrying insert with legacy payload");
+      const retry = await supabase
+        .from("guide_booking")
+        .insert(stripFeeOriginColumns(guideInsertPayload))
+        .select()
+        .single();
+      booking = retry.data;
+      bookingError = retry.error;
     }
 
-    return errorResponse(`Failed to create guide booking: ${errorMsg}`, 500);
+    if (bookingError) {
+      console.error("❌ [GUIDE] Error creating guide booking:", JSON.stringify(bookingError));
+
+      // Rollback previously created bookings for this batch
+      for (const prev of createdBookings) {
+        await supabase.from("guide_booking").delete().eq("id", prev.id);
+        console.log(`🗑️ Rolled back booking ${prev.id}`);
+      }
+
+      const errorMsg = bookingError.message || bookingError.code || JSON.stringify(bookingError);
+      if (bookingError.code === "23P01" || errorMsg.includes("guide_booking_no_overlap") || errorMsg.includes("exclusion") || errorMsg.includes("chevauche")) {
+        return errorResponse(
+          "Ce créneau vient d'être réservé par un autre utilisateur. Veuillez choisir un autre horaire.",
+          409
+        );
+      }
+
+      return errorResponse(`Failed to create guide booking: ${errorMsg}`, 500);
+    }
+
+    createdBookings.push({ id: booking.id, start_time: slot.startTime, end_time: slot.endTime });
   }
 
-  // 7. Create Stripe PaymentIntent (DESTINATION CHARGE — payment on platform,
-  //    automatic transfer to guide's connected account. Events fire on platform.)
+  const allBookingIds = createdBookings.map(b => b.id);
+  // Use the first booking as the "primary" for backwards compatibility
+  const primaryBookingId = allBookingIds[0];
+
+  // 7. Create ONE Stripe PaymentIntent for the combined total
+  const firstSlot = slots[0];
+  const lastSlot = slots[slots.length - 1];
+
   const paymentIntent = await stripeRequest("POST", "/payment_intents", {
     amount: String(amountInCents),
     currency: "cad",
@@ -601,37 +664,45 @@ async function handleGuideBooking(
     on_behalf_of: guide.stripe_account_id,
     metadata: {
       booking_type: "guide",
-      booking_id: booking.id,
+      booking_id: primaryBookingId,
+      // Comma-separated list of ALL booking IDs for multi-slot support
+      all_booking_ids: allBookingIds.join(","),
       guide_id: guideId,
       guide_name: guide.name || "",
       customer_name: customerName,
       customer_email: customerEmail,
-      start_time: startTime,
-      end_time: endTime,
-      hours: String(durationHours.toFixed(1)),
+      start_time: firstSlot.startTime,
+      end_time: lastSlot.endTime,
+      hours: String(totalDurationHours.toFixed(1)),
+      slot_count: String(slots.length),
+      booking_origin: BOOKING_ORIGIN_PLATFORM,
     },
     receipt_email: customerEmail,
-    description: `Guide: ${guide.name || "Guide"} — ${durationHours.toFixed(1)}h le ${start.toISOString().split("T")[0]}`,
+    description: `Guide: ${guide.name || "Guide"} — ${totalDurationHours.toFixed(1)}h (${slots.length} créneau${slots.length > 1 ? "x" : ""})`,
   });
 
-  // 8. Save PaymentIntent ID to booking
-  await supabase
-    .from("guide_booking")
-    .update({ stripe_payment_intent_id: paymentIntent.id })
-    .eq("id", booking.id);
+  // 8. Save PaymentIntent ID to ALL bookings
+  for (const bId of allBookingIds) {
+    await supabase
+      .from("guide_booking")
+      .update({ stripe_payment_intent_id: paymentIntent.id })
+      .eq("id", bId);
+  }
 
-  console.log(`✅ Guide booking ${booking.id} created with PaymentIntent ${paymentIntent.id}`);
+  console.log(`✅ ${createdBookings.length} guide booking(s) created with PaymentIntent ${paymentIntent.id}`);
+  console.log(`   IDs: ${allBookingIds.join(", ")}`);
   console.log(`   Subtotal: $${subtotal} | Fee: $${applicationFee} | Total: $${totalPrice} CAD`);
 
   // 9. Return client_secret + booking info to frontend
   return jsonResponse({
-    bookingId: booking.id,
+    bookingId: primaryBookingId,
+    allBookingIds: allBookingIds,
     bookingType: "guide",
     clientSecret: paymentIntent.client_secret,
     stripeAccountId: guide.stripe_account_id,
     expiresAt: pendingExpiresAt.toISOString(),
     pricing: {
-      hours: Math.round(durationHours * 10) / 10,
+      hours: Math.round(totalDurationHours * 10) / 10,
       hourlyRate: guide.hourly_rate,
       subtotal: subtotal,
       applicationFee: applicationFee,

@@ -364,6 +364,10 @@ export default function GuideClientModal({ isOpen, onClose, guide, profile }) {
         numberOfPeople: parseInt(bookingForm.numberOfPeople) || 1,
         notes: bookingForm.notes?.trim() || null,
         status: 'confirmed',
+        source: 'system',
+        bookingOrigin: 'guide_manual',
+        platformFeeAmount: 0,
+        platformFeeWaived: true,
       });
 
       setSuccess('Réservation créée avec succès !');

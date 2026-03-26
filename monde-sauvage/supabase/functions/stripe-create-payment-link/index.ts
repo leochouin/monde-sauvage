@@ -13,13 +13,23 @@
 import { createClient } from "@supabase/supabase-js";
 import {
   stripeRequest,
-  APPLICATION_FEE_PERCENT,
   corsHeaders,
   errorResponse,
   jsonResponse,
 } from "../_shared/stripeUtils.ts";
+import {
+  BOOKING_ORIGIN_GUIDE_MANUAL,
+  calculatePlatformFeeAmount,
+  requiresPayment,
+} from "../_shared/bookingRules.ts";
 
 const PAYMENT_LINK_EXPIRY_HOURS = 24;
+
+function isMissingSchemaColumn(error: unknown, columnName: string): boolean {
+  const msg = String((error as { message?: string })?.message || "").toLowerCase();
+  const target = columnName.toLowerCase();
+  return msg.includes(`could not find the '${target}' column`) || msg.includes(`column \"${target}\" does not exist`);
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -129,8 +139,12 @@ Deno.serve(async (req: Request) => {
       return errorResponse("Calculated price is invalid");
     }
 
-    // Fee is added ON TOP of the guide's price (customer pays 110%)
-    const applicationFee = Math.round(subtotal * APPLICATION_FEE_PERCENT * 100) / 100;
+    // Guide manual reservations can still be paid by Stripe, but platform fee is waived.
+    const applicationFee = calculatePlatformFeeAmount(
+      subtotal,
+      { booking_origin: BOOKING_ORIGIN_GUIDE_MANUAL },
+      0,
+    );
     const totalPrice = Math.round((subtotal + applicationFee) * 100) / 100;
 
     const amountInCents = Math.round(totalPrice * 100);
@@ -140,28 +154,51 @@ Deno.serve(async (req: Request) => {
     const expiresAt = new Date(Date.now() + PAYMENT_LINK_EXPIRY_HOURS * 60 * 60 * 1000);
 
     // Create booking record in 'pending_payment' status
-    const { data: booking, error: bookingError } = await supabase
+    const insertPayload = {
+      guide_id: guideId,
+      start_time: startTime,
+      end_time: endTime,
+      status: "pending_payment",
+      payment_status: "awaiting_payment",
+      source: "system",
+      booking_origin: BOOKING_ORIGIN_GUIDE_MANUAL,
+      customer_name: customerName,
+      customer_email: customerEmail,
+      customer_phone: customerPhone || null,
+      trip_type: tripType || null,
+      number_of_people: numberOfPeople || 1,
+      notes: notes || null,
+      is_paid: false,
+      payment_amount: totalPrice,
+      application_fee: applicationFee,
+      platform_fee_amount: applicationFee,
+      platform_fee_waived: true,
+      payment_link_expires_at: expiresAt.toISOString(),
+    };
+
+    let { data: booking, error: bookingError } = await supabase
       .from("guide_booking")
-      .insert({
-        guide_id: guideId,
-        start_time: startTime,
-        end_time: endTime,
-        status: "pending_payment",
-        payment_status: "awaiting_payment",
-        source: "system",
-        customer_name: customerName,
-        customer_email: customerEmail,
-        customer_phone: customerPhone || null,
-        trip_type: tripType || null,
-        number_of_people: numberOfPeople || 1,
-        notes: notes || null,
-        is_paid: false,
-        payment_amount: totalPrice,
-        application_fee: totalPrice * APPLICATION_FEE_PERCENT,
-        payment_link_expires_at: expiresAt.toISOString(),
-      })
+      .insert(insertPayload)
       .select()
       .single();
+
+    if (bookingError && (
+      isMissingSchemaColumn(bookingError, "booking_origin")
+      || isMissingSchemaColumn(bookingError, "platform_fee_amount")
+      || isMissingSchemaColumn(bookingError, "platform_fee_waived")
+    )) {
+      const { booking_origin, platform_fee_amount, platform_fee_waived, ...legacyPayload } = insertPayload;
+      console.warn("Schema cache missing new columns; retrying guide_booking insert with legacy payload");
+
+      const retry = await supabase
+        .from("guide_booking")
+        .insert(legacyPayload)
+        .select()
+        .single();
+
+      booking = retry.data;
+      bookingError = retry.error;
+    }
 
     if (bookingError) {
       console.error("Error creating booking:", bookingError);
@@ -178,7 +215,9 @@ Deno.serve(async (req: Request) => {
     sessionParams.append("line_items[0][price_data][product_data][description]", `${start.toISOString().split("T")[0]} de ${start.toISOString().split("T")[1].slice(0,5)} à ${end.toISOString().split("T")[1].slice(0,5)}`);
     sessionParams.append("line_items[0][price_data][unit_amount]", String(amountInCents));
     sessionParams.append("line_items[0][quantity]", "1");
-    sessionParams.append("payment_intent_data[application_fee_amount]", String(applicationFeeInCents));
+    if (applicationFeeInCents > 0) {
+      sessionParams.append("payment_intent_data[application_fee_amount]", String(applicationFeeInCents));
+    }
     sessionParams.append("payment_intent_data[transfer_data][destination]", guide.stripe_account_id);
     sessionParams.append("payment_intent_data[on_behalf_of]", guide.stripe_account_id);
     sessionParams.append("payment_intent_data[metadata][booking_type]", "guide");
@@ -191,12 +230,14 @@ Deno.serve(async (req: Request) => {
     sessionParams.append("payment_intent_data[metadata][end_time]", endTime);
     sessionParams.append("payment_intent_data[metadata][hours]", String(durationHours.toFixed(1)));
     sessionParams.append("payment_intent_data[metadata][source]", "payment_link");
+    sessionParams.append("payment_intent_data[metadata][booking_origin]", BOOKING_ORIGIN_GUIDE_MANUAL);
     sessionParams.append("customer_email", customerEmail);
     sessionParams.append("expires_at", String(Math.floor(expiresAt.getTime() / 1000)));
     sessionParams.append("success_url", `${FRONTEND_URL}/map?payment=success&booking=${booking.id}`);
     sessionParams.append("cancel_url", `${FRONTEND_URL}/map?payment=cancelled&booking=${booking.id}`);
     sessionParams.append("metadata[booking_id]", booking.id);
     sessionParams.append("metadata[booking_type]", "guide");
+    sessionParams.append("metadata[booking_origin]", BOOKING_ORIGIN_GUIDE_MANUAL);
 
     const session = await stripeRequest("POST", "/checkout/sessions", sessionParams);
 
@@ -221,6 +262,7 @@ Deno.serve(async (req: Request) => {
         subtotal: subtotal,
         applicationFee: applicationFee,
         total: totalPrice,
+        paymentRequired: requiresPayment({ payment_status: "awaiting_payment", is_paid: false }),
       },
     });
 

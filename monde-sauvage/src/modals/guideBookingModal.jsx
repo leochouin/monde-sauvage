@@ -10,7 +10,8 @@
  * - Conflict detection
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import {
@@ -18,8 +19,8 @@ import {
   createGuideBooking,
   getGuideBookings,
   checkGoogleCalendarConnection,
-} from '../utils/guideBookingService';
-import { getGuideClients, createGuideClient } from '../utils/guideClientService';
+} from '../utils/guideBookingService.js';
+import { getGuideClients, createGuideClient } from '../utils/guideClientService.js';
 import CheckoutModal from './checkoutModal.jsx';
 import './guideBookingModal.css';
 
@@ -466,17 +467,17 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
 
   if (!isOpen) return null;
 
-  return (
-    <div className="modal-overlay" onClick={handleClose}>
-      <div className="modal-content guide-booking-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
+  const modalMarkup = (
+    <div className="guide-booking-overlay" onClick={handleClose}>
+      <div className="guide-booking-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="guide-booking-header">
           <h2>Book Guide: {guide?.name}</h2>
-          <button className="modal-close" onClick={handleClose} disabled={loading}>
+          <button type="button" className="guide-booking-close" onClick={handleClose} disabled={loading}>
             ×
           </button>
         </div>
 
-        <div className="modal-body">
+        <div className="guide-booking-body">
           {/* Calendar disconnected — block all bookings */}
           {(calendarStatus === 'disconnected' || calendarStatus === 'never_connected') && (
             <div style={{
@@ -856,6 +857,8 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
       />
     </div>
   );
+
+  return createPortal(modalMarkup, document.body);
 };
 
 export default GuideBookingModal;
