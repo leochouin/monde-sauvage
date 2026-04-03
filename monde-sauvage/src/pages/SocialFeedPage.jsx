@@ -42,11 +42,11 @@ const mergeHydratedAvatars = (currentPosts, hydratedPosts) => {
   });
 };
 
-const formatDateTime = (isoValue) => {
+const formatDateTime = (isoValue, locale = 'fr-CA') => {
   if (!isoValue) return '';
   const date = new Date(isoValue);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('fr-CA', {
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(date);
@@ -55,9 +55,15 @@ const formatDateTime = (isoValue) => {
 export default function SocialFeedPage({
   user,
   guide,
+  language = 'fr',
+  setLanguage,
   onOpenGuideProfile,
   onBack,
 }) {
+    const isEnglish = language === 'en';
+    const t = (fr, en) => (isEnglish ? en : fr);
+    const dateLocale = isEnglish ? 'en-CA' : 'fr-CA';
+
   const location = useLocation();
   const { avatarSrc, handleAvatarError, avatarDebug } = useAvatarSource(user);
 
@@ -383,19 +389,53 @@ export default function SocialFeedPage({
       <header className="social-page-header">
         <div className="social-page-header-top">
           <button type="button" className="social-back-btn" onClick={onBack}>
-            Retour a la carte
+            {t('Retour a la carte', 'Back to map')}
           </button>
-          <span className="social-page-badge">Guides seulement</span>
+          <span className="social-page-badge">{t('Guides seulement', 'Guides only')}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px', gap: '6px' }}>
+          <button
+            type="button"
+            onClick={() => setLanguage?.('fr')}
+            style={{
+              border: language === 'fr' ? '1px solid #214537' : '1px solid rgba(33, 69, 55, 0.3)',
+              background: language === 'fr' ? '#214537' : 'transparent',
+              color: language === 'fr' ? '#fff' : '#214537',
+              borderRadius: '999px',
+              padding: '4px 10px',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '12px',
+            }}
+          >
+            FR
+          </button>
+          <button
+            type="button"
+            onClick={() => setLanguage?.('en')}
+            style={{
+              border: language === 'en' ? '1px solid #214537' : '1px solid rgba(33, 69, 55, 0.3)',
+              background: language === 'en' ? '#214537' : 'transparent',
+              color: language === 'en' ? '#fff' : '#214537',
+              borderRadius: '999px',
+              padding: '4px 10px',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '12px',
+            }}
+          >
+            EN
+          </button>
         </div>
         <div className="social-avatar-debug-links">
           {avatarDebugEnabled ? (
-            <a href={avatarDebugOffUrl}>Desactiver debug avatar</a>
+            <a href={avatarDebugOffUrl}>{t('Desactiver debug avatar', 'Disable avatar debug')}</a>
           ) : (
-            <a href={avatarDebugUrl}>Activer debug avatar</a>
+            <a href={avatarDebugUrl}>{t('Activer debug avatar', 'Enable avatar debug')}</a>
           )}
         </div>
-        <h1>Section Sociale</h1>
-        <p>Partagez vos sorties, inspirez les pecheurs et suivez vos guides preferes.</p>
+        <h1>{t('Section Sociale', 'Social Feed')}</h1>
+        <p>{t('Partagez vos sorties, inspirez les pecheurs et suivez vos guides preferes.', 'Share your trips, inspire anglers, and follow your favorite guides.')}</p>
       </header>
 
       <main className="social-page-main">
@@ -411,8 +451,8 @@ export default function SocialFeedPage({
                   className="social-composer-avatar"
                 />
                 <div>
-                  <strong>Publier comme guide</strong>
-                  <span>Partagez vos disponibilites, captures et conseils.</span>
+                  <strong>{t('Publier comme guide', 'Post as guide')}</strong>
+                  <span>{t('Partagez vos disponibilites, captures et conseils.', 'Share your availability, catches, and tips.')}</span>
                 </div>
               </div>
 
@@ -425,13 +465,13 @@ export default function SocialFeedPage({
               <textarea
                 value={postDraft}
                 onChange={(event) => setPostDraft(event.target.value)}
-                placeholder="Decrivez votre derniere sortie ou annoncez vos prochains creneaux."
+                placeholder={t('Decrivez votre derniere sortie ou annoncez vos prochains creneaux.', 'Describe your latest trip or announce your upcoming slots.')}
                 maxLength={3000}
               />
 
               <div className="social-composer-actions">
                 <label className="social-image-picker" htmlFor="social-post-images">
-                  Ajouter des images
+                  {t('Ajouter des images', 'Add images')}
                 </label>
                 <input
                   id="social-post-images"
@@ -441,7 +481,7 @@ export default function SocialFeedPage({
                   multiple
                   onChange={handleFileChange}
                 />
-                <span>{postFiles.length}/{MAX_POST_IMAGES} image(s)</span>
+                <span>{postFiles.length}/{MAX_POST_IMAGES} {t('image(s)', 'image(s)')}</span>
               </div>
 
               {postImagePreviews.length > 0 && (
@@ -456,7 +496,7 @@ export default function SocialFeedPage({
               {postSubmitSuccess && <p className="social-success">{postSubmitSuccess}</p>}
 
               <button type="submit" disabled={isSubmittingPost}>
-                {isSubmittingPost ? 'Publication en cours...' : 'Publier'}
+                {isSubmittingPost ? t('Publication en cours...', 'Publishing...') : t('Publier', 'Publish')}
               </button>
             </form>
           )}
@@ -467,14 +507,14 @@ export default function SocialFeedPage({
               className={activeTab === 'feed' ? 'active' : ''}
               onClick={() => setActiveTab('feed')}
             >
-              Fil
+              {t('Fil', 'Feed')}
             </button>
             <button
               type="button"
               className={activeTab === 'following' ? 'active' : ''}
               onClick={() => setActiveTab('following')}
             >
-              Abonnements
+              {t('Abonnements', 'Following')}
             </button>
           </div>
 
@@ -482,20 +522,20 @@ export default function SocialFeedPage({
 
           <div className="social-feed-content">
           {isLoadingPosts ? (
-            <div className="social-state">Chargement du fil social...</div>
+            <div className="social-state">{t('Chargement du fil social...', 'Loading social feed...')}</div>
           ) : followingNeedsAuth ? (
             <div className="social-state social-empty-following">
-              <h3>Connectez-vous pour voir vos abonnements</h3>
-              <p>L'onglet Abonnements affiche les publications des guides que vous suivez.</p>
+              <h3>{t('Connectez-vous pour voir vos abonnements', 'Sign in to view your follows')}</h3>
+              <p>{t('L\'onglet Abonnements affiche les publications des guides que vous suivez.', 'The Following tab shows posts from guides you follow.')}</p>
             </div>
           ) : followingEmpty ? (
             <div className="social-state social-empty-following">
-              <h3>Vous ne suivez encore aucun guide</h3>
-              <p>Explorez le fil general pour decouvrir des guides et commencer a suivre ceux qui vous inspirent.</p>
-              <button type="button" onClick={() => setActiveTab('feed')}>Decouvrir des guides</button>
+              <h3>{t('Vous ne suivez encore aucun guide', 'You are not following any guides yet')}</h3>
+              <p>{t('Explorez le fil general pour decouvrir des guides et commencer a suivre ceux qui vous inspirent.', 'Browse the main feed to discover and follow guides that inspire you.')}</p>
+              <button type="button" onClick={() => setActiveTab('feed')}>{t('Decouvrir des guides', 'Discover guides')}</button>
             </div>
           ) : posts.length === 0 ? (
-            <div className="social-state">Aucune publication pour le moment.</div>
+            <div className="social-state">{t('Aucune publication pour le moment.', 'No posts yet.')}</div>
           ) : (
             posts.map((post) => {
               const comments = commentsByPost[post.id] || [];
@@ -520,7 +560,7 @@ export default function SocialFeedPage({
                       />
                       <span>
                         <strong>{post.author.name}</strong>
-                        <small>{formatDateTime(post.createdAt)}</small>
+                        <small>{formatDateTime(post.createdAt, dateLocale)}</small>
                       </span>
                     </button>
 
@@ -532,8 +572,8 @@ export default function SocialFeedPage({
                         disabled={Boolean(followPendingByUser[post.author.userId])}
                       >
                         {followPendingByUser[post.author.userId]
-                          ? 'Mise a jour...'
-                          : (post.isFollowingAuthor ? 'Abonne' : 'Suivre')}
+                          ? t('Mise a jour...', 'Updating...')
+                          : (post.isFollowingAuthor ? t('Abonne', 'Following') : t('Suivre', 'Follow'))}
                       </button>
                     )}
                   </div>
@@ -549,13 +589,13 @@ export default function SocialFeedPage({
                   )}
 
                   <div className="social-post-footer">
-                    <span>{post.commentCount} commentaire(s)</span>
+                    <span>{post.commentCount} {t('commentaire(s)', 'comment(s)')}</span>
                     <button type="button" onClick={() => handleToggleComments(post.id)}>
-                      {commentsOpen ? 'Masquer les commentaires' : 'Commenter'}
+                      {commentsOpen ? t('Masquer les commentaires', 'Hide comments') : t('Commenter', 'Comment')}
                     </button>
                     {post.author.hasGuideProfile && (
                       <button type="button" onClick={() => openGuideProfile(post.author.userId)}>
-                        Voir le profil guide
+                        {t('Voir le profil guide', 'View guide profile')}
                       </button>
                     )}
                   </div>
@@ -563,11 +603,11 @@ export default function SocialFeedPage({
                   {commentsOpen && (
                     <div className="social-comments-block">
                       {loadingCommentsByPost[post.id] ? (
-                        <p className="social-state">Chargement des commentaires...</p>
+                        <p className="social-state">{t('Chargement des commentaires...', 'Loading comments...')}</p>
                       ) : (
                         <>
                           {comments.length === 0 ? (
-                            <p className="social-state">Aucun commentaire pour cette publication.</p>
+                            <p className="social-state">{t('Aucun commentaire pour cette publication.', 'No comments on this post yet.')}</p>
                           ) : (
                             <div className="social-comments-list">
                               {comments.map((comment) => (
@@ -583,7 +623,7 @@ export default function SocialFeedPage({
                                   <div>
                                     <div className="social-comment-meta">
                                       <strong>{comment.author.name}</strong>
-                                      <small>{formatDateTime(comment.createdAt)}</small>
+                                      <small>{formatDateTime(comment.createdAt, dateLocale)}</small>
                                     </div>
                                     <p>{comment.content}</p>
                                   </div>
@@ -600,7 +640,7 @@ export default function SocialFeedPage({
                                   ...prev,
                                   [post.id]: event.target.value,
                                 }))}
-                                placeholder="Ajouter un commentaire..."
+                                placeholder={t('Ajouter un commentaire...', 'Add a comment...')}
                                 maxLength={1500}
                               />
                               {commentErrorByPost[post.id] && (
@@ -611,11 +651,11 @@ export default function SocialFeedPage({
                                 onClick={() => handleSubmitComment(post.id)}
                                 disabled={Boolean(submittingCommentByPost[post.id])}
                               >
-                                {submittingCommentByPost[post.id] ? 'Envoi...' : 'Publier le commentaire'}
+                                {submittingCommentByPost[post.id] ? t('Envoi...', 'Sending...') : t('Publier le commentaire', 'Post comment')}
                               </button>
                             </div>
                           ) : (
-                            <p className="social-state">Connectez-vous pour commenter.</p>
+                            <p className="social-state">{t('Connectez-vous pour commenter.', 'Sign in to comment.')}</p>
                           )}
                         </>
                       )}

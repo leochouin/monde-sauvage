@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "audit:no-webgl": "npm exec --yes --package=playwright -- node scripts/audit/no-webgl-fallback.cjs",
+    "audit:auth-smoke": "npm exec --yes --package=playwright -- node scripts/audit/auth-flow-smoke.cjs",
+    "audit:recommended": "npm run audit:no-webgl && npm run audit:auth-smoke"
   },
   "dependencies": {
     "date-fns": "^4.1.0",

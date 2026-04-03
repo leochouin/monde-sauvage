@@ -4,6 +4,7 @@ void React;
 import supabase from "../utils/supabase.js";
 import GuideCalendar from "../components/GuideCalendar.jsx";
 import GuideReservationsPanel from "./guideReservationsPanel.jsx";
+import { getGuideBookings } from "../utils/guideBookingService.js";
 import { startGuideOnboarding, checkGuideOnboardingStatus, createGuideDashboardLink } from "../utils/stripeService.js";
 import useAvatarSource from "../utils/useAvatarSource.js";
 
@@ -22,6 +23,15 @@ const FISH_TYPES = [
 
 const getFishLabel = (fishValue) => FISH_TYPES.find((f) => f.value === fishValue)?.label || fishValue;
 
+const formatDashboardCurrency = (amount) => {
+  const value = Number(amount) || 0;
+  return new Intl.NumberFormat('fr-CA', {
+    style: 'currency',
+    currency: 'CAD',
+    maximumFractionDigits: 0,
+  }).format(value);
+};
+
 const isMissingGuideServiceLocationsTableError = (error) => {
   const message = String(error?.message || '').toLowerCase();
   return (
@@ -34,11 +44,23 @@ const isMissingGuideServiceLocationsTableError = (error) => {
 
 export default function AccountSettingsModal({ isOpen, onClose, user, profile, guide, onOpenClients, onOpenHelp }) {
   const [activeTab, setActiveTab] = useState('profile');
-  const [activeGuideSection, setActiveGuideSection] = useState('profil');
+  const [activeGuideSection, setActiveGuideSection] = useState('dashboard');
   const { avatarSrc, handleAvatarError } = useAvatarSource(user);
   const [isCompactLayout, setIsCompactLayout] = useState(
     typeof globalThis !== 'undefined' && globalThis.innerWidth < 1100
   );
+  const [dashboardStats, setDashboardStats] = useState({
+    totalReservations: 0,
+    upcomingReservations: 0,
+    pendingReservations: 0,
+    paidReservations: 0,
+    totalRevenue: 0,
+    pendingRevenue: 0,
+    averageRating: null,
+    reviewCount: 0,
+    monthlyRevenue: [],
+    loading: false,
+  });
   
   // Profile editing state
   const [editedProfile, setEditedProfile] = useState({
@@ -46,7 +68,6 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     phone: '',
     preferred_language: 'fr',
   });
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   // Guide editing state
   const [editedGuide, setEditedGuide] = useState({
@@ -133,18 +154,18 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
 
   // Check if returning from Stripe onboarding
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(globalThis.location.search);
     const stripeOnboard = params.get('stripe_onboard');
     const guideParam = params.get('guide');
     if (stripeOnboard === 'complete' && guideParam && guide?.id === guideParam) {
       handleCheckStripeStatus();
       // Open the settings modal to the guide tab so user sees the result
       setActiveTab('guide');
-      window.history.replaceState({}, document.title, window.location.pathname);
+      globalThis.history.replaceState({}, document.title, globalThis.location.pathname);
     } else if (stripeOnboard === 'refresh' && guideParam && guide?.id === guideParam) {
       setStripeError("L'inscription Stripe n'a pas été complétée. Vous pouvez réessayer.");
       setActiveTab('guide');
-      window.history.replaceState({}, document.title, window.location.pathname);
+      globalThis.history.replaceState({}, document.title, globalThis.location.pathname);
     }
   }, [guide?.id]);
 
@@ -153,7 +174,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     setStripeError(null);
     try {
       const result = await startGuideOnboarding(guide.id);
-      window.location.href = result.url;
+      globalThis.location.href = result.url;
     } catch (err) {
       console.error('Stripe onboarding error:', err);
       setStripeError(err.message);
@@ -180,7 +201,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     setStripeError(null);
     try {
       const result = await createGuideDashboardLink(guide.id);
-      window.open(result.url, '_blank');
+      globalThis.open(result.url, '_blank');
     } catch (err) {
       console.error('Stripe dashboard link error:', err);
       setStripeError('Impossible d\'ouvrir le tableau de bord Stripe. ' + err.message);
@@ -295,6 +316,127 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     fetchGuideServiceLocations();
     fetchLegacyFishTypeLocations();
   }, [isOpen, guide?.id, activeTab, fetchGuideServiceLocations, fetchLegacyFishTypeLocations]);
+
+  useEffect(() => {
+    if (!isOpen || !guide?.id || activeTab !== 'guide') return;
+
+    let cancelled = false;
+    const loadGuideRatings = async () => {
+      const candidateTables = ['guide_reviews', 'guide_review'];
+
+      for (const tableName of candidateTables) {
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('rating')
+          .eq('guide_id', guide.id);
+
+        if (error) {
+          const isMissing = error.code === '42P01' || error.code === 'PGRST205';
+          if (isMissing) continue;
+          console.warn(`Unable to fetch ratings from ${tableName}:`, error);
+          return { averageRating: null, reviewCount: 0 };
+        }
+
+        const ratings = (data || [])
+          .map((row) => Number(row.rating))
+          .filter((value) => Number.isFinite(value) && value > 0);
+
+        if (ratings.length === 0) {
+          return { averageRating: null, reviewCount: 0 };
+        }
+
+        const sum = ratings.reduce((acc, value) => acc + value, 0);
+        return {
+          averageRating: sum / ratings.length,
+          reviewCount: ratings.length,
+        };
+      }
+
+      return { averageRating: null, reviewCount: 0 };
+    };
+
+    const buildMonthlyRevenue = (bookings) => {
+      const now = new Date();
+      const buckets = Array.from({ length: 6 }, (_, index) => {
+        const monthDate = new Date(now.getFullYear(), now.getMonth() - 5 + index, 1);
+        const key = `${monthDate.getFullYear()}-${monthDate.getMonth()}`;
+        const label = monthDate.toLocaleDateString('fr-CA', { month: 'short' });
+        return { key, label, value: 0 };
+      });
+
+      const bucketByKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+
+      bookings.forEach((booking) => {
+        if (!booking?.is_paid) return;
+        const amount = Number(booking.payment_amount);
+        if (!Number.isFinite(amount) || amount <= 0) return;
+
+        const bookingDate = new Date(booking.start_time);
+        const key = `${bookingDate.getFullYear()}-${bookingDate.getMonth()}`;
+        const targetBucket = bucketByKey.get(key);
+        if (targetBucket) {
+          targetBucket.value += amount;
+        }
+      });
+
+      return buckets;
+    };
+
+    const loadDashboardStats = async () => {
+      setDashboardStats((prev) => ({ ...prev, loading: true }));
+      try {
+        const [bookingsResponse, ratings] = await Promise.all([
+          getGuideBookings(guide.id, {
+            includeDeleted: false,
+            includeHistorical: true,
+          }),
+          loadGuideRatings(),
+        ]);
+
+        const now = new Date();
+        const all = bookingsResponse || [];
+        const upcoming = all.filter((b) => new Date(b.end_time) >= now && b.status !== 'cancelled');
+        const pending = all.filter((b) => b.status === 'pending' || b.status === 'pending_payment');
+        const paid = all.filter((b) => b.is_paid === true);
+        const totalRevenue = paid.reduce((sum, b) => {
+          const amount = Number(b.payment_amount);
+          return Number.isFinite(amount) && amount > 0 ? sum + amount : sum;
+        }, 0);
+        const pendingRevenue = all
+          .filter((b) => b.is_paid !== true && (b.payment_status === 'pending' || b.payment_status === 'pending_payment' || b.status === 'pending_payment'))
+          .reduce((sum, b) => {
+            const amount = Number(b.payment_amount);
+            return Number.isFinite(amount) && amount > 0 ? sum + amount : sum;
+          }, 0);
+
+        if (!cancelled) {
+          setDashboardStats({
+            totalReservations: all.length,
+            upcomingReservations: upcoming.length,
+            pendingReservations: pending.length,
+            paidReservations: paid.length,
+            totalRevenue,
+            pendingRevenue,
+            averageRating: ratings.averageRating,
+            reviewCount: ratings.reviewCount,
+            monthlyRevenue: buildMonthlyRevenue(all),
+            loading: false,
+          });
+        }
+      } catch (error) {
+        console.error('Error loading dashboard stats:', error);
+        if (!cancelled) {
+          setDashboardStats((prev) => ({ ...prev, loading: false }));
+        }
+      }
+    };
+
+    loadDashboardStats();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, guide?.id, activeTab]);
 
   useEffect(() => {
     fetchAvailableZones(editedGuide.fish_types || []);
@@ -533,44 +675,6 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
               🧭 Guide
             </button>
           )}
-          {isGuide && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('calendar')}
-              style={{
-                padding: '12px 20px',
-                border: 'none',
-                background: 'none',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: activeTab === 'calendar' ? '600' : '400',
-                color: activeTab === 'calendar' ? '#2D5F4C' : '#5A7766',
-                borderBottom: activeTab === 'calendar' ? '2px solid #2D5F4C' : '2px solid transparent',
-                transition: 'all 0.2s ease',
-              }}
-            >
-              📅 Calendrier
-            </button>
-          )}
-          {isGuide && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('reservations')}
-              style={{
-                padding: '12px 20px',
-                border: 'none',
-                background: 'none',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: activeTab === 'reservations' ? '600' : '400',
-                color: activeTab === 'reservations' ? '#2D5F4C' : '#5A7766',
-                borderBottom: activeTab === 'reservations' ? '2px solid #2D5F4C' : '2px solid transparent',
-                transition: 'all 0.2s ease',
-              }}
-            >
-              📋 Réservations
-            </button>
-          )}
         </div>
 
         {/* Content */}
@@ -676,9 +780,12 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                 top: isCompactLayout ? 'auto' : '0',
               }}>
                 {[
+                  { key: 'dashboard', icon: '📊', label: 'Dashboard' },
                   { key: 'profil', icon: '👤', label: 'Profil de guide' },
                   { key: 'specialisations', icon: '🐟', label: 'Spécialisations' },
                   { key: 'paiements', icon: '💳', label: 'Paiements en ligne' },
+                  { key: 'calendrier', icon: '📅', label: 'Calendrier' },
+                  { key: 'reservations', icon: '📋', label: 'Réservations' },
                   { key: 'avis', icon: '⭐', label: 'Avis' },
                 ].map(({ key, icon, label }) => (
                   <button
@@ -742,6 +849,123 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
 
               {/* Right Content */}
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+              {/* Guide Dashboard Section */}
+              {activeGuideSection === 'dashboard' && <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{
+                  padding: '20px',
+                  backgroundColor: 'white',
+                  borderRadius: '12px',
+                  border: '1px solid #E5E7EB',
+                }}>
+                  <h3 style={{ margin: '0 0 6px', fontSize: '18px', color: '#1F3A2E' }}>
+                    Dashboard Guide Studio
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '13px', color: '#5A7766' }}>
+                    Vue analytique de vos réservations, notes et revenus.
+                  </p>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: isCompactLayout ? '1fr' : 'repeat(4, minmax(180px, 1fr))', gap: '12px' }}>
+                  <div style={dashboardCardStyle}>
+                    <div style={dashboardValueStyle}>{dashboardStats.loading ? '...' : dashboardStats.totalReservations}</div>
+                    <div style={dashboardLabelStyle}>Réservations totales</div>
+                  </div>
+                  <div style={dashboardCardStyle}>
+                    <div style={dashboardValueStyle}>
+                      {dashboardStats.loading
+                        ? '...'
+                        : dashboardStats.averageRating == null
+                          ? 'N/A'
+                          : dashboardStats.averageRating.toFixed(1)}
+                    </div>
+                    <div style={dashboardLabelStyle}>Note moyenne ({dashboardStats.reviewCount})</div>
+                  </div>
+                  <div style={dashboardCardStyle}>
+                    <div style={dashboardValueStyle}>{dashboardStats.loading ? '...' : formatDashboardCurrency(dashboardStats.totalRevenue)}</div>
+                    <div style={dashboardLabelStyle}>Revenus encaissés</div>
+                  </div>
+                  <div style={dashboardCardStyle}>
+                    <div style={dashboardValueStyle}>{dashboardStats.loading ? '...' : formatDashboardCurrency(dashboardStats.pendingRevenue)}</div>
+                    <div style={dashboardLabelStyle}>Revenus en attente</div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: isCompactLayout ? '1fr' : 'minmax(0, 2fr) minmax(0, 1fr)', gap: '12px' }}>
+                  <div style={dashboardPanelStyle}>
+                    <h4 style={dashboardPanelTitleStyle}>📈 Flux de revenus (6 derniers mois)</h4>
+                    {dashboardStats.loading ? (
+                      <p style={dashboardTextStyle}>Chargement des données de revenus...</p>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'end', gap: '8px', minHeight: '180px', marginTop: '8px' }}>
+                        {dashboardStats.monthlyRevenue.map((month) => {
+                          const maxRevenue = Math.max(...dashboardStats.monthlyRevenue.map((item) => item.value), 0);
+                          const heightPercent = maxRevenue > 0 ? Math.max(10, Math.round((month.value / maxRevenue) * 100)) : 10;
+                          return (
+                            <div key={month.label} style={{ flex: 1, minWidth: 0, textAlign: 'center' }}>
+                              <div
+                                title={`${month.label}: ${formatDashboardCurrency(month.value)}`}
+                                style={{
+                                  height: `${heightPercent}%`,
+                                  minHeight: '14px',
+                                  background: 'linear-gradient(180deg, #4A9B8E 0%, #2D5F4C 100%)',
+                                  borderRadius: '8px 8px 2px 2px',
+                                  marginBottom: '8px',
+                                }}
+                              />
+                              <div style={{ fontSize: '11px', color: '#5A7766' }}>{month.label}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={dashboardPanelStyle}>
+                    <h4 style={dashboardPanelTitleStyle}>🎯 Performance</h4>
+                    <p style={dashboardTextStyle}><strong>Réservations à venir:</strong> {dashboardStats.loading ? '...' : dashboardStats.upcomingReservations}</p>
+                    <p style={dashboardTextStyle}><strong>Réservations payées:</strong> {dashboardStats.loading ? '...' : dashboardStats.paidReservations}</p>
+                    <p style={dashboardTextStyle}><strong>Réservations en attente:</strong> {dashboardStats.loading ? '...' : dashboardStats.pendingReservations}</p>
+                    <p style={dashboardTextStyle}>
+                      <strong>Google Calendar:</strong>{' '}
+                      {guide?.calendar_connection_status === 'disconnected' ? 'Déconnecté' : (guide?.google_refresh_token ? 'Connecté' : 'Non connecté')}
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: isCompactLayout ? '1fr' : 'repeat(4, minmax(180px, 1fr))', gap: '12px' }}>
+                  <div style={dashboardPanelStyle}>
+                    <h4 style={dashboardPanelTitleStyle}>📋 Réservations</h4>
+                    <p style={dashboardTextStyle}>Gérez vos réservations et vos clients.</p>
+                    <button type="button" onClick={() => setActiveGuideSection('reservations')} style={dashboardLinkButtonStyle}>Ouvrir Réservations</button>
+                  </div>
+
+                  <div style={dashboardPanelStyle}>
+                    <h4 style={dashboardPanelTitleStyle}>📅 Calendrier</h4>
+                    <p style={dashboardTextStyle}>Consultez et synchronisez vos disponibilités.</p>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => setActiveGuideSection('calendrier')} style={dashboardLinkButtonStyle}>Ouvrir Calendrier</button>
+                      <a href={googleCalendarHref} target="_blank" rel="noopener noreferrer" style={dashboardAnchorStyle}>Google Calendar</a>
+                    </div>
+                  </div>
+
+                  <div style={dashboardPanelStyle}>
+                    <h4 style={dashboardPanelTitleStyle}>💳 Paiements</h4>
+                    <p style={dashboardTextStyle}>{stripeStatus.chargesEnabled ? 'Paiements actifs' : 'Paiements à configurer'}</p>
+                    <button type="button" onClick={() => setActiveGuideSection('paiements')} style={dashboardLinkButtonStyle}>Configurer Paiements</button>
+                  </div>
+
+                  <div style={dashboardPanelStyle}>
+                    <h4 style={dashboardPanelTitleStyle}>⭐ Avis</h4>
+                    <p style={dashboardTextStyle}><strong>Avis reçus:</strong> {dashboardStats.reviewCount}</p>
+                    <p style={dashboardTextStyle}>
+                      <strong>Note moyenne:</strong>{' '}
+                      {dashboardStats.averageRating == null ? 'N/A' : dashboardStats.averageRating.toFixed(1)}
+                    </p>
+                    <button type="button" onClick={() => setActiveGuideSection('avis')} style={dashboardLinkButtonStyle}>Voir les stats</button>
+                  </div>
+                </div>
+              </div>}
 
               {/* Guide Profile Section */}
               {activeGuideSection === 'profil' && <div style={{
@@ -1321,157 +1545,154 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                   </div>
                 </div>
               </div>}
-              </div>
-            </div>
-          )}
 
-          {/* CALENDAR TAB */}
-          {activeTab === 'calendar' && isGuide && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
-              {/* Calendar disconnected banner */}
-              {guide?.calendar_connection_status === 'disconnected' && (
-                <div style={{
-                  padding: '16px 20px',
-                  backgroundColor: '#fff5f5',
-                  border: '2px solid #fc8181',
-                  borderRadius: '10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '14px',
-                }}>
-                  <span style={{ fontSize: '28px' }}>🚨</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: '700', color: '#c53030', fontSize: '14px', marginBottom: '4px' }}>
-                      Connexion Google Calendar perdue
-                    </div>
-                    <div style={{ fontSize: '13px', color: '#742a2a' }}>
-                      Vos réservations sont bloquées jusqu&apos;à la reconnexion.
-                      {guide?.calendar_disconnect_reason && (
-                        <span style={{ opacity: 0.7 }}> ({guide.calendar_disconnect_reason})</span>
-                      )}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!guide?.id) return;
-                      const redirectTo = encodeURIComponent(globalThis.location.href);
-                      globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
-                    }}
-                    style={{
-                      padding: '10px 18px',
-                      backgroundColor: '#e53e3e',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '8px',
-                      cursor: 'pointer',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      whiteSpace: 'nowrap',
-                      boxShadow: '0 2px 4px rgba(229,62,62,0.3)',
-                    }}
-                  >
-                    Reconnecter maintenant
-                  </button>
-                </div>
-              )}
-
-              {/* Calendar component */}
-              <div style={{ flex: 1, minHeight: '500px', position: 'relative' }}>
-                {/* Floating action buttons */}
-                <div style={{
-                  position: 'fixed',
-                  bottom: '30px',
-                  right: '30px',
-                  display: 'flex',
-                  gap: '8px',
-                  zIndex: 1000,
-                }}>
-                  {(!guide?.google_refresh_token || guide?.calendar_connection_status === 'disconnected') && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!guide?.id) return;
-                        const redirectTo = encodeURIComponent(globalThis.location.href);
-                        globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
-                      }}
-                      style={{
-                        padding: '8px 14px',
-                        backgroundColor: guide?.calendar_connection_status === 'disconnected' ? '#e53e3e' : '#f59e0b',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontSize: '13px',
-                        fontWeight: '500',
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                      }}
-                    >
-                      {guide?.calendar_connection_status === 'disconnected' ? '🔄 Reconnecter Google Calendar' : 'Connecter Google Calendar'}
-                    </button>
-                  )}
-                  <a
-                    href={guide?.google_calendar_id ? `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(guide.google_calendar_id)}` : "https://calendar.google.com"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      padding: '8px 14px',
-                      background: '#1a73e8',
-                      color: '#fff',
-                      borderRadius: '8px',
-                      textDecoration: 'none',
-                      fontSize: '13px',
-                      fontWeight: '500',
-                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                    }}
-                  >
-                    Ouvrir Google Calendar
-                  </a>
-                </div>
-                <GuideCalendar guideId={guide?.id} />
-              </div>
-            </div>
-          )}
-
-          {/* RESERVATIONS TAB */}
-          {activeTab === 'reservations' && isGuide && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {onOpenClients && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <button
-                    type="button"
-                    onClick={onOpenClients}
-                    style={{
-                      padding: '10px 18px',
-                      backgroundColor: '#eff6ff',
-                      color: '#1d4ed8',
-                      border: '1px solid #bfdbfe',
+              {/* Calendar Section */}
+              {activeGuideSection === 'calendrier' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
+                  {guide?.calendar_connection_status === 'disconnected' && (
+                    <div style={{
+                      padding: '16px 20px',
+                      backgroundColor: '#fff5f5',
+                      border: '2px solid #fc8181',
                       borderRadius: '10px',
-                      cursor: 'pointer',
-                      fontWeight: '500',
-                      fontSize: '14px',
-                      transition: 'all 0.2s ease',
                       display: 'flex',
                       alignItems: 'center',
+                      gap: '14px',
+                    }}>
+                      <span style={{ fontSize: '28px' }}>🚨</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: '700', color: '#c53030', fontSize: '14px', marginBottom: '4px' }}>
+                          Connexion Google Calendar perdue
+                        </div>
+                        <div style={{ fontSize: '13px', color: '#742a2a' }}>
+                          Vos réservations sont bloquées jusqu&apos;à la reconnexion.
+                          {guide?.calendar_disconnect_reason && (
+                            <span style={{ opacity: 0.7 }}> ({guide.calendar_disconnect_reason})</span>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!guide?.id) return;
+                          const redirectTo = encodeURIComponent(globalThis.location.href);
+                          globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
+                        }}
+                        style={{
+                          padding: '10px 18px',
+                          backgroundColor: '#e53e3e',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          fontWeight: '600',
+                          whiteSpace: 'nowrap',
+                          boxShadow: '0 2px 4px rgba(229,62,62,0.3)',
+                        }}
+                      >
+                        Reconnecter maintenant
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={{ flex: 1, minHeight: '500px', position: 'relative' }}>
+                    <div style={{
+                      position: 'fixed',
+                      bottom: '30px',
+                      right: '30px',
+                      display: 'flex',
                       gap: '8px',
-                    }}
-                    onMouseOver={(e) => {
-                      e.currentTarget.style.backgroundColor = '#dbeafe';
-                      e.currentTarget.style.borderColor = '#93c5fd';
-                    }}
-                    onMouseOut={(e) => {
-                      e.currentTarget.style.backgroundColor = '#eff6ff';
-                      e.currentTarget.style.borderColor = '#bfdbfe';
-                    }}
-                  >
-                    👥 Gérer mes clients
-                  </button>
+                      zIndex: 1000,
+                    }}>
+                      {(!guide?.google_refresh_token || guide?.calendar_connection_status === 'disconnected') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!guide?.id) return;
+                            const redirectTo = encodeURIComponent(globalThis.location.href);
+                            globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
+                          }}
+                          style={{
+                            padding: '8px 14px',
+                            backgroundColor: guide?.calendar_connection_status === 'disconnected' ? '#e53e3e' : '#f59e0b',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            fontWeight: '500',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                          }}
+                        >
+                          {guide?.calendar_connection_status === 'disconnected' ? '🔄 Reconnecter Google Calendar' : 'Connecter Google Calendar'}
+                        </button>
+                      )}
+                      <a
+                        href={guide?.google_calendar_id ? `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(guide.google_calendar_id)}` : "https://calendar.google.com"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '8px 14px',
+                          background: '#1a73e8',
+                          color: '#fff',
+                          borderRadius: '8px',
+                          textDecoration: 'none',
+                          fontSize: '13px',
+                          fontWeight: '500',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                        }}
+                      >
+                        Ouvrir Google Calendar
+                      </a>
+                    </div>
+                    <GuideCalendar guideId={guide?.id} />
+                  </div>
                 </div>
               )}
-              <GuideReservationsPanel guide={guide} />
+
+              {/* Reservations Section */}
+              {activeGuideSection === 'reservations' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  {onOpenClients && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        onClick={onOpenClients}
+                        style={{
+                          padding: '10px 18px',
+                          backgroundColor: '#eff6ff',
+                          color: '#1d4ed8',
+                          border: '1px solid #bfdbfe',
+                          borderRadius: '10px',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          fontSize: '14px',
+                          transition: 'all 0.2s ease',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.backgroundColor = '#dbeafe';
+                          e.currentTarget.style.borderColor = '#93c5fd';
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.backgroundColor = '#eff6ff';
+                          e.currentTarget.style.borderColor = '#bfdbfe';
+                        }}
+                      >
+                        👥 Gérer mes clients
+                      </button>
+                    </div>
+                  )}
+                  <GuideReservationsPanel guide={guide} />
+                </div>
+              )}
+              </div>
             </div>
           )}
 
@@ -1500,4 +1721,71 @@ const inputStyle = {
   color: '#1F3A2E',
   backgroundColor: '#FFFCF7',
   boxSizing: 'border-box',
+};
+
+const dashboardCardStyle = {
+  padding: '16px',
+  backgroundColor: 'white',
+  borderRadius: '12px',
+  border: '1px solid #E5E7EB',
+};
+
+const dashboardValueStyle = {
+  fontSize: '28px',
+  fontWeight: 700,
+  color: '#2D5F4C',
+  lineHeight: 1.1,
+};
+
+const dashboardLabelStyle = {
+  marginTop: '6px',
+  fontSize: '12px',
+  color: '#5A7766',
+};
+
+const dashboardPanelStyle = {
+  padding: '16px',
+  backgroundColor: 'white',
+  borderRadius: '12px',
+  border: '1px solid #E5E7EB',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+};
+
+const dashboardPanelTitleStyle = {
+  margin: 0,
+  fontSize: '14px',
+  color: '#1F3A2E',
+};
+
+const dashboardTextStyle = {
+  margin: 0,
+  fontSize: '13px',
+  color: '#5A7766',
+};
+
+const dashboardLinkButtonStyle = {
+  marginTop: '6px',
+  alignSelf: 'flex-start',
+  padding: '8px 12px',
+  borderRadius: '8px',
+  border: '1px solid #D1D5DB',
+  backgroundColor: '#F9FAFB',
+  color: '#1F3A2E',
+  cursor: 'pointer',
+  fontSize: '12px',
+  fontWeight: 600,
+};
+
+const dashboardAnchorStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '8px 12px',
+  borderRadius: '8px',
+  backgroundColor: '#1a73e8',
+  color: '#fff',
+  fontSize: '12px',
+  fontWeight: 600,
+  textDecoration: 'none',
 };

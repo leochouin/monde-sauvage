@@ -1,7 +1,75 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AvatarImage from './AvatarImage.jsx';
 import supabase from '../utils/supabase.js';
 import useAvatarSource from '../utils/useAvatarSource.js';
+
+let mapboxAssetsPromise = null;
+
+const loadMapboxAssets = () => {
+  if (typeof globalThis === 'undefined') {
+    return Promise.reject(new Error('Window is not available.'));
+  }
+
+  if (globalThis.mapboxgl) {
+    return Promise.resolve(globalThis.mapboxgl);
+  }
+
+  if (mapboxAssetsPromise) {
+    return mapboxAssetsPromise;
+  }
+
+  mapboxAssetsPromise = new Promise((resolve, reject) => {
+    const head = document.head;
+    if (!head) {
+      reject(new Error('Document head is not available.'));
+      return;
+    }
+
+    const styleId = 'mapbox-gl-style';
+    const scriptId = 'mapbox-gl-script';
+
+    if (!document.getElementById(styleId)) {
+      const link = document.createElement('link');
+      link.id = styleId;
+      link.href = 'https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.css';
+      link.rel = 'stylesheet';
+      head.appendChild(link);
+    }
+
+    const resolveWhenReady = () => {
+      if (globalThis.mapboxgl) {
+        resolve(globalThis.mapboxgl);
+      }
+    };
+
+    const existingScript = document.getElementById(scriptId);
+    if (existingScript) {
+      if (globalThis.mapboxgl) {
+        resolve(globalThis.mapboxgl);
+      } else {
+        existingScript.addEventListener('load', resolveWhenReady, { once: true });
+        existingScript.addEventListener('error', () => {
+          mapboxAssetsPromise = null;
+          reject(new Error('Failed to load Mapbox script.'));
+        }, { once: true });
+      }
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = scriptId;
+    script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.js';
+    script.async = true;
+    script.onload = resolveWhenReady;
+    script.onerror = () => {
+      mapboxAssetsPromise = null;
+      reject(new Error('Failed to load Mapbox script.'));
+    };
+    head.appendChild(script);
+  });
+
+  return mapboxAssetsPromise;
+};
 
 const GaspesieMap = ({ 
   onClick, 
@@ -9,6 +77,8 @@ const GaspesieMap = ({
   user, 
   profile, 
   guide: _guide,
+  language = 'fr',
+  setLanguage,
   isTripOpen,
   isGuideFlowOpen,
   isChaletFlowOpen,
@@ -65,7 +135,7 @@ const GaspesieMap = ({
   isCreatingBooking,
   bookingError,
   // Help/onboarding
-  onOpenHelp: _onOpenHelp,
+  onOpenHelp,
   // NEW: Guide availability time slots
   guideAvailabilityEvents,
   loadingGuideAvailability,
@@ -77,9 +147,73 @@ const GaspesieMap = ({
   const mapStyleLoaded = useRef(false);
 
   const [circleCenter, setCircleCenter] = useState(null);
+  const [mapInitError, setMapInitError] = useState('');
+  const [mapInitAttempt, setMapInitAttempt] = useState(0);
 
   // Detect if mobile for responsive button sizing
   const [isMobile, setIsMobile] = useState(typeof globalThis !== 'undefined' && globalThis.innerWidth < 768);
+  const [mobileSheetExpanded, setMobileSheetExpanded] = useState(false);
+  const sheetTouchStartY = useRef(0);
+
+  // Auto-expand/collapse mobile sheet with booking flow
+  useEffect(() => {
+    if (!isMobile) return;
+    if (bookingStep > 0) setMobileSheetExpanded(true);
+    else setMobileSheetExpanded(false);
+  }, [isMobile, bookingStep]);
+
+  // Touch handlers for mobile bottom sheet drag
+  const handleSheetTouchStart = useCallback((e) => {
+    sheetTouchStartY.current = e.touches[0].clientY;
+  }, []);
+
+  const handleSheetTouchEnd = useCallback((e) => {
+    const deltaY = sheetTouchStartY.current - e.changedTouches[0].clientY;
+    if (deltaY > 50) {
+      setMobileSheetExpanded(true);
+    } else if (deltaY < -50 && bookingStep === 0) {
+      setMobileSheetExpanded(false);
+    }
+  }, [bookingStep]);
+
+  // Landscape suggestion — show once per session on portrait mobile
+  const [showLandscapeHint, setShowLandscapeHint] = useState(false);
+  const isEnglish = language === 'en';
+  const uiLocale = isEnglish ? 'en-CA' : 'fr-CA';
+  const t = useCallback((frText, enText) => (isEnglish ? enText : frText), [isEnglish]);
+
+  useEffect(() => {
+    if (typeof globalThis === 'undefined' || !globalThis.matchMedia) return;
+
+    // Skip if already dismissed this session
+    const dismissed = globalThis.sessionStorage?.getItem('ms_landscape_dismissed');
+    if (dismissed) return;
+
+    // Only target phones (narrow screens), not tablets
+    const isPhone = globalThis.innerWidth < 768 && globalThis.innerHeight < 1024;
+    if (!isPhone) return;
+
+    const isPortrait = globalThis.matchMedia('(orientation: portrait)');
+    if (isPortrait.matches) {
+      // Small delay so it doesn't flash on page load
+      const timer = setTimeout(() => setShowLandscapeHint(true), 1200);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  const dismissLandscapeHint = useCallback(() => {
+    setShowLandscapeHint(false);
+    try { globalThis.sessionStorage?.setItem('ms_landscape_dismissed', '1'); } catch { /* storage unavailable */ }
+  }, []);
+
+  // Auto-dismiss if user rotates to landscape
+  useEffect(() => {
+    if (!showLandscapeHint || typeof globalThis === 'undefined' || !globalThis.matchMedia) return;
+    const mql = globalThis.matchMedia('(orientation: landscape)');
+    const handler = (e) => { if (e.matches) dismissLandscapeHint(); };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, [showLandscapeHint, dismissLandscapeHint]);
 
   // Sign out function
   const handleSignOut = async () => {
@@ -92,6 +226,43 @@ const GaspesieMap = ({
   };
 
   const { avatarSrc, handleAvatarError } = useAvatarSource(user);
+
+  const renderLanguageSwitch = () => (
+    <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+      <button
+        type="button"
+        onClick={() => setLanguage?.('fr')}
+        style={{
+          border: language === 'fr' ? '1px solid #214537' : '1px solid rgba(33, 69, 55, 0.35)',
+          background: language === 'fr' ? '#214537' : 'transparent',
+          color: language === 'fr' ? '#fff' : '#214537',
+          borderRadius: '999px',
+          padding: '3px 10px',
+          fontWeight: 600,
+          fontSize: '11px',
+          cursor: 'pointer',
+        }}
+      >
+        FR
+      </button>
+      <button
+        type="button"
+        onClick={() => setLanguage?.('en')}
+        style={{
+          border: language === 'en' ? '1px solid #214537' : '1px solid rgba(33, 69, 55, 0.35)',
+          background: language === 'en' ? '#214537' : 'transparent',
+          color: language === 'en' ? '#fff' : '#214537',
+          borderRadius: '999px',
+          padding: '3px 10px',
+          fontWeight: 600,
+          fontSize: '11px',
+          cursor: 'pointer',
+        }}
+      >
+        EN
+      </button>
+    </div>
+  );
     
   // Handle window resize for mobile detection
   useEffect(() => {
@@ -105,44 +276,55 @@ const GaspesieMap = ({
     }
   }, []);
 
-  // First useEffect - Initialize map
-  useEffect(() => {
-    if (mapRef.current) return;
+  const initializeMapRuntime = useCallback(() => {
+    let cancelled = false;
 
     if (mapContainerRef.current) {
       mapContainerRef.current.innerHTML = '';
     }
 
-    const link = document.createElement('link');
-    link.href = 'https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.css';
-    link.rel = 'stylesheet';
-    document.head.appendChild(link);
+    loadMapboxAssets()
+      .then((mapboxgl) => {
+        if (cancelled || mapRef.current || !mapContainerRef.current) return;
 
-    const script = document.createElement('script');
-    script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.js';
-    script.async = true;
+        if (typeof mapboxgl.supported === 'function' && !mapboxgl.supported()) {
+          setMapInitError('Votre appareil ne supporte pas WebGL. Veuillez essayer un autre navigateur ou appareil.');
+          return;
+        }
 
-    script.onload = () => {
-      if (!mapRef.current) {
-        initializeMap();
-      }
-    };
-
-    document.head.appendChild(script);
+        try {
+          initializeMap(mapboxgl);
+          setMapInitError('');
+        } catch (error) {
+          console.error('Map initialization failed:', error);
+          setMapInitError('Impossible de charger la carte pour le moment.');
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Failed to load map assets:', error);
+        setMapInitError('Impossible de charger la carte pour le moment.');
+      });
 
     return () => {
+      cancelled = true;
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
-      if (document.head.contains(link)) {
-        document.head.removeChild(link);
-      }
-      if (document.head.contains(script)) {
-        document.head.removeChild(script);
-      }
     };
   }, []);
+
+  // First useEffect - Initialize map
+  useEffect(() => {
+    if (mapRef.current) return;
+    return initializeMapRuntime();
+  }, [initializeMapRuntime, mapInitAttempt]);
+
+  const handleRetryMapInit = () => {
+    setMapInitError('');
+    setMapInitAttempt((currentAttempt) => currentAttempt + 1);
+  };
   function drawCircle(map, lngLat, radius) {
         
 
@@ -453,8 +635,7 @@ const GaspesieMap = ({
     };
   }, [bookingStep, resetBookingFlow]);
 
-  const initializeMap = () => {
-    const mapboxgl = globalThis.mapboxgl;
+  const initializeMap = (mapboxgl) => {
     const businessLogos = [
       {
         id: 'Falls Gully',
@@ -499,13 +680,19 @@ const GaspesieMap = ({
 
       businessLogos.forEach((logo) => {
         map.loadImage(logo.url, (error, image) => {
-          if (error) throw error;
+          if (error || !image) {
+            console.warn(`Unable to load business logo image: ${logo.id}`, error);
+            return;
+          }
           map.addImage(logo.id, image);
         });
       });
       
       map.loadImage('https://i.ibb.co/tpNkVbKw/location.png', (error, image) => {
-        if (error) throw error;
+        if (error || !image) {
+          console.warn('Unable to load map pin image', error);
+          return;
+        }
         if (!map.hasImage('pin')) map.addImage('pin', image);
       });
 
@@ -622,7 +809,7 @@ const GaspesieMap = ({
     <div style={{ 
       position: 'fixed',
       display: 'flex',
-      flexDirection: isMobile ? 'column' : 'row',
+      flexDirection: 'row',
       justifyContent: 'stretch',
       alignItems: 'stretch',
       top: 0,
@@ -637,30 +824,251 @@ const GaspesieMap = ({
       backgroundColor: '#f0f0f0',
       overflow: 'hidden'
     }}>
-      {/* Left Menu Panel - 20% */}
-      <div style={{
-        position: 'relative',
-        flex: isMobile ? '0 0 min(52dvh, 460px)' : '0 0 clamp(300px, 30vw, 420px)',
-        width: isMobile ? '100%' : 'clamp(300px, 30vw, 420px)',
-        maxWidth: '100%',
-        height: isMobile ? 'min(52dvh, 460px)' : '100%',
-        minHeight: 0,
-        background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)',
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'flex-start',
-        alignItems: 'center',
-        gap: '0',
-        boxSizing: 'border-box',
-        padding: isMobile
-          ? 'clamp(10px, 2vh, 16px) clamp(12px, 3vw, 16px) clamp(10px, 2vh, 16px)'
-          : 'clamp(14px, 3vh, 30px) clamp(12px, 2vw, 24px) clamp(12px, 2.2vh, 22px)',
-        boxShadow: '6px 0 26px rgba(31, 58, 46, 0.14)',
-        borderRight: '1px solid rgba(72, 102, 86, 0.16)',
-        zIndex: 100,
-        fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
-        overflow: 'hidden'
-      }}>
+      {/* Mobile backdrop overlay */}
+      {isMobile && mobileSheetExpanded && (
+        <div
+          onClick={() => { if (bookingStep === 0) setMobileSheetExpanded(false); }}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.25)',
+            zIndex: 499,
+          }}
+        />
+      )}
+
+      {/* Left Menu Panel (desktop) / Bottom Sheet (mobile) */}
+      <div
+        onTouchStart={isMobile ? handleSheetTouchStart : undefined}
+        onTouchEnd={isMobile ? handleSheetTouchEnd : undefined}
+        style={isMobile ? {
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          zIndex: 500,
+          height: mobileSheetExpanded ? '78dvh' : '172px',
+          maxHeight: '90dvh',
+          background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          boxSizing: 'border-box',
+          padding: 0,
+          boxShadow: '0 -8px 32px rgba(31, 58, 46, 0.18)',
+          borderRadius: '20px 20px 0 0',
+          fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
+          overflow: 'hidden',
+          transition: 'height 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
+          willChange: 'height',
+        } : {
+          position: 'relative',
+          flex: '0 0 clamp(300px, 30vw, 420px)',
+          width: 'clamp(300px, 30vw, 420px)',
+          maxWidth: '100%',
+          height: '100%',
+          minHeight: 0,
+          background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'flex-start',
+          alignItems: 'center',
+          gap: '0',
+          boxSizing: 'border-box',
+          padding: 'clamp(14px, 3vh, 30px) clamp(12px, 2vw, 24px) clamp(12px, 2.2vh, 22px)',
+          boxShadow: '6px 0 26px rgba(31, 58, 46, 0.14)',
+          borderRight: '1px solid rgba(72, 102, 86, 0.16)',
+          zIndex: 100,
+          fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Mobile drag handle */}
+        {isMobile && (
+          <div
+            onClick={() => setMobileSheetExpanded(prev => !prev)}
+            style={{
+              width: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              padding: '12px 16px 6px',
+              cursor: 'pointer',
+              flexShrink: 0,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            <div style={{
+              width: '40px',
+              height: '4px',
+              borderRadius: '2px',
+              background: 'rgba(90, 119, 102, 0.35)',
+            }} />
+          </div>
+        )}
+
+        {/* Mobile collapsed peek content */}
+        {isMobile && !mobileSheetExpanded && bookingStep === 0 && (
+          <div style={{
+            width: '100%',
+            padding: '4px 16px 8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            flexShrink: 0,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 style={{
+                margin: 0,
+                fontSize: '17px',
+                fontFamily: '"Iowan Old Style", "Palatino Linotype", serif',
+                fontWeight: '600',
+                color: '#173428',
+              }}>
+                {t('Explorez la Gaspésie', 'Explore Gaspesie')}
+              </h2>
+              {user && (
+                <button
+                  type="button"
+                  onClick={isAccountSettingsOpen}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                    flexShrink: 0,
+                  }}
+                >
+                  <img
+                    src={avatarSrc}
+                    alt="Profil"
+                    referrerPolicy="no-referrer"
+                    onError={handleAvatarError}
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: '50%',
+                      border: '2px solid rgba(74, 155, 142, 0.8)',
+                      objectFit: 'cover',
+                    }}
+                  />
+                </button>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              {renderLanguageSwitch()}
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={() => { isTripOpen(true); }}
+                style={{
+                  flex: 1,
+                  border: 'none',
+                  borderRadius: '12px',
+                  padding: '11px 8px',
+                  background: 'linear-gradient(145deg, #214537, #2F5C49)',
+                  color: '#FFFCF7',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  fontSize: '12.5px',
+                  textAlign: 'center',
+                  boxShadow: '0 4px 12px rgba(22, 43, 34, 0.2)',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                {t('Séjour', 'Trip')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { isGuideFlowOpen(true); }}
+                style={{
+                  flex: 1,
+                  border: '1px solid rgba(74, 117, 98, 0.32)',
+                  borderRadius: '12px',
+                  padding: '11px 8px',
+                  background: 'rgba(255, 252, 247, 0.72)',
+                  color: '#214337',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  fontSize: '12.5px',
+                  textAlign: 'center',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <img src="/fish.png" alt="" style={{ width: '18px', height: '18px' }} />
+                {t('Guide', 'Guide')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { isChaletFlowOpen(true); }}
+                style={{
+                  flex: 1,
+                  border: '1px solid rgba(74, 117, 98, 0.32)',
+                  borderRadius: '12px',
+                  padding: '11px 8px',
+                  background: 'rgba(255, 252, 247, 0.72)',
+                  color: '#214337',
+                  cursor: 'pointer',
+                  fontWeight: '600',
+                  fontSize: '12.5px',
+                  textAlign: 'center',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <img src="/chalet.png" alt="" style={{ width: '18px', height: '18px' }} />
+                {t('Chalet', 'Chalet')}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMobileSheetExpanded(true)}
+              style={{
+                background: 'none',
+                border: 'none',
+                width: '100%',
+                padding: '2px 0 0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px',
+                color: '#5A7766',
+                fontSize: '11px',
+                fontWeight: '500',
+                cursor: 'pointer',
+                WebkitTapHighlightColor: 'transparent',
+              }}
+            >
+              {t('Voir plus ▴', 'Show more ▴')}
+            </button>
+          </div>
+        )}
+
+        {/* Full sidebar content — scrollable wrapper on mobile, transparent on desktop */}
+        <div style={isMobile ? {
+          width: '100%',
+          flex: '1 1 auto',
+          minHeight: 0,
+          display: (!mobileSheetExpanded && bookingStep === 0) ? 'none' : 'flex',
+          flexDirection: 'column',
+          overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch',
+          padding: '0 16px env(safe-area-inset-bottom, 16px)',
+        } : {
+          display: 'contents',
+        }}>
         {/* BOOKING FLOW CONTENT */}
         {bookingStep > 0 ? (
           <div style={{ width: '100%', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', paddingRight: '2px' }}>
@@ -680,15 +1088,19 @@ const GaspesieMap = ({
                 fontWeight: '600',
                 flex: 1
               }}>
-                {browseMode === 'guide' ? 'Trouver un guide' : browseMode === 'chalet' ? 'Trouver un chalet' : 'Planifier votre séjour'}
+                {browseMode === 'guide'
+                  ? t('Trouver un guide', 'Find a guide')
+                  : browseMode === 'chalet'
+                  ? t('Trouver un chalet', 'Find a chalet')
+                  : t('Planifier votre séjour', 'Plan your trip')}
               </h2>
               
               {/* Close button - visible and accessible */}
               <button
                 type="button"
                 onClick={resetBookingFlow}
-                aria-label="Fermer et retourner au menu principal"
-                title="Fermer (Échap)"
+                aria-label={t('Fermer et retourner au menu principal', 'Close and return to main menu')}
+                title={t('Fermer (Échap)', 'Close (Esc)')}
                 style={{
                   background: 'transparent',
                   border: '1px solid #D1D5DB',
@@ -740,13 +1152,17 @@ const GaspesieMap = ({
             {bookingStep === 1 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
-                  1. {browseMode === 'guide' ? 'Préférences de guide' : browseMode === 'chalet' ? 'Préférences d\'hébergement' : 'Préférences de voyage'}
+                  1. {browseMode === 'guide'
+                    ? t('Préférences de guide', 'Guide preferences')
+                    : browseMode === 'chalet'
+                    ? t('Préférences d\'hébergement', 'Accommodation preferences')
+                    : t('Préférences de voyage', 'Trip preferences')}
                 </h3>
                 
                 {/* Number of people */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <label style={{ fontSize: '14px', color: '#5A7766', fontWeight: '500' }}>
-                    Nombre de personnes
+                    {t('Nombre de personnes', 'Number of people')}
                   </label>
                   <input
                     type="number"
@@ -768,7 +1184,7 @@ const GaspesieMap = ({
                 {/* Fish type selection */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <label style={{ fontSize: '14px', color: '#5A7766', fontWeight: '500' }}>
-                    Type de poisson recherché
+                    {t('Type de poisson recherché', 'Target fish species')}
                   </label>
                   <select
                     value={fishType}
@@ -783,7 +1199,7 @@ const GaspesieMap = ({
                       cursor: 'pointer'
                     }}
                   >
-                    <option value="">-- Sélectionnez un poisson --</option>
+                    <option value="">{t('-- Sélectionnez un poisson --', '-- Select a fish --')}</option>
                     {FISH_TYPES && FISH_TYPES.map(fish => (
                       <option key={fish.value} value={fish.value}>{fish.label}</option>
                     ))}
@@ -793,7 +1209,7 @@ const GaspesieMap = ({
                 {/* Fishing zones info */}
                 {loadingZones && (
                   <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766' }}>
-                    Chargement des zones de pêche...
+                    {t('Chargement des zones de pêche...', 'Loading fishing zones...')}
                   </div>
                 )}
                 {fishType && !loadingZones && fishingZones.length > 0 && (
@@ -804,7 +1220,7 @@ const GaspesieMap = ({
                     fontSize: '13px',
                     color: '#2D5F4C'
                   }}>
-                    <strong>🎣 {fishingZones.length} zone(s)</strong> de pêche affichée(s) sur la carte
+                    <strong>🎣 {fishingZones.length} {t('zone(s)', 'zone(s)')}</strong> {t('de pêche affichée(s) sur la carte', 'shown on the map')}
                   </div>
                 )}
                 {fishType && !loadingZones && fishingZones.length === 0 && (
@@ -815,14 +1231,14 @@ const GaspesieMap = ({
                     fontSize: '13px',
                     color: '#D97706'
                   }}>
-                    Aucune zone de pêche trouvée pour ce poisson
+                    {t('Aucune zone de pêche trouvée pour ce poisson', 'No fishing zones found for this fish')}
                   </div>
                 )}
 
                 {/* Date selection - moved from step 3 */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <label style={{ fontSize: '14px', color: '#5A7766', fontWeight: '500' }}>
-                    Dates du séjour
+                    {t('Dates du séjour', 'Trip dates')}
                   </label>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <input
@@ -865,7 +1281,7 @@ const GaspesieMap = ({
                       fontSize: '12px',
                       color: '#DC2626'
                     }}>
-                      La date de départ doit être après la date d'arrivée
+                      {t('La date de départ doit être après la date d\'arrivée', 'Departure date must be after arrival date')}
                     </div>
                   )}
                 </div>
@@ -902,7 +1318,7 @@ const GaspesieMap = ({
                       cursor: 'pointer'
                     }}
                   >
-                    J'ai besoin d'un chalet
+                    {t('J\'ai besoin d\'un chalet', 'I need a chalet')}
                   </label>
                 </div>
                 )}
@@ -924,7 +1340,7 @@ const GaspesieMap = ({
                     marginTop: '12px'
                   }}
                 >
-                  Continuer →
+                  {t('Continuer →', 'Continue →')}
                 </button>
               </div>
             )}
@@ -933,7 +1349,11 @@ const GaspesieMap = ({
             {bookingStep === 2 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E', flexShrink: 0 }}>
-                  2. {browseMode === 'guide' ? 'Sélectionnez un guide' : browseMode === 'chalet' ? 'Sélectionnez un chalet' : 'Sélectionnez guide et hébergement'}
+                  2. {browseMode === 'guide'
+                    ? t('Sélectionnez un guide', 'Select a guide')
+                    : browseMode === 'chalet'
+                    ? t('Sélectionnez un chalet', 'Select a chalet')
+                    : t('Sélectionnez guide et hébergement', 'Select guide and accommodation')}
                 </h3>
 
                 {/* Summary of preferences */}
@@ -945,9 +1365,9 @@ const GaspesieMap = ({
                   color: '#5A7766',
                   flexShrink: 0
                 }}>
-                  <div>🎣 Poisson: <strong>{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}</strong></div>
-                  <div>👥 {numberOfPeople} personne(s)</div>
-                  <div>🏠 Chalet: <strong>{needsChalet ? 'Oui' : 'Non'}</strong></div>
+                  <div>🎣 {t('Poisson', 'Fish')}: <strong>{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}</strong></div>
+                  <div>👥 {numberOfPeople} {t('personne(s)', 'person(s)')}</div>
+                  <div>🏠 {t('Chalet', 'Chalet')}: <strong>{needsChalet ? t('Oui', 'Yes') : t('Non', 'No')}</strong></div>
                 </div>
 
                 {/* Scrollable content area for guide and chalet sections */}
@@ -966,12 +1386,12 @@ const GaspesieMap = ({
                     paddingBottom: needsChalet ? '16px' : '0'
                   }}>
                     <h4 style={{ margin: '0 0 12px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
-                      🧭 Guides disponibles
+                      {t('🧭 Guides disponibles', '🧭 Available guides')}
                     </h4>
 
                   {loadingGuides ? (
                     <div style={{ textAlign: 'center', padding: '16px', color: '#5A7766' }}>
-                      Chargement des guides...
+                      {t('Chargement des guides...', 'Loading guides...')}
                     </div>
                   ) : availableGuides.length === 0 ? (
                     <div style={{
@@ -981,7 +1401,7 @@ const GaspesieMap = ({
                       color: '#D97706',
                       fontSize: '13px'
                     }}>
-                      Aucun guide spécialisé trouvé pour "{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}"
+                      {t('Aucun guide spécialisé trouvé pour', 'No specialized guide found for')} "{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}"
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -999,7 +1419,7 @@ const GaspesieMap = ({
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                           <span style={{ fontSize: '18px' }}>✗</span>
-                          <span style={{ color: '#5A7766' }}>Continuer sans guide</span>
+                          <span style={{ color: '#5A7766' }}>{t('Continuer sans guide', 'Continue without a guide')}</span>
                         </div>
                       </div>
                       
@@ -1062,15 +1482,15 @@ const GaspesieMap = ({
                       {selectedGuide && (
                         <div style={{ marginTop: '12px' }}>
                           <h5 style={{ margin: '0 0 8px', fontSize: '13px', color: '#1F3A2E', fontWeight: '600' }}>
-                            📅 Disponibilités de {selectedGuide.name}
+                            📅 {t('Disponibilités de', 'Availability for')} {selectedGuide.name}
                           </h5>
                           <p style={{ fontSize: '11px', color: '#5A7766', margin: '0 0 8px' }}>
-                            Sélectionnez les créneaux horaires souhaités
+                            {t('Sélectionnez les créneaux horaires souhaités', 'Select your preferred time slots')}
                           </p>
 
                           {loadingGuideAvailability ? (
                             <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766', fontSize: '12px' }}>
-                              Chargement des disponibilités...
+                              {t('Chargement des disponibilités...', 'Loading availability...')}
                             </div>
                           ) : guideAvailabilityEvents && guideAvailabilityEvents.length > 0 ? (
                             <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -1095,7 +1515,7 @@ const GaspesieMap = ({
                                       backgroundColor: 'rgba(45, 95, 76, 0.08)',
                                       borderRadius: '4px'
                                     }}>
-                                      {new Date(date + 'T00:00:00').toLocaleDateString('fr-CA', { 
+                                      {new Date(date + 'T00:00:00').toLocaleDateString(uiLocale, { 
                                         weekday: 'short', 
                                         day: 'numeric', 
                                         month: 'short' 
@@ -1103,8 +1523,8 @@ const GaspesieMap = ({
                                     </div>
                                     {events.map((event) => {
                                       const isSelected = selectedTimeSlots?.some(slot => slot.id === event.id);
-                                      const startTime = event.start ? new Date(event.start).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
-                                      const endTime = event.end ? new Date(event.end).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' }) : '';
+                                      const startTime = event.start ? new Date(event.start).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
+                                      const endTime = event.end ? new Date(event.end).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
                                       
                                       return (
                                         <div
@@ -1157,7 +1577,7 @@ const GaspesieMap = ({
                               fontSize: '12px',
                               textAlign: 'center'
                             }}>
-                              Aucune disponibilité trouvée pour les dates sélectionnées ({startDate} - {endDate})
+                              {t('Aucune disponibilité trouvée pour les dates sélectionnées', 'No availability found for selected dates')} ({startDate} - {endDate})
                             </div>
                           )}
 
@@ -1171,7 +1591,7 @@ const GaspesieMap = ({
                               fontSize: '11px',
                               color: '#059669'
                             }}>
-                              ✓ {selectedTimeSlots.length} créneau(x) sélectionné(s)
+                              ✓ {selectedTimeSlots.length} {t('créneau(x) sélectionné(s)', 'slot(s) selected')}
                             </div>
                           )}
                         </div>
@@ -1185,17 +1605,17 @@ const GaspesieMap = ({
                 {needsChalet && (
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <h4 style={{ margin: '0 0 8px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
-                      🏠 Chalets disponibles
+                      {t('🏠 Chalets disponibles', '🏠 Available chalets')}
                     </h4>
                     
                     <p style={{ fontSize: '12px', color: '#5A7766', margin: '0 0 8px' }}>
-                      Cliquez sur la carte pour définir votre zone de recherche
+                      {t('Cliquez sur la carte pour définir votre zone de recherche', 'Click on the map to set your search area')}
                     </p>
 
                     {/* Radius slider */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '12px' }}>
                       <label style={{ fontSize: '12px', color: '#5A7766' }}>
-                        Rayon: {radius} km
+                        {t('Rayon', 'Radius')}: {radius} km
                       </label>
                       <input
                         type="range"
@@ -1215,14 +1635,14 @@ const GaspesieMap = ({
                         border: '1px dashed #4A9B8E'
                       }}>
                         <p style={{ fontSize: '12px', color: '#2D5F4C', margin: 0, textAlign: 'center' }}>
-                          👆 Cliquez sur la carte
+                          👆 {t('Cliquez sur la carte', 'Click on the map')}
                         </p>
                       </div>
                     ) : (
                       <div>
                         {loadingChalets && (
                           <div style={{ textAlign: 'center', padding: '16px', color: '#5A7766' }}>
-                            Chargement des chalets...
+                            {t('Chargement des chalets...', 'Loading chalets...')}
                           </div>
                         )}
 
@@ -1234,7 +1654,7 @@ const GaspesieMap = ({
                             color: '#DC2626',
                             fontSize: '12px'
                           }}>
-                            Erreur: {chaletError}
+                            {t('Erreur', 'Error')}: {chaletError}
                           </div>
                         )}
 
@@ -1247,7 +1667,7 @@ const GaspesieMap = ({
                             fontSize: '12px',
                             textAlign: 'center'
                           }}>
-                            Aucun chalet trouvé à proximité
+                            {t('Aucun chalet trouvé à proximité', 'No chalet found nearby')}
                           </div>
                         )}
 
@@ -1263,7 +1683,7 @@ const GaspesieMap = ({
                           // Group chalets by establishment
                           const chaletsByEstablishment = chalets.reduce((acc, chalet) => {
                             const estId = chalet.etablishment_id || 'no-establishment';
-                            const estName = chalet.etablishment_name || 'Sans établissement';
+                            const estName = chalet.etablishment_name || t('Sans établissement', 'No establishment');
                             
                             if (!acc[estId]) {
                               acc[estId] = { id: estId, name: estName, chalets: [] };
@@ -1348,7 +1768,7 @@ const GaspesieMap = ({
                                                 {chalet.Name}
                                               </p>
                                               <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#5A7766' }}>
-                                                {chalet.nb_personnes} pers. {chalet.price && `• ${chalet.price}$/nuit`}
+                                                {chalet.nb_personnes} {t('pers.', 'people')} {chalet.price && `• ${chalet.price}$/${t('nuit', 'night')}`}
                                               </p>
                                             </div>
                                             {selectedChalet?.id === (chalet.key || chalet.id) && (
@@ -1381,14 +1801,14 @@ const GaspesieMap = ({
                   fontSize: '12px',
                   flexShrink: 0
                 }}>
-                  <div><strong>Guide:</strong> {selectedGuide ? selectedGuide.name : 'Aucun'}</div>
+                  <div><strong>{t('Guide', 'Guide')}:</strong> {selectedGuide ? selectedGuide.name : t('Aucun', 'None')}</div>
                   {selectedGuide && selectedTimeSlots && selectedTimeSlots.length > 0 && (
                     <div style={{ marginTop: '4px', fontSize: '11px', color: '#5A7766' }}>
-                      <strong>Créneaux:</strong> {selectedTimeSlots.length} sélectionné(s)
+                      <strong>{t('Créneaux', 'Time slots')}:</strong> {selectedTimeSlots.length} {t('sélectionné(s)', 'selected')}
                     </div>
                   )}
                   {needsChalet && (
-                    <div><strong>Chalet:</strong> {selectedChalet ? selectedChalet.name : 'Aucun'}</div>
+                    <div><strong>{t('Chalet', 'Chalet')}:</strong> {selectedChalet ? selectedChalet.name : t('Aucun', 'None')}</div>
                   )}
                 </div>
 
@@ -1409,7 +1829,7 @@ const GaspesieMap = ({
                       fontSize: '13px'
                     }}
                   >
-                    ← Retour
+                    {t('← Retour', '← Back')}
                   </button>
                   <button
                     type="button"
@@ -1427,7 +1847,7 @@ const GaspesieMap = ({
                       fontSize: '13px'
                     }}
                   >
-                    Continuer →
+                    {t('Continuer →', 'Continue →')}
                   </button>
                 </div>
               </div>
@@ -1437,7 +1857,7 @@ const GaspesieMap = ({
             {bookingStep === 3 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
-                  3. Activités à proximité
+                  {t('3. Activités à proximité', '3. Nearby activities')}
                 </h3>
 
                 {/* Selection summary */}
@@ -1448,16 +1868,16 @@ const GaspesieMap = ({
                   fontSize: '13px',
                   color: '#2D5F4C'
                 }}>
-                  <div><strong>📅 Dates:</strong> {startDate} au {endDate}</div>
+                  <div><strong>📅 {t('Dates', 'Dates')}:</strong> {startDate} {t('au', 'to')} {endDate}</div>
                   {selectedGuide && (
                     <>
-                      <div><strong>🧭 Guide:</strong> {selectedGuide.name}</div>
+                      <div><strong>🧭 {t('Guide', 'Guide')}:</strong> {selectedGuide.name}</div>
                       {selectedTimeSlots && selectedTimeSlots.length > 0 && (
                         <div style={{ fontSize: '11px', marginTop: '4px' }}>
-                          <strong>⏰ Créneaux:</strong> {selectedTimeSlots.map(slot => {
-                            const startTime = new Date(slot.startTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
-                            const endTime = new Date(slot.endTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
-                            const date = new Date(slot.date + 'T00:00:00').toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' });
+                          <strong>⏰ {t('Créneaux', 'Time slots')}:</strong> {selectedTimeSlots.map(slot => {
+                            const startTime = new Date(slot.startTime).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' });
+                            const endTime = new Date(slot.endTime).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' });
+                            const date = new Date(slot.date + 'T00:00:00').toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' });
                             return `${date} ${startTime}-${endTime}`;
                           }).join(', ')}
                         </div>
@@ -1465,7 +1885,7 @@ const GaspesieMap = ({
                     </>
                   )}
                   {selectedChalet && needsChalet && (
-                    <div><strong>🏠 Chalet:</strong> {selectedChalet.name}</div>
+                    <div><strong>🏠 {t('Chalet', 'Chalet')}:</strong> {selectedChalet.name}</div>
                   )}
                 </div>
 
@@ -1622,7 +2042,7 @@ const GaspesieMap = ({
                 {/* Availability status */}
                 {checkingAvailability && (
                   <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766' }}>
-                    Vérification de la disponibilité...
+                    {t('Vérification de la disponibilité...', 'Checking availability...')}
                   </div>
                 )}
 
@@ -1645,7 +2065,7 @@ const GaspesieMap = ({
                       </div>
                     )}
                     <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#5A7766' }}>
-                      Veuillez retourner à l'étape 1 pour modifier vos dates.
+                      {t('Veuillez retourner à l\'étape 1 pour modifier vos dates.', 'Please return to step 1 to change your dates.')}
                     </p>
                   </div>
                 )}
@@ -1659,7 +2079,7 @@ const GaspesieMap = ({
                     fontSize: '13px',
                     color: '#059669'
                   }}>
-                    ✓ Disponibilité confirmée pour vos dates
+                    {t('✓ Disponibilité confirmée pour vos dates', '✓ Availability confirmed for your dates')}
                   </div>
                 )}
 
@@ -1695,7 +2115,7 @@ const GaspesieMap = ({
                       opacity: isCreatingBooking ? 0.6 : 1
                     }}
                   >
-                    ← Retour
+                    {t('← Retour', '← Back')}
                   </button>
                   <button
                     type="button"
@@ -1727,10 +2147,10 @@ const GaspesieMap = ({
                           borderRadius: '50%',
                           animation: 'spin 1s linear infinite'
                         }} />
-                        Réservation...
+                        {t('Réservation...', 'Booking...')}
                       </>
                     ) : (
-                      'Réserver →'
+                      t('Réserver →', 'Book →')
                     )}
                   </button>
                 </div>
@@ -1755,17 +2175,16 @@ const GaspesieMap = ({
                 </div>
 
                 <h3 style={{ margin: 0, fontSize: '18px', color: '#1F3A2E' }}>
-                  Réservation confirmée!
+                  {t('Réservation confirmée!', 'Booking confirmed!')}
                 </h3>
 
                 <p style={{ fontSize: '14px', color: '#5A7766', margin: 0 }}>
-                  {selectedGuide && selectedChalet
-                    ? 'Votre chalet et guide ont été réservés avec succès.'
+                  {`${selectedGuide && selectedChalet
+                    ? t('Votre chalet et guide ont été réservés avec succès.', 'Your chalet and guide were booked successfully.')
                     : selectedChalet
-                    ? 'Votre chalet a été réservé avec succès.'
-                    : 'Votre guide a été réservé avec succès.'
-                  }
-                  {' '}Vous recevrez une confirmation par courriel.
+                    ? t('Votre chalet a été réservé avec succès.', 'Your chalet was booked successfully.')
+                    : t('Votre guide a été réservé avec succès.', 'Your guide was booked successfully.')
+                  } ${t('Vous recevrez une confirmation par courriel.', 'You will receive a confirmation by email.')}`}
                 </p>
 
                 <div style={{
@@ -1785,12 +2204,12 @@ const GaspesieMap = ({
                       </p>
                       {selectedTimeSlots && selectedTimeSlots.length > 0 && (
                         <div style={{ margin: '0 0 8px', fontSize: '12px', color: '#5A7766' }}>
-                          <strong>⏰ Créneaux réservés:</strong>
+                          <strong>⏰ {t('Créneaux réservés', 'Booked slots')}:</strong>
                           <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
                             {selectedTimeSlots.map((slot, idx) => {
-                              const startTime = new Date(slot.startTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
-                              const endTime = new Date(slot.endTime).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
-                              const date = new Date(slot.date + 'T00:00:00').toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' });
+                                const startTime = new Date(slot.startTime).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' });
+                                const endTime = new Date(slot.endTime).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' });
+                                const date = new Date(slot.date + 'T00:00:00').toLocaleDateString(uiLocale, { weekday: 'short', day: 'numeric', month: 'short' });
                               return (
                                 <li key={idx} style={{ fontSize: '11px' }}>{date}: {startTime} - {endTime}</li>
                               );
@@ -1829,7 +2248,7 @@ const GaspesieMap = ({
                     marginTop: '12px'
                   }}
                 >
-                  Terminer
+                  {t('Terminer', 'Done')}
                 </button>
               </div>
             )}
@@ -1868,6 +2287,9 @@ const GaspesieMap = ({
                 }}>
                   Monde Sauvage
                 </p>
+                <div style={{ marginTop: '8px' }}>
+                  {renderLanguageSwitch()}
+                </div>
                 <h1 style={{
                   margin: '6px 0 0',
                   fontSize: isMobile ? '22px' : '26px',
@@ -1876,14 +2298,14 @@ const GaspesieMap = ({
                   fontWeight: '600',
                   color: '#173428'
                 }}>
-                  Carte des aventures
+                  {t('Carte des aventures', 'Adventure map')}
                 </h1>
                 <p style={{
                   margin: '4px 0 0',
                   fontSize: '12px',
                   color: '#4E695B'
                 }}>
-                    Séjours et expériences en Gaspésie
+                    {t('Séjours et expériences en Gaspésie', 'Trips and experiences in Gaspesie')}
                 </p>
               </div>
 
@@ -1901,7 +2323,7 @@ const GaspesieMap = ({
                   fontFamily: '"Iowan Old Style", "Palatino Linotype", serif',
                   color: '#193629'
                 }}>
-                    Explorez la Gaspésie
+                    {t('Explorez la Gaspésie', 'Explore Gaspesie')}
                 </h2>
                 <p style={{
                   margin: '6px 0 0',
@@ -1909,7 +2331,7 @@ const GaspesieMap = ({
                   lineHeight: 1.35,
                   color: '#4D685A'
                 }}>
-                    Réservez un guide, un chalet ou planifiez votre séjour.
+                    {t('Réservez un guide, un chalet ou planifiez votre séjour.', 'Book a guide, a chalet, or plan your trip.')}
                 </p>
               </div>
 
@@ -1927,7 +2349,7 @@ const GaspesieMap = ({
                 color: '#5A7766',
                 fontWeight: '600'
               }}>
-                Planification
+                {t('Planification', 'Planning')}
               </p>
               <button
                 type="button"
@@ -1956,7 +2378,7 @@ const GaspesieMap = ({
                   e.currentTarget.style.boxShadow = '0 10px 20px rgba(22, 43, 34, 0.24)';
                 }}
               >
-                Planifiez votre séjour
+                {t('Planifiez votre séjour', 'Plan your trip')}
               </button>
 
               <div style={{
@@ -1995,10 +2417,10 @@ const GaspesieMap = ({
                 >
                   <img
                     src="/fish.png"
-                    alt="Trouvez un guide"
+                    alt={t('Trouvez un guide', 'Find a guide')}
                     style={{ width: '28px', height: '28px', flexShrink: 0 }}
                   />
-                  <span>Trouvez un guide</span>
+                  <span>{t('Trouvez un guide', 'Find a guide')}</span>
                 </button>
 
                 <button
@@ -2031,10 +2453,10 @@ const GaspesieMap = ({
                 >
                   <img
                     src="/chalet.png"
-                    alt="Réservez un chalet"
+                    alt={t('Réservez un chalet', 'Book a chalet')}
                     style={{ width: '28px', height: '28px', flexShrink: 0 }}
                   />
-                  <span>Réservez un chalet</span>
+                  <span>{t('Réservez un chalet', 'Book a chalet')}</span>
                 </button>
               </div>
               </div>
@@ -2054,7 +2476,7 @@ const GaspesieMap = ({
                 color: '#5A7766',
                 fontWeight: '600'
               }}>
-                Decouvrir
+                {t('Decouvrir', 'Discover')}
               </p>
 
               <button
@@ -2082,7 +2504,7 @@ const GaspesieMap = ({
                   e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
                 }}
               >
-                Section sociale
+                {t('Section sociale', 'Social feed')}
               </button>
 
               {(profile?.type === 'establishment' || profile?.type === 'admin') && (
@@ -2111,7 +2533,7 @@ const GaspesieMap = ({
                     e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
                   }}
                 >
-                  Etablissement
+                  {t('Etablissement', 'Establishment')}
                 </button>
               )}
 
@@ -2140,7 +2562,7 @@ const GaspesieMap = ({
                   e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
                 }}
               >
-                Rejoindre Monde Sauvage
+                {t('Rejoindre Monde Sauvage', 'Join Monde Sauvage')}
               </button>
               </div>
             </div>
@@ -2209,7 +2631,7 @@ const GaspesieMap = ({
                         onMouseOver={(e) => { e.currentTarget.style.color = '#2D5F4C'; }}
                         onMouseOut={(e) => { e.currentTarget.style.color = '#4D685A'; }}
                       >
-                        Paramètres
+                        {t('Paramètres', 'Settings')}
                       </button>
                       <button
                         type="button"
@@ -2227,7 +2649,7 @@ const GaspesieMap = ({
                         onMouseOver={(e) => { e.currentTarget.style.color = '#1F3A2E'; }}
                         onMouseOut={(e) => { e.currentTarget.style.color = '#4D685A'; }}
                       >
-                        Se déconnecter
+                        {t('Se déconnecter', 'Sign out')}
                       </button>
                     </div>
                   </div>
@@ -2253,11 +2675,12 @@ const GaspesieMap = ({
                 onMouseOver={(e) => { e.currentTarget.style.color = '#2D5F4C'; }}
                 onMouseOut={(e) => { e.currentTarget.style.color = '#5A7766'; }}
               >
-                Nos affiliations
+                {t('Nos affiliations', 'Our partners')}
               </button>
             </div>
           </div>
         )}
+        </div>
       </div>
 
       {/* Map Container - 80% */}
@@ -2273,6 +2696,67 @@ const GaspesieMap = ({
           height: '100%' 
         }} 
       />
+
+      {mapInitError && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed',
+            right: isMobile ? '12px' : '20px',
+            bottom: isMobile ? '12px' : '20px',
+            left: isMobile ? '12px' : 'auto',
+            maxWidth: isMobile ? 'calc(100% - 24px)' : '420px',
+            zIndex: 1200,
+            background: 'rgba(255, 252, 247, 0.96)',
+            border: '1px solid rgba(199, 85, 58, 0.35)',
+            color: '#7A2E1D',
+            borderRadius: '12px',
+            padding: '12px 14px',
+            boxShadow: '0 10px 24px rgba(24, 43, 35, 0.18)',
+            fontSize: '13px',
+            lineHeight: 1.45
+          }}
+        >
+          <div>{mapInitError}</div>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleRetryMapInit}
+              style={{
+                border: '1px solid rgba(122, 46, 29, 0.45)',
+                background: '#fff',
+                color: '#7A2E1D',
+                borderRadius: '8px',
+                padding: '6px 10px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              {t('Reessayer', 'Retry')}
+            </button>
+            {typeof onOpenHelp === 'function' && (
+              <button
+                type="button"
+                onClick={() => onOpenHelp(false)}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: '#7A2E1D',
+                  textDecoration: 'underline',
+                  textUnderlineOffset: '2px',
+                  padding: '6px 2px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  cursor: 'pointer'
+                }}
+              >
+                {t('Ouvrir l\'aide', 'Open help')}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Login Button - Only shown when not logged in */}
       {!user && (
@@ -2304,8 +2788,99 @@ const GaspesieMap = ({
             e.target.style.transform = 'translateY(0)';
           }}
         >
-          Se connecter
+          {t('Se connecter', 'Sign in')}
         </button>
+      )}
+
+      {/* Landscape suggestion overlay — shown once per session on portrait phones */}
+      {showLandscapeHint && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 10000,
+            background: 'rgba(11, 18, 32, 0.82)',
+            backdropFilter: 'blur(6px)',
+            WebkitBackdropFilter: 'blur(6px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '20px',
+            padding: '32px 24px',
+            fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
+            animation: 'fadeIn 0.4s ease-out',
+          }}
+        >
+          {/* Rotate icon */}
+          <div style={{
+            width: '72px',
+            height: '72px',
+            border: '2px solid rgba(255, 252, 247, 0.5)',
+            borderRadius: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            animation: 'landscapeRotateHint 2s ease-in-out infinite',
+          }}>
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#FFFCF7" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="2" width="16" height="20" rx="2" />
+              <path d="M12 18h.01" />
+            </svg>
+          </div>
+
+          <div style={{ textAlign: 'center', maxWidth: '280px' }}>
+            <p style={{
+              margin: 0,
+              fontSize: '18px',
+              fontWeight: '600',
+              color: '#FFFCF7',
+              lineHeight: 1.3,
+            }}>
+              {t('Tournez votre appareil', 'Rotate your device')}
+            </p>
+            <p style={{
+              margin: '8px 0 0',
+              fontSize: '14px',
+              color: 'rgba(255, 252, 247, 0.7)',
+              lineHeight: 1.4,
+            }}>
+              {t('La carte interactive est plus agréable en mode paysage.', 'The interactive map is easier to use in landscape mode.')}
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', maxWidth: '260px', marginTop: '4px' }}>
+            <button
+              type="button"
+              onClick={dismissLandscapeHint}
+              style={{
+                width: '100%',
+                padding: '13px 20px',
+                borderRadius: '12px',
+                border: 'none',
+                background: 'linear-gradient(145deg, #214537, #2F5C49)',
+                color: '#FFFCF7',
+                fontWeight: '600',
+                fontSize: '15px',
+                cursor: 'pointer',
+                boxShadow: '0 6px 18px rgba(22, 43, 34, 0.35)',
+                WebkitTapHighlightColor: 'transparent',
+              }}
+            >
+              {t('Continuer en portrait', 'Continue in portrait')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Keyframe for landscape hint rotate animation */}
+      {showLandscapeHint && (
+        <style>{`
+          @keyframes landscapeRotateHint {
+            0%, 100% { transform: rotate(0deg); }
+            30%, 70% { transform: rotate(-90deg); }
+          }
+        `}</style>
       )}
     </div>
   );

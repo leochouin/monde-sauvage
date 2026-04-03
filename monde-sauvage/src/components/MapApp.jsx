@@ -1,17 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
+import { lazy, Suspense, useEffect, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import GaspesieMap from "./Map.jsx";
-import LoginModal from "../modals/loginModal.jsx";
-import JoinUs from "../modals/joinUsModal.jsx";
-import EtablissementModal from "../modals/etablissementModal.jsx";
-import GuideBookingModal from "../modals/guideBookingModal.jsx";
-import GuideProfilePreviewModal from "../modals/guideProfilePreviewModal.jsx";
-import GuideClientModal from "../modals/guideClientModal.jsx";
-import ChaletDetailModal from "../modals/chaletDetailModal.jsx";
 import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guideOnboardingModal.jsx";
-import AccountSettingsModal from "../modals/accountSettingsModal.jsx";
 import HighlightOverlay from "./HighlightOverlay.jsx";
-import SocialFeedPage from "../pages/SocialFeedPage.jsx";
 import supabase from "../utils/supabase.js";
 import { createGuideBooking, checkGuideConflictsServer } from "../utils/guideBookingService.js";
 import { createBooking } from "../utils/bookingService.js";
@@ -20,26 +10,41 @@ import { getGuideByUserId } from "../utils/socialFeedService.js";
 import {
     resolveAvatarFromSources,
 } from "../utils/avatar.js";
-import CheckoutModal from "../modals/checkoutModal.jsx";
-import ReservationCart from "./ReservationCart.jsx";
 
-// Fish types available for selection
-const FISH_TYPES = [
-    { value: 'saumon', label: 'Saumon Atlantique' },
-    { value: 'truite', label: 'Truite mouchetée' },
-    { value: 'omble', label: 'Omble de fontaine' },
-    { value: 'brochet', label: 'Brochet' },
-    { value: 'perchaude', label: 'Perchaude' },
-    { value: 'bar', label: 'Bar rayé' },
-    { value: 'maquereau', label: 'Maquereau' },
-    { value: 'plie', label: 'Plie' },
-    { value: 'capelan', label: 'Capelan' }
+const GaspesieMap = lazy(() => import("./Map.jsx"));
+const SocialFeedPage = lazy(() => import("../pages/SocialFeedPage.jsx"));
+const LoginModal = lazy(() => import("../modals/loginModal.jsx"));
+const JoinUs = lazy(() => import("../modals/joinUsModal.jsx"));
+const EtablissementModal = lazy(() => import("../modals/etablissementModal.jsx"));
+const GuideBookingModal = lazy(() => import("../modals/guideBookingModal.jsx"));
+const GuideProfilePreviewModal = lazy(() => import("../modals/guideProfilePreviewModal.jsx"));
+const GuideClientModal = lazy(() => import("../modals/guideClientModal.jsx"));
+const ChaletDetailModal = lazy(() => import("../modals/chaletDetailModal.jsx"));
+const AccountSettingsModal = lazy(() => import("../modals/accountSettingsModal.jsx"));
+const CheckoutModal = lazy(() => import("../modals/checkoutModal.jsx"));
+const ReservationCart = lazy(() => import("./ReservationCart.jsx"));
+
+const FISH_TYPES_BASE = [
+    { value: 'saumon', labelFr: 'Saumon Atlantique', labelEn: 'Atlantic Salmon' },
+    { value: 'truite', labelFr: 'Truite mouchetée', labelEn: 'Brook Trout' },
+    { value: 'omble', labelFr: 'Omble de fontaine', labelEn: 'Arctic Char' },
+    { value: 'brochet', labelFr: 'Brochet', labelEn: 'Northern Pike' },
+    { value: 'perchaude', labelFr: 'Perchaude', labelEn: 'Yellow Perch' },
+    { value: 'bar', labelFr: 'Bar rayé', labelEn: 'Striped Bass' },
+    { value: 'maquereau', labelFr: 'Maquereau', labelEn: 'Mackerel' },
+    { value: 'plie', labelFr: 'Plie', labelEn: 'Plaice' },
+    { value: 'capelan', labelFr: 'Capelan', labelEn: 'Capelin' }
 ];
 
-function MapApp({ user, profile, guide }) {
+function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     const navigate = useNavigate();
     const location = useLocation();
     const isSocialRoute = location.pathname === '/social';
+    const isEnglish = language === 'en';
+    const FISH_TYPES = FISH_TYPES_BASE.map((fish) => ({
+        value: fish.value,
+        label: isEnglish ? fish.labelEn : fish.labelFr,
+    }));
 
     // NEW FLOW: Step 1 (preferences) -> Step 2 (guide+chalet selection) -> Step 3 (dates) -> Step 4 (confirmation)
     
@@ -1208,142 +1213,151 @@ function MapApp({ user, profile, guide }) {
     
     return (
         <div>
-            {isSocialRoute ? (
-                <SocialFeedPage
-                    user={user}
-                    guide={guide}
-                    onOpenGuideProfile={handleOpenGuideProfileFromSocial}
-                    onBack={() => navigate({ pathname: '/map', search: location.search })}
+            <Suspense fallback={null}>
+                {isSocialRoute ? (
+                    <SocialFeedPage
+                        user={user}
+                        guide={guide}
+                        language={language}
+                        setLanguage={setLanguage}
+                        onOpenGuideProfile={handleOpenGuideProfileFromSocial}
+                        onBack={() => navigate({ pathname: '/map', search: location.search })}
+                    />
+                ) : (
+                    <GaspesieMap 
+                        onClick={onClick}
+                        radius={radius}
+                        login={login}
+                        isTripOpen={startBookingFlow}
+                        isGuideFlowOpen={startGuideFlow}
+                        isChaletFlowOpen={startChaletFlow}
+                        isAccountSettingsOpen={() => setIsAccountSettingsOpen(true)}
+                        isSocialFeedOpen={() => navigate({ pathname: '/social', search: location.search })}
+                        user={user}
+                        profile={profile}
+                        guide={guide}
+                        language={language}
+                        setLanguage={setLanguage}
+                        isRejoindreOpen={setIsRejoindreOpen}
+                        isEtablissementOpen={setIsEtablissementOpen}
+                        onOpenHelp={openOnboarding}
+                        // Pass booking flow state to control the sidebar
+                        browseMode={browseMode}
+                        bookingStep={bookingStep}
+                        setBookingStep={setBookingStep}
+                        startDate={startDate}
+                        setStartDate={setStartDate}
+                        endDate={endDate}
+                        setEndDate={setEndDate}
+                        numberOfPeople={numberOfPeople}
+                        setNumberOfPeople={setNumberOfPeople}
+                        setRadius={setRadius}
+                        selectedChalet={selectedChalet}
+                        availableGuides={availableGuides}
+                        loadingGuides={loadingGuides}
+                        selectedGuide={selectedGuide}
+                        selectedGuideEvent={selectedGuideEvent}
+                        handleSelectGuideEvent={handleSelectGuideEvent}
+                        handleSelectGuide={handleSelectGuide}
+                        handleBookGuide={handleBookGuide}
+                        resetBookingFlow={resetBookingFlow}
+                        canProceedStep1={canProceedStep1}
+                        canProceedStep2={canProceedStep2}
+                        canProceedStep3={canProceedStep3}
+                        // Chalet search props for Step 2
+                        chalets={chalets}
+                        loadingChalets={loadingChalets}
+                        chaletError={chaletError}
+                        expandedEstablishments={expandedEstablishments}
+                        toggleEstablishment={toggleEstablishment}
+                        handleVoirPlus={handleVoirPlus}
+                        handleSelectedChalet={handleSelectedChalet}
+                        selectedPoint={selectedPoint}
+                        // NEW: Step 1 preferences props
+                        fishType={fishType}
+                        setFishType={setFishType}
+                        needsChalet={needsChalet}
+                        setNeedsChalet={setNeedsChalet}
+                        fishingZones={fishingZones}
+                        loadingZones={loadingZones}
+                        FISH_TYPES={FISH_TYPES}
+                        proceedToStep3={proceedToStep3}
+                        // NEW: Step 3 date conflict props
+                        dateConflicts={dateConflicts}
+                        checkingAvailability={checkingAvailability}
+                        // NEW: Booking creation state
+                        isCreatingBooking={isCreatingBooking}
+                        bookingError={bookingError}
+                        // NEW: Guide availability time slots
+                        guideAvailabilityEvents={guideAvailabilityEvents}
+                        loadingGuideAvailability={loadingGuideAvailability}
+                        selectedTimeSlots={selectedTimeSlots}
+                        handleSelectTimeSlot={handleSelectTimeSlot}
+                    />
+                )}
+            </Suspense>
+            <Suspense fallback={null}>
+                <ChaletDetailModal
+                    isOpen={chaletDetailModalOpen}
+                    onClose={() => setChaletDetailModalOpen(false)}
+                    chalet={chaletForDetail}
                 />
-            ) : (
-                <GaspesieMap 
-                    onClick={onClick}
-                    radius={radius}
-                    login={login}
-                    isTripOpen={startBookingFlow}
-                    isGuideFlowOpen={startGuideFlow}
-                    isChaletFlowOpen={startChaletFlow}
-                    isAccountSettingsOpen={() => setIsAccountSettingsOpen(true)}
-                    isSocialFeedOpen={() => navigate({ pathname: '/social', search: location.search })}
+                <LoginModal 
+                    isLoginOpen={isLoginOpen}
+                    onLoginClose={() => setIsLoginOpen(false)}
+                />
+                
+                <GuideClientModal
+                    isOpen={isGuideClientModalOpen}
+                    onClose={() => {
+                        setIsGuideClientModalOpen(false);
+                        if (settingsWasOpenBeforeClients) {
+                            setSettingsWasOpenBeforeClients(false);
+                            setIsAccountSettingsOpen(true);
+                        }
+                    }}
+                    guide={guide}
+                    profile={profile}
+                />
+
+                <JoinUs
+                    isRejoindreOpen={isRejoindreOpen}
+                    onClose={() => setIsRejoindreOpen(false)}
+                />
+
+                <EtablissementModal
+                    isEtablissementOpen={isEtablissementOpen}
+                    onClose={() => setIsEtablissementOpen(false)}
+                />
+
+                <AccountSettingsModal
+                    isOpen={isAccountSettingsOpen}
+                    onClose={() => setIsAccountSettingsOpen(false)}
                     user={user}
                     profile={profile}
                     guide={guide}
-                    isRejoindreOpen={setIsRejoindreOpen}
-                    isEtablissementOpen={setIsEtablissementOpen}
-                    // Pass booking flow state to control the sidebar
-                    browseMode={browseMode}
-                    bookingStep={bookingStep}
-                    setBookingStep={setBookingStep}
-                    startDate={startDate}
-                    setStartDate={setStartDate}
-                    endDate={endDate}
-                    setEndDate={setEndDate}
-                    numberOfPeople={numberOfPeople}
-                    setNumberOfPeople={setNumberOfPeople}
-                    setRadius={setRadius}
-                    selectedChalet={selectedChalet}
-                    availableGuides={availableGuides}
-                    loadingGuides={loadingGuides}
-                    selectedGuide={selectedGuide}
-                    selectedGuideEvent={selectedGuideEvent}
-                    handleSelectGuideEvent={handleSelectGuideEvent}
-                    handleSelectGuide={handleSelectGuide}
-                    handleBookGuide={handleBookGuide}
-                    resetBookingFlow={resetBookingFlow}
-                    canProceedStep1={canProceedStep1}
-                    canProceedStep2={canProceedStep2}
-                    canProceedStep3={canProceedStep3}
-                    // Chalet search props for Step 2
-                    chalets={chalets}
-                    loadingChalets={loadingChalets}
-                    chaletError={chaletError}
-                    expandedEstablishments={expandedEstablishments}
-                    toggleEstablishment={toggleEstablishment}
-                    handleVoirPlus={handleVoirPlus}
-                    handleSelectedChalet={handleSelectedChalet}
-                    selectedPoint={selectedPoint}
-                    // NEW: Step 1 preferences props
-                    fishType={fishType}
-                    setFishType={setFishType}
-                    needsChalet={needsChalet}
-                    setNeedsChalet={setNeedsChalet}
-                    fishingZones={fishingZones}
-                    loadingZones={loadingZones}
-                    FISH_TYPES={FISH_TYPES}
-                    proceedToStep3={proceedToStep3}
-                    // NEW: Step 3 date conflict props
-                    dateConflicts={dateConflicts}
-                    checkingAvailability={checkingAvailability}
-                    // NEW: Booking creation state
-                    isCreatingBooking={isCreatingBooking}
-                    bookingError={bookingError}
-                    // NEW: Guide availability time slots
-                    guideAvailabilityEvents={guideAvailabilityEvents}
-                    loadingGuideAvailability={loadingGuideAvailability}
-                    selectedTimeSlots={selectedTimeSlots}
-                    handleSelectTimeSlot={handleSelectTimeSlot}
+                    onOpenClients={() => {
+                        setSettingsWasOpenBeforeClients(true);
+                        setIsAccountSettingsOpen(false);
+                        setIsGuideClientModalOpen(true);
+                    }}
+                    onOpenHelp={() => openOnboarding(true)}
                 />
-            )}
-            <ChaletDetailModal
-                isOpen={chaletDetailModalOpen}
-                onClose={() => setChaletDetailModalOpen(false)}
-                chalet={chaletForDetail}
-            />
-            <LoginModal 
-                isLoginOpen={isLoginOpen}
-                onLoginClose={() => setIsLoginOpen(false)}
-            />
-            
-            <GuideClientModal
-                isOpen={isGuideClientModalOpen}
-                onClose={() => {
-                    setIsGuideClientModalOpen(false);
-                    if (settingsWasOpenBeforeClients) {
-                        setSettingsWasOpenBeforeClients(false);
-                        setIsAccountSettingsOpen(true);
-                    }
-                }}
-                guide={guide}
-                profile={profile}
-            />
 
-            <JoinUs
-                isRejoindreOpen={isRejoindreOpen}
-                onClose={() => setIsRejoindreOpen(false)}
-            />
+                <GuideBookingModal
+                    guide={guideForBooking}
+                    isOpen={isGuideBookingModalOpen}
+                    onClose={() => setIsGuideBookingModalOpen(false)}
+                    onBookingCreated={handleGuideBookingCreated}
+                />
 
-            <EtablissementModal
-                isEtablissementOpen={isEtablissementOpen}
-                onClose={() => setIsEtablissementOpen(false)}
-            />
-
-            <AccountSettingsModal
-                isOpen={isAccountSettingsOpen}
-                onClose={() => setIsAccountSettingsOpen(false)}
-                user={user}
-                profile={profile}
-                guide={guide}
-                onOpenClients={() => {
-                    setSettingsWasOpenBeforeClients(true);
-                    setIsAccountSettingsOpen(false);
-                    setIsGuideClientModalOpen(true);
-                }}
-                onOpenHelp={() => openOnboarding(true)}
-            />
-
-            <GuideBookingModal
-                guide={guideForBooking}
-                isOpen={isGuideBookingModalOpen}
-                onClose={() => setIsGuideBookingModalOpen(false)}
-                onBookingCreated={handleGuideBookingCreated}
-            />
-
-            <GuideProfilePreviewModal
-                guide={guideForBooking}
-                isOpen={isGuideProfilePreviewOpen}
-                onClose={() => setIsGuideProfilePreviewOpen(false)}
-                onReserve={handleReserveFromGuideProfilePreview}
-            />
+                <GuideProfilePreviewModal
+                    guide={guideForBooking}
+                    isOpen={isGuideProfilePreviewOpen}
+                    onClose={() => setIsGuideProfilePreviewOpen(false)}
+                    onReserve={handleReserveFromGuideProfilePreview}
+                />
+            </Suspense>
 
             {/* Guide Onboarding */}
             <HighlightOverlay 
@@ -1371,45 +1385,49 @@ function MapApp({ user, profile, guide }) {
 
             {/* Stripe Payment Checkout for main booking flow */}
             {showPaymentCheckout && paymentCheckoutData && (
-                <CheckoutModal
-                    isOpen={showPaymentCheckout}
-                    onClose={handleMainFlowPaymentClose}
-                    bookingData={paymentCheckoutData}
-                    bookingType={paymentCheckoutType}
-                    title={paymentCheckoutType === 'guide' ? selectedGuide?.name : selectedChalet?.name}
-                    onSuccess={handleMainFlowPaymentSuccess}
-                />
+                <Suspense fallback={null}>
+                    <CheckoutModal
+                        isOpen={showPaymentCheckout}
+                        onClose={handleMainFlowPaymentClose}
+                        bookingData={paymentCheckoutData}
+                        bookingType={paymentCheckoutType}
+                        title={paymentCheckoutType === 'guide' ? selectedGuide?.name : selectedChalet?.name}
+                        onSuccess={handleMainFlowPaymentSuccess}
+                    />
+                </Suspense>
             )}
 
             {/* Reservation Cart — shows pending unpaid bookings */}
             {user && (
-                <ReservationCart
-                    userEmail={user.email}
-                    onResumePayment={async (booking) => {
-                        try {
-                            // Get client_secret for existing booking via dedicated endpoint
-                            const result = await resumeBookingPayment(booking.id);
-                            // Open CheckoutModal with pre-fetched result
-                            setPaymentCheckoutData({
-                                guideId: booking.guide_id,
-                                startTime: booking.start_time,
-                                endTime: booking.end_time,
-                                customerName: booking.customer_name,
-                                customerEmail: booking.customer_email,
-                                tripType: booking.trip_type,
-                                numberOfPeople: booking.number_of_people,
-                                notes: booking.notes,
-                                // Attach the pre-fetched result so CheckoutModal skips booking creation
-                                _resumeResult: result,
-                            });
-                            setPaymentCheckoutType('guide');
-                            setShowPaymentCheckout(true);
-                        } catch (err) {
-                            console.error('Failed to resume payment:', err);
-                            alert('Erreur lors de la reprise du paiement: ' + err.message);
-                        }
-                    }}
-                />
+                <Suspense fallback={null}>
+                    <ReservationCart
+                        userEmail={user.email}
+                        onResumePayment={async (booking) => {
+                            try {
+                                // Get client_secret for existing booking via dedicated endpoint
+                                const result = await resumeBookingPayment(booking.id);
+                                // Open CheckoutModal with pre-fetched result
+                                setPaymentCheckoutData({
+                                    guideId: booking.guide_id,
+                                    startTime: booking.start_time,
+                                    endTime: booking.end_time,
+                                    customerName: booking.customer_name,
+                                    customerEmail: booking.customer_email,
+                                    tripType: booking.trip_type,
+                                    numberOfPeople: booking.number_of_people,
+                                    notes: booking.notes,
+                                    // Attach the pre-fetched result so CheckoutModal skips booking creation
+                                    _resumeResult: result,
+                                });
+                                setPaymentCheckoutType('guide');
+                                setShowPaymentCheckout(true);
+                            } catch (err) {
+                                console.error('Failed to resume payment:', err);
+                                alert('Erreur lors de la reprise du paiement: ' + err.message);
+                            }
+                        }}
+                    />
+                </Suspense>
             )}
             
         </div>

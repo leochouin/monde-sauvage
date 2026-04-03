@@ -1,9 +1,52 @@
-import { useState, useEffect } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
 import { Routes, Route, BrowserRouter, Navigate } from 'react-router-dom'
 import supabase from './utils/supabase.js'
 import { getAvatarRawValueFromSources } from './utils/avatar.js'
+import { installRuntimeTranslation } from './utils/runtimeTranslations.js'
+import IntroSplash from './components/IntroSplash.jsx'
 import './App.css'
-import MapApp from './components/MapApp.jsx'
+
+const MapApp = lazy(() => import('./components/MapApp.jsx'))
+
+const INTRO_SPLASH_COOLDOWN_MS = 12 * 60 * 1000;
+const INTRO_SPLASH_STORAGE_KEY = 'ms_intro_splash_until';
+const LANGUAGE_STORAGE_KEY = 'ms_language';
+
+const shouldSkipIntroSplash = () => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(INTRO_SPLASH_STORAGE_KEY);
+    if (!storedValue) {
+      return false;
+    }
+
+    const skipUntil = Number.parseInt(storedValue, 10);
+    if (!Number.isFinite(skipUntil) || skipUntil <= Date.now()) {
+      window.localStorage.removeItem(INTRO_SPLASH_STORAGE_KEY);
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const markIntroSplashSeen = () => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const skipUntil = Date.now() + INTRO_SPLASH_COOLDOWN_MS;
+    window.localStorage.setItem(INTRO_SPLASH_STORAGE_KEY, String(skipUntil));
+  } catch {
+    // Ignore storage errors (private mode, disabled storage, etc.).
+  }
+};
 
 const AUTH_AVATAR_COLUMNS = [
   'avatar_url',
@@ -139,7 +182,18 @@ function App() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [guide, setGuide] = useState(null);
+  const [language, setLanguage] = useState(() => {
+    if (typeof window === 'undefined') return 'fr';
+    try {
+      const savedLanguage = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+      return savedLanguage === 'en' ? 'en' : 'fr';
+    } catch {
+      return 'fr';
+    }
+  });
   const [loading, setLoading] = useState(true);
+  const [introDone, setIntroDone] = useState(() => shouldSkipIntroSplash());
+  const [isRevealTransitioning, setIsRevealTransitioning] = useState(false);
 
   // Function to check if Google token is still valid
   const checkGoogleTokenValidity = async (guideId) => {
@@ -320,31 +374,94 @@ function App() {
     };
   }, []);
 
-  if (loading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh',
-        fontSize: '18px',
-        background: 'white',
-        color: '#333'
-      }}>
-        Loading...
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!introDone) return;
+
+    setIsRevealTransitioning(true);
+    const revealTimer = setTimeout(() => {
+      setIsRevealTransitioning(false);
+    }, 900);
+
+    return () => clearTimeout(revealTimer);
+  }, [introDone]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+      } catch {
+        // Ignore storage errors.
+      }
+    }
+
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = language;
+    }
+  }, [language]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return () => {};
+    }
+
+    return installRuntimeTranslation({
+      root: document.body,
+      language,
+    });
+  }, [language]);
+
+  const appUser = loading ? null : user;
+  const appProfile = loading ? null : profile;
+  const appGuide = loading ? null : guide;
+  const appShellClassName = [
+    'app-shell',
+    !introDone ? 'app-intro-prep' : '',
+    isRevealTransitioning ? 'app-intro-reveal' : '',
+  ].filter(Boolean).join(' ');
 
   return (
     <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Navigate to="/map" />} />
-          <Route path="/map" element={<MapApp user={user} profile={profile} guide={guide} />} />
-          <Route path="/social" element={<MapApp user={user} profile={profile} guide={guide} />} />
-        </Routes>
-      </BrowserRouter>
+      {!introDone && (
+        <IntroSplash
+          onComplete={() => {
+            markIntroSplashSeen();
+            setIntroDone(true);
+          }}
+        />
+      )}
+      <div className={appShellClassName}>
+        <BrowserRouter>
+          <Suspense fallback={null}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/map" />} />
+              <Route
+                path="/map"
+                element={(
+                  <MapApp
+                    user={appUser}
+                    profile={appProfile}
+                    guide={appGuide}
+                    language={language}
+                    setLanguage={setLanguage}
+                  />
+                )}
+              />
+              <Route
+                path="/social"
+                element={(
+                  <MapApp
+                    user={appUser}
+                    profile={appProfile}
+                    guide={appGuide}
+                    language={language}
+                    setLanguage={setLanguage}
+                  />
+                )}
+              />
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+      </div>
     </div>
   );
 }
