@@ -6,7 +6,8 @@ const DateRangePicker = ({
     blockedDates = [], 
     minDate = new Date(),
     initialCheckIn = null,
-    initialCheckOut = null 
+    initialCheckOut = null,
+    monthsToShow = 2
 }) => {
     const [currentMonth, setCurrentMonth] = useState(new Date());
     const [checkIn, setCheckIn] = useState(initialCheckIn);
@@ -222,8 +223,9 @@ const DateRangePicker = ({
                         }
 
                         const isPast = isDateInPast(date);
+                        const isBeforeMinDate = isDateBeforeMinDate(date);
                         const isBlocked = isDateBlocked(date);
-                        const isDisabled = isPast || isBlocked;
+                        const isDisabled = isPast || isBeforeMinDate || isBlocked;
                         const isCheckIn = isSameDay(date, checkIn);
                         const isCheckOut = isSameDay(date, checkOut);
                         const inRange = isInRange(date);
@@ -234,6 +236,7 @@ const DateRangePicker = ({
                         if (isDisabled) dayClasses += ' disabled';
                         if (isPast) dayClasses += ' past';
                         if (isBlocked) dayClasses += ' blocked';
+                        if (isBeforeMinDate) dayClasses += ' before-min-date';
                         if (isSelected) dayClasses += ' selected';
                         if (isCheckIn) dayClasses += ' check-in';
                         if (isCheckOut) dayClasses += ' check-out';
@@ -262,8 +265,10 @@ const DateRangePicker = ({
         );
     };
 
+    const normalizedMonthsToShow = monthsToShow === 1 ? 1 : 2;
+
     return (
-        <div className="date-range-picker">
+        <div className={`date-range-picker ${normalizedMonthsToShow === 1 ? 'single-month' : ''}`}>
             <div className="date-picker-controls">
                 <button
                     type="button"
@@ -282,9 +287,9 @@ const DateRangePicker = ({
                     ›
                 </button>
             </div>
-            <div className="date-picker-months">
+            <div className={`date-picker-months ${normalizedMonthsToShow === 1 ? 'single-month' : ''}`}>
                 {renderMonth(0)}
-                {renderMonth(1)}
+                {normalizedMonthsToShow === 2 && renderMonth(1)}
             </div>
         </div>
     );

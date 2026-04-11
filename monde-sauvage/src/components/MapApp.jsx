@@ -8,8 +8,19 @@ import { createBooking } from "../utils/bookingService.js";
 import { resumeBookingPayment } from "../utils/stripeService.js";
 import { getGuideByUserId } from "../utils/socialFeedService.js";
 import {
+    buildNearbyDateCandidates,
+    curateAlternativeDateOptions,
+    dateRangeKey,
+} from "../utils/altDatePlanner.js";
+import {
     resolveAvatarFromSources,
 } from "../utils/avatar.js";
+import {
+    formatRiverDisplayName,
+    getKnownRiverPathIds,
+    getRiverGuideByPathId,
+    RIVER_CENTERS_BY_PATH_ID,
+} from "../utils/riverGuideData.js";
 
 const GaspesieMap = lazy(() => import("./Map.jsx"));
 const SocialFeedPage = lazy(() => import("../pages/SocialFeedPage.jsx"));
@@ -41,6 +52,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     const location = useLocation();
     const isSocialRoute = location.pathname === '/social';
     const isEnglish = language === 'en';
+    const knownRivers = getKnownRiverPathIds();
+    const formatRiverName = useCallback((id) => formatRiverDisplayName(id, language), [language]);
+    const getRiverDetails = useCallback((id) => getRiverGuideByPathId(id), []);
     const FISH_TYPES = FISH_TYPES_BASE.map((fish) => ({
         value: fish.value,
         label: isEnglish ? fish.labelEn : fish.labelFr,
@@ -64,6 +78,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     const [fishingZones, setFishingZones] = useState([]);
     const [loadingZones, setLoadingZones] = useState(false);
     
+    // Step 1: Destination (river selection OR radius circle — both coexist)
+    const [selectedRiver, setSelectedRiver] = useState(null);
+
     // Step 2: Guide + Chalet selection
     const [radius, setRadius] = useState(20);
     const [selectedPoint, setSelectedPoint] = useState(null);
@@ -88,6 +105,10 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     // Step 3: Date selection (moved to after guide/chalet)
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
+    const [originalStartDate, setOriginalStartDate] = useState("");
+    const [originalEndDate, setOriginalEndDate] = useState("");
+    const [alternativeDateOptions, setAlternativeDateOptions] = useState([]);
+    const [loadingAlternativeDates, setLoadingAlternativeDates] = useState(false);
     const [selectedGuideEvent, setSelectedGuideEvent] = useState(null);
     const [dateConflicts, setDateConflicts] = useState(null);
     const [checkingAvailability, setCheckingAvailability] = useState(false);
@@ -185,9 +206,10 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         console.log(e);
     }
 
-    // Fetch guides filtered by fish type AND availability when entering step 2
+    // Fetch guides filtered by fish type AND availability when entering step 3
+    // (in the new flow, destination is step 1, dates are step 2, guide+chalet is step 3)
     useEffect(() => {
-        if (bookingStep !== 2 || !startDate || !endDate) return;
+        if (bookingStep !== 3 || !startDate || !endDate) return;
 
         const fetchGuides = async () => {
             setLoadingGuides(true);
@@ -275,6 +297,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
 
                 // Transform guides — use server-side availability determination as PRIMARY,
                 // with client-side subtraction as a SECONDARY safety net.
+                // NEW FLOW: We keep unavailable guides in the list (is_available:false) so
+                // step 3 can surface "Air Canada" style alternative dates when they ARE free.
+                // Only truly broken guides (API error, missing from response) are dropped.
                 const formattedGuides = (await Promise.all((guides || [])
                     .map(async (g) => {
                         const availability = availabilityMap.get(g.id);
@@ -291,18 +316,10 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                             return null;
                         }
 
-                        // ── PRIMARY CHECK: Use server-computed is_available ──
-                        // The server now does full keyword matching + booking subtraction
-                        // and returns is_available=false if all availability is consumed.
-                        if (availability.is_available === false) {
-                            console.log(`🔍 Guide ${g.name}: server says is_available=false (${availability.net_available_windows ?? 0} net windows) → hidden`);
-                            return null;
-                        }
-
                         const rawEvents = availability.events || [];
                         const bookedSlots = availability.booked_slots || [];
 
-                        // ── SECONDARY CHECK: Client-side subtraction as safety net ──
+                        // ── Client-side subtraction (safety net) ──
                         const bookedIntervals = bookedSlots.map(slot => {
                             const s = new Date(slot.start).getTime();
                             let e = new Date(slot.end).getTime();
@@ -328,14 +345,12 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                             totalNetWindows += remaining.length;
                         }
 
-                        const hasAvailability = totalNetWindows > 0;
-                        console.log(`🔍 Guide ${g.name}: server=${availability.is_available}, client=${hasAvailability} (${rawEvents.length} events, ${bookedSlots.length} bookings, ${totalNetWindows} net windows)`);
+                        // Final availability = server says yes AND client finds ≥1 net window
+                        const serverAvailable = availability.is_available !== false;
+                        const clientAvailable = totalNetWindows > 0;
+                        const isAvailable = serverAvailable && clientAvailable;
 
-                        // Guide must pass BOTH server and client checks
-                        if (!hasAvailability) {
-                            console.log(`🔍 Guide ${g.name}: client-side check says no availability → hidden`);
-                            return null;
-                        }
+                        console.log(`🔍 Guide ${g.name}: server=${availability.is_available}, client=${clientAvailable}, is_available=${isAvailable} (${rawEvents.length} events, ${bookedSlots.length} bookings, ${totalNetWindows} net windows)`);
 
                         const linkedUser = usersById.get(g.user_id);
                         const { avatarSrc } = await resolveAvatarFromSources([g, linkedUser], {
@@ -351,7 +366,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                             hourly_rate: g.hourly_rate,
                             stripe_charges_enabled: g.stripe_charges_enabled || false,
                             stripe_account_id: g.stripe_account_id || null,
-                            is_available: true,
+                            is_available: isAvailable,
                             events: rawEvents,
                             booked_slots: bookedSlots,
                             avatarSrc,
@@ -400,10 +415,129 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         return result.filter(r => r.end - r.start >= 15 * 60 * 1000);
     }, []);
 
-    // Fetch guide availability events when a guide is selected in Step 2
+    const evaluateGuideCountForRange = useCallback(async (rangeStart, rangeEnd) => {
+        try {
+            const startISO = `${rangeStart}T00:00:00Z`;
+            const endISO = `${rangeEnd}T23:59:59Z`;
+            const availabilityUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-availability-all?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`;
+            const res = await fetch(availabilityUrl, {
+                method: "GET",
+                headers: {
+                    "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                    "Content-Type": "application/json",
+                },
+            });
+
+            if (!res.ok) return 0;
+            const rows = await res.json();
+            if (!Array.isArray(rows)) return 0;
+
+            return rows.filter((guideRow) => {
+                if (guideRow?.is_available === false) return false;
+                if (!fishType) return true;
+                const guideFromCurrentList = availableGuides.find((g) => g.guide_id === guideRow.guide_id);
+                if (!guideFromCurrentList) return true;
+                return Array.isArray(guideFromCurrentList.fish_types)
+                    ? guideFromCurrentList.fish_types.includes(fishType)
+                    : false;
+            }).length;
+        } catch (error) {
+            console.warn("Failed to evaluate guide count for alt dates:", error);
+            return 0;
+        }
+    }, [fishType, availableGuides]);
+
+    const evaluateChaletCountForRange = useCallback(async (rangeStart, rangeEnd) => {
+        let anchor = null;
+        if (selectedPoint?.lngLat) {
+            anchor = { lng: selectedPoint.lngLat.lng, lat: selectedPoint.lngLat.lat };
+        } else if (selectedRiver && RIVER_CENTERS_BY_PATH_ID[selectedRiver]) {
+            anchor = RIVER_CENTERS_BY_PATH_ID[selectedRiver];
+        }
+
+        if (!anchor) return 0;
+
+        try {
+            const { data, error } = await supabase.rpc('get_chalets_nearby', {
+                lng: anchor.lng,
+                lat: anchor.lat,
+                radius_m: (radius || 20) * 1000,
+                min_capacity: numberOfPeople || null,
+                check_start_date: `${rangeStart}T00:00:00Z`,
+                check_end_date: `${rangeEnd}T23:59:59Z`,
+            });
+
+            if (error) throw error;
+            return Array.isArray(data) ? data.length : 0;
+        } catch (error) {
+            console.warn("Failed to evaluate chalet count for alt dates:", error);
+            return 0;
+        }
+    }, [selectedPoint, selectedRiver, radius, numberOfPeople]);
+
+    useEffect(() => {
+        const canComputeAlternatives = (
+            bookingStep === 3
+            && originalStartDate
+            && originalEndDate
+            && new Date(originalEndDate) > new Date(originalStartDate)
+        );
+
+        if (!canComputeAlternatives) {
+            setAlternativeDateOptions([]);
+            setLoadingAlternativeDates(false);
+            return;
+        }
+
+        let cancelled = false;
+
+        const computeAlternativeDates = async () => {
+            setLoadingAlternativeDates(true);
+            try {
+                const candidates = buildNearbyDateCandidates(originalStartDate, originalEndDate, 7);
+                const evaluated = await Promise.all(candidates.map(async (candidate) => {
+                    const [guideCount, chaletCount] = await Promise.all([
+                        evaluateGuideCountForRange(candidate.startDate, candidate.endDate),
+                        evaluateChaletCountForRange(candidate.startDate, candidate.endDate),
+                    ]);
+
+                    return {
+                        ...candidate,
+                        guideCount,
+                        chaletCount,
+                        key: dateRangeKey(candidate.startDate, candidate.endDate),
+                    };
+                }));
+
+                const curated = curateAlternativeDateOptions(evaluated, 7);
+                if (!cancelled) {
+                    setAlternativeDateOptions(curated);
+                }
+            } catch (error) {
+                console.error("❌ Error computing alternative dates:", error);
+                if (!cancelled) setAlternativeDateOptions([]);
+            } finally {
+                if (!cancelled) setLoadingAlternativeDates(false);
+            }
+        };
+
+        computeAlternativeDates();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        bookingStep,
+        originalStartDate,
+        originalEndDate,
+        evaluateGuideCountForRange,
+        evaluateChaletCountForRange,
+    ]);
+
+    // Fetch guide availability events when a guide is selected in Step 3
     // Also refresh every 30 seconds to detect bookings made by other users.
     useEffect(() => {
-        if (bookingStep !== 2 || !selectedGuide || !startDate || !endDate) {
+        if (bookingStep !== 3 || !selectedGuide || !startDate || !endDate) {
             setGuideAvailabilityEvents([]);
             return;
         }
@@ -600,36 +734,50 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         }
     }, [guideAvailabilityEvents]);
 
-    // Fetch ALL chalets within radius (no filtering by capacity/dates)
-    // The filtering criteria from step 1 will be used to highlight matching chalets
+    // Fetch available chalets for the currently active date range.
+    // New flow: triggered at step 3. Location anchor is either the radius point
+    // (selectedPoint) OR a selected river (selectedRiver → river center lookup).
+    // Unnamed rivers (river-N) have no center coord → no chalets loaded.
     useEffect(() => {
-        if (bookingStep !== 2 || !selectedPoint?.lngLat || !needsChalet) return;
+        if (bookingStep !== 3 || !needsChalet || !startDate || !endDate) return;
+
+        // Resolve a lng/lat anchor: prefer the manually-clicked point, fall
+        // back to the selected river's approximate center coordinate.
+        let anchor = null;
+        if (selectedPoint?.lngLat) {
+            anchor = { lng: selectedPoint.lngLat.lng, lat: selectedPoint.lngLat.lat };
+        } else if (selectedRiver && RIVER_CENTERS_BY_PATH_ID[selectedRiver]) {
+            anchor = RIVER_CENTERS_BY_PATH_ID[selectedRiver];
+        }
+
+        if (!anchor) return;
 
         const fetchChalets = async () => {
             console.log("Querying Supabase for ALL chalets within radius:", {
-                lng: selectedPoint.lngLat?.lng,
-                lat: selectedPoint.lngLat?.lat,
-                radius_km: radius || 20
+                lng: anchor.lng,
+                lat: anchor.lat,
+                radius_km: radius || 20,
+                source: selectedPoint?.lngLat ? 'point' : `river:${selectedRiver}`,
             });
-            
+
             try {
                 setLoadingChalets(true);
                 setChaletError(null);
 
                 // Fetch ALL chalets within radius - no capacity or date filtering
                 const { data, error } = await supabase.rpc('get_chalets_nearby', {
-                    lng: selectedPoint.lngLat.lng,
-                    lat: selectedPoint.lngLat.lat,
+                    lng: anchor.lng,
+                    lat: anchor.lat,
                     radius_m: (radius || 20) * 1000,
-                    min_capacity: null,
-                    check_start_date: null,
-                    check_end_date: null
+                    min_capacity: numberOfPeople || null,
+                    check_start_date: `${startDate}T00:00:00Z`,
+                    check_end_date: `${endDate}T23:59:59Z`
                 });
 
                 if (error) throw error;
 
                 setChalets(Array.isArray(data) ? data : []);
-                
+
                 // Automatically expand all establishments
                 if (data && data.length > 0) {
                     const uniqueEstablishmentIds = new Set(
@@ -646,7 +794,25 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         };
 
         fetchChalets();
-    }, [bookingStep, selectedPoint, radius, needsChalet]);
+    }, [bookingStep, selectedPoint, selectedRiver, radius, needsChalet, numberOfPeople, startDate, endDate]);
+
+    const goToResultsStep = useCallback(() => {
+        if (!startDate || !endDate || new Date(endDate) <= new Date(startDate)) return;
+        setOriginalStartDate(startDate);
+        setOriginalEndDate(endDate);
+        setSelectedGuide(null);
+        setSelectedTimeSlots([]);
+        setBookingStep(3);
+    }, [startDate, endDate]);
+
+    const applyAlternativeDateOption = useCallback((option) => {
+        if (!option?.startDate || !option?.endDate) return;
+        setStartDate(option.startDate);
+        setEndDate(option.endDate);
+        setSelectedGuide(null);
+        setSelectedTimeSlots([]);
+        setBookingError(null);
+    }, []);
 
     // Check availability when dates change in step 3
     const checkAvailability = useCallback(async () => {
@@ -714,7 +880,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     }, [startDate, endDate, selectedGuide, selectedChalet, selectedTimeSlots]);
 
     useEffect(() => {
-        if (bookingStep === 3) {
+        // Re-check availability when entering the final confirmation step (now step 4).
+        if (bookingStep === 4) {
             checkAvailability();
         }
     }, [bookingStep, startDate, endDate, checkAvailability]);
@@ -744,6 +911,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     function startBookingFlow() {
         // Clear any previous state when starting a new booking
         setBrowseMode('trip');
+        setSelectedRiver(null);
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
@@ -757,6 +925,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setFishingZones([]);
         setStartDate('');
         setEndDate('');
+        setOriginalStartDate('');
+        setOriginalEndDate('');
+        setAlternativeDateOptions([]);
         setDateConflicts(null);
         setBookingStep(1);
     }
@@ -764,6 +935,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     function startGuideFlow() {
         // Guide-only browsing flow (uses same booking steps, chalet disabled)
         setBrowseMode('guide');
+        setSelectedRiver(null);
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
@@ -777,6 +949,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setFishingZones([]);
         setStartDate('');
         setEndDate('');
+        setOriginalStartDate('');
+        setOriginalEndDate('');
+        setAlternativeDateOptions([]);
         setDateConflicts(null);
         setBookingStep(1);
     }
@@ -784,6 +959,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     function startChaletFlow() {
         // Chalet-only browsing flow (guide is optional, chalet is required)
         setBrowseMode('chalet');
+        setSelectedRiver(null);
         setSelectedPoint(null);
         setSelectedChalet(null);
         setSelectedGuide(null);
@@ -797,6 +973,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setFishingZones([]);
         setStartDate('');
         setEndDate('');
+        setOriginalStartDate('');
+        setOriginalEndDate('');
+        setAlternativeDateOptions([]);
         setDateConflicts(null);
         setBookingStep(1);
     }
@@ -807,6 +986,17 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
             setSelectedChalet(null);
         } else {
             setSelectedChalet(chalet);
+        }
+    }
+
+    // River selection callback — called from Map.jsx click handler while
+    // in the booking destination step. Selecting a river anchors the search
+    // area to that river and clears any manually placed radius point.
+    function handleSelectRiver(riverId) {
+        setSelectedRiver(riverId);
+        if (riverId) {
+            // River replaces manual point; clear it so they don't compete.
+            setSelectedPoint(null);
         }
     }
 
@@ -864,8 +1054,10 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         handleSelectGuide(guide);
     }
 
-    function proceedToStep3() {
-        // Validate step 2 selection based on browseMode
+    // Step 3 → 4: validate guide/chalet selection and move to confirmation.
+    // (Kept the name `proceedToStep4` for clarity in the new flow — step 3
+    // is now guide+chalet selection, step 4 is confirmation.)
+    function proceedToStep4() {
         if (browseMode === 'chalet') {
             if (!selectedChalet) {
                 alert('Veuillez sélectionner un chalet.');
@@ -887,7 +1079,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 return;
             }
         }
-        setBookingStep(3);
+        setBookingStep(4);
     }
 
     async function handleBookGuide() {
@@ -1165,10 +1357,13 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setBrowseMode('trip');
         setStartDate("");
         setEndDate("");
+        setOriginalStartDate("");
+        setOriginalEndDate("");
         setNumberOfPeople(2);
         setFishType('');
         setNeedsChalet(true);
         setRadius(20);
+        setSelectedRiver(null);
         setSelectedPoint(null);
         setSelectedChalet(null);
         setChalets([]);
@@ -1181,6 +1376,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setGuideAvailabilityEvents([]);
         setSelectedTimeSlots([]);
         setBookingError(null);
+        setAlternativeDateOptions([]);
+        setLoadingAlternativeDates(false);
         setIsCreatingBooking(false);
         // Reset payment state
         setShowPaymentCheckout(false);
@@ -1189,27 +1386,23 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setPendingChaletBooking(null);
     }
 
-    // Validation for step 1: preferences + dates
-    // In chalet-only mode, fish type is optional
-    const canProceedStep1 = numberOfPeople > 0 && 
-        (browseMode === 'chalet' || fishType !== '') && 
-        startDate && 
-        endDate && 
-        new Date(endDate) > new Date(startDate);
+    // NEW FLOW:
+    // Step 1 = destination (river OR radius point) — ALWAYS optional, user can browse all
+    const canProceedStep1 = true;
 
-    // Validation for step 2: guide/chalet selection
-    // Adapts based on browseMode
-    const canProceedStep2 = browseMode === 'chalet'
+    // Step 2 = dates — need a valid range
+    const canProceedStep2 = Boolean(
+        startDate && endDate && new Date(endDate) > new Date(startDate)
+    );
+
+    // Step 3 = guide + chalet selection — adapts based on browseMode
+    const canProceedStep3 = browseMode === 'chalet'
         ? (selectedChalet != null) // Chalet mode: just need a chalet
         : browseMode === 'guide'
         ? (selectedGuide && selectedTimeSlots.length > 0) // Guide mode: need guide + slots
-        : (selectedGuide && selectedTimeSlots.length > 0) || 
+        : (selectedGuide && selectedTimeSlots.length > 0) ||
           (!selectedGuide && needsChalet && selectedChalet) ||
           (selectedGuide && selectedTimeSlots.length > 0 && needsChalet && selectedChalet);
-
-    // Validation for step 3: availability confirmed (dates already validated in step 1)
-    const canProceedStep3 = !dateConflicts?.guide && 
-        !dateConflicts?.chalet;
     
     return (
         <div>
@@ -1249,6 +1442,12 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         setStartDate={setStartDate}
                         endDate={endDate}
                         setEndDate={setEndDate}
+                        originalStartDate={originalStartDate}
+                        originalEndDate={originalEndDate}
+                        alternativeDateOptions={alternativeDateOptions}
+                        loadingAlternativeDates={loadingAlternativeDates}
+                        applyAlternativeDateOption={applyAlternativeDateOption}
+                        goToResultsStep={goToResultsStep}
                         numberOfPeople={numberOfPeople}
                         setNumberOfPeople={setNumberOfPeople}
                         setRadius={setRadius}
@@ -1273,7 +1472,13 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         handleVoirPlus={handleVoirPlus}
                         handleSelectedChalet={handleSelectedChalet}
                         selectedPoint={selectedPoint}
-                        // NEW: Step 1 preferences props
+                        // NEW FLOW: Step 1 destination props (river + radius coexist)
+                        selectedRiver={selectedRiver}
+                        onSelectRiver={handleSelectRiver}
+                        formatRiverName={formatRiverName}
+                        getRiverDetails={getRiverDetails}
+                        knownRivers={knownRivers}
+                        // Step 3 preferences / filters (fish type, people, chalet)
                         fishType={fishType}
                         setFishType={setFishType}
                         needsChalet={needsChalet}
@@ -1281,7 +1486,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         fishingZones={fishingZones}
                         loadingZones={loadingZones}
                         FISH_TYPES={FISH_TYPES}
-                        proceedToStep3={proceedToStep3}
+                        // Step 3 → 4 transition (guide/chalet selection validator)
+                        proceedToStep4={proceedToStep4}
                         // NEW: Step 3 date conflict props
                         dateConflicts={dateConflicts}
                         checkingAvailability={checkingAvailability}
@@ -1305,6 +1511,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 <LoginModal 
                     isLoginOpen={isLoginOpen}
                     onLoginClose={() => setIsLoginOpen(false)}
+                    language={language}
                 />
                 
                 <GuideClientModal

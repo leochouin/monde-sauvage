@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import AvatarImage from './AvatarImage.jsx';
+import DateRangePicker from './DateRangePicker.jsx';
 import supabase from '../utils/supabase.js';
 import useAvatarSource from '../utils/useAvatarSource.js';
+import { buildRiverGeoJSON } from '../utils/riverPaths.js';
 
 let mapboxAssetsPromise = null;
 
@@ -72,11 +74,10 @@ const loadMapboxAssets = () => {
 };
 
 const GaspesieMap = ({ 
-  onClick, 
-  login, 
-  user, 
-  profile, 
-  guide: _guide,
+  onClick,
+  login,
+  user,
+  profile,
   language = 'fr',
   setLanguage,
   isTripOpen,
@@ -95,6 +96,12 @@ const GaspesieMap = ({
   setStartDate,
   endDate,
   setEndDate,
+  originalStartDate,
+  originalEndDate,
+  alternativeDateOptions,
+  loadingAlternativeDates,
+  applyAlternativeDateOption,
+  goToResultsStep,
   numberOfPeople,
   setNumberOfPeople,
   setRadius,
@@ -102,12 +109,9 @@ const GaspesieMap = ({
   availableGuides,
   loadingGuides,
   selectedGuide,
-  selectedGuideEvent: _selectedGuideEvent,
-  handleSelectGuideEvent: _handleSelectGuideEvent,
   handleSelectGuide,
   handleBookGuide,
   resetBookingFlow,
-  canProceedStep1,
   canProceedStep2,
   canProceedStep3,
   // Chalet search props for Step 2
@@ -116,10 +120,15 @@ const GaspesieMap = ({
   chaletError,
   expandedEstablishments,
   toggleEstablishment,
-  handleVoirPlus: _handleVoirPlus,
   handleSelectedChalet,
   selectedPoint,
-  // NEW: Step 1 preferences props
+  // NEW FLOW: Step 1 destination — river + radius coexist
+  selectedRiver: selectedRiverProp,
+  onSelectRiver,
+  formatRiverName,
+  getRiverDetails,
+  knownRivers = [],
+  // Step 3 preferences / filters
   fishType,
   setFishType,
   needsChalet,
@@ -127,10 +136,6 @@ const GaspesieMap = ({
   fishingZones,
   loadingZones,
   FISH_TYPES,
-  proceedToStep3,
-  // NEW: Step 3 date conflict props
-  dateConflicts,
-  checkingAvailability,
   // NEW: Booking creation state
   isCreatingBooking,
   bookingError,
@@ -147,12 +152,67 @@ const GaspesieMap = ({
   const mapStyleLoaded = useRef(false);
 
   const [circleCenter, setCircleCenter] = useState(null);
+  // Rivers within the current circle radius — shown in sidebar + drives multi-glow.
+  const [nearbyRiverIds, setNearbyRiverIds] = useState([]);
   const [mapInitError, setMapInitError] = useState('');
   const [mapInitAttempt, setMapInitAttempt] = useState(0);
+
+  // River overlay (native Mapbox layers).
+  // Local state mirrors the map highlight; when in the booking flow we also
+  // sync to the parent via `onSelectRiver` so MapApp can use it for chalet search.
+  const [selectedRiver, setSelectedRiver] = useState(null);
+
+  // Ref mirror of bookingStep — click handlers registered inside map.on('load')
+  // close over the initial value, so we read through a ref instead of the prop.
+  const bookingStepRef = useRef(bookingStep);
+  useEffect(() => { bookingStepRef.current = bookingStep; }, [bookingStep]);
+
+  // Ref for the river selection callback, same rationale as bookingStepRef.
+  const onSelectRiverRef = useRef(onSelectRiver);
+  useEffect(() => { onSelectRiverRef.current = onSelectRiver; }, [onSelectRiver]);
+
+  // Sync parent-provided selectedRiver → local state (e.g. when reset clears it,
+  // or when the dropdown selects a river). Also re-applies the map highlight
+  // visually so dropdown selection feels identical to clicking on the map.
+  useEffect(() => {
+    if (selectedRiverProp !== selectedRiver) {
+      setSelectedRiver(selectedRiverProp || null);
+      const map = mapRef.current;
+      if (map) {
+        map._riverSelected = selectedRiverProp || null;
+        if (typeof map._setRiverGlow === 'function') {
+          map._setRiverGlow(selectedRiverProp || null);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRiverProp]);
+
+  // When the parent nulls selectedPoint (e.g. river is selected → handleSelectRiver
+  // calls setSelectedPoint(null)), remove the circle layers from the map immediately
+  // so the circle disappears in sync with the river highlight appearing.
+  useEffect(() => {
+    if (selectedPoint) return; // point still active — nothing to do
+    setCircleCenter(null);
+    setNearbyRiverIds([]);
+    const map = mapRef.current;
+    if (!map) return;
+    map._circleMode = false;
+    try {
+      if (map.getLayer('circle-outline')) map.removeLayer('circle-outline');
+      if (map.getLayer('circle')) map.removeLayer('circle');
+      if (map.getSource('circle-source')) map.removeSource('circle-source');
+    } catch { /* layers already gone */ }
+    // Clear the multi-river glow (single-river or nothing takes over)
+    if (typeof map._setRiversGlow === 'function') map._setRiversGlow([]);
+  }, [selectedPoint]);
 
   // Detect if mobile for responsive button sizing
   const [isMobile, setIsMobile] = useState(typeof globalThis !== 'undefined' && globalThis.innerWidth < 768);
   const [mobileSheetExpanded, setMobileSheetExpanded] = useState(false);
+  const [expandedGuideId, setExpandedGuideId] = useState(null);
+  const [showStep3FlexibleDates, setShowStep3FlexibleDates] = useState(false);
+  const [showStep3Filters, setShowStep3Filters] = useState(false);
   const sheetTouchStartY = useRef(0);
 
   // Auto-expand/collapse mobile sheet with booking flow
@@ -161,6 +221,15 @@ const GaspesieMap = ({
     if (bookingStep > 0) setMobileSheetExpanded(true);
     else setMobileSheetExpanded(false);
   }, [isMobile, bookingStep]);
+
+  // Keep accordion/filter presentation state scoped to the step-3 results surface.
+  useEffect(() => {
+    if (bookingStep !== 3) {
+      setExpandedGuideId(null);
+      setShowStep3FlexibleDates(false);
+      setShowStep3Filters(false);
+    }
+  }, [bookingStep]);
 
   // Touch handlers for mobile bottom sheet drag
   const handleSheetTouchStart = useCallback((e) => {
@@ -181,6 +250,28 @@ const GaspesieMap = ({
   const isEnglish = language === 'en';
   const uiLocale = isEnglish ? 'en-CA' : 'fr-CA';
   const t = useCallback((frText, enText) => (isEnglish ? enText : frText), [isEnglish]);
+
+  const parseIsoDateLocal = useCallback((isoDate) => {
+    if (!isoDate) return null;
+    const parts = isoDate.split('-').map((value) => parseInt(value, 10));
+    if (parts.length !== 3 || parts.some((value) => Number.isNaN(value))) return null;
+    const [year, month, day] = parts;
+    return new Date(year, month - 1, day);
+  }, []);
+
+  const toIsoDateLocal = useCallback((date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, []);
+
+  const formatLongDate = useCallback((isoDate) => {
+    const parsedDate = parseIsoDateLocal(isoDate);
+    if (!parsedDate) return '';
+    return parsedDate.toLocaleDateString(uiLocale, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
+  }, [parseIsoDateLocal, uiLocale]);
 
   useEffect(() => {
     if (typeof globalThis === 'undefined' || !globalThis.matchMedia) return;
@@ -390,29 +481,93 @@ const GaspesieMap = ({
         };
       }
 
-  // Second useEffect - Handle map clicks for chalet search in step 2
+  // Haversine distance between two lat/lng pairs (in km).
+  function haversineKm(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // Queries the 'rivers' GeoJSON source for all features whose coordinates
+  // contain at least one vertex within `radiusKm` of `lngLat`, applies the
+  // multi-river glow, sets map._circleMode so hover handlers leave it alone,
+  // and updates the nearbyRiverIds state for the sidebar display.
+  function highlightNearbyRivers(map, lngLat, radiusKm) {
+    if (!map || !lngLat) return;
+    try {
+      const features = map.querySourceFeatures('rivers');
+      const nearbyIds = new Set();
+      for (const f of features) {
+        if (!f.geometry || !f.properties?.id) continue;
+        const rings = f.geometry.type === 'LineString'
+          ? [f.geometry.coordinates]
+          : f.geometry.type === 'MultiLineString'
+          ? f.geometry.coordinates
+          : [];
+        for (const ring of rings) {
+          let found = false;
+          for (const [lng, lat] of ring) {
+            if (haversineKm(lngLat.lat, lngLat.lng, lat, lng) <= radiusKm) {
+              found = true;
+              break;
+            }
+          }
+          if (found) { nearbyIds.add(f.properties.id); break; }
+        }
+      }
+      const ids = [...nearbyIds];
+      map._circleMode = true;
+      if (typeof map._setRiversGlow === 'function') map._setRiversGlow(ids);
+      setNearbyRiverIds(ids);
+    } catch { /* map not yet ready */ }
+  }
+
+  // Map click handler for destination radius in NEW flow step 1.
+  // Skips the click if the user actually clicked a river path — that
+  // interaction is handled by the `rivers-hit` click listener instead.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const handleClick = (e) => {
-      // ✅ only runs if in step 2 (chalet selection)
-      if (bookingStep !== 2) return;
+      // ✅ only runs if in step 1 (destination selection)
+      if (bookingStep !== 1) return;
+
+      // If the click also hit a river feature, let the river handler take it
+      // and don't place a radius circle (river selection clears the circle).
+      const features = map.queryRenderedFeatures(e.point, { layers: ['rivers-hit'] });
+      if (features && features.length > 0) return;
 
       onClick(e);
-      console.log('Map clicked while in step 2');
       setCircleCenter(e);
       drawCircle(map, e.lngLat, radius);
+      highlightNearbyRivers(map, e.lngLat, radius);
+
+      // Placing a manual point clears any single-river selection.
+      if (mapRef.current?._riverSelected) {
+        mapRef.current._riverSelected = null;
+        setSelectedRiver(null);
+      }
+      if (onSelectRiverRef.current) {
+        onSelectRiverRef.current(null);
+      }
     };
 
-    if (bookingStep === 2) {
-      console.log('🟢 Attaching click listener for circle (step 2)');
+    if (bookingStep === 1) {
+      console.log('🟢 Attaching click listener for destination circle (step 1)');
       map.on('click', handleClick);
     } else {
+      // Leaving step 1 — remove circle layers (they persist visually
+      // through later steps otherwise).
       if (map.getLayer('circle-outline')) map.removeLayer('circle-outline');
       if (map.getLayer('circle')) map.removeLayer('circle');
       if (map.getSource('circle-source')) map.removeSource('circle-source');
-      setCircleCenter(null); // Reset circle center when leaving step 2
+      // NOTE: do NOT reset circleCenter here — we need to keep it around so
+      // the chalet fetch at step 3 still has the anchor. It's cleared by
+      // resetBookingFlow via the selectedPoint prop being nulled.
     }
 
     return () => {
@@ -421,13 +576,13 @@ const GaspesieMap = ({
     };
   }, [bookingStep, onClick, radius]);
 
-  // Third useEffect - Redraw circle when radius changes
+  // Redraw circle and re-highlight nearby rivers when radius changes (step 1 only).
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !circleCenter || bookingStep !== 2) return;
+    if (!map || !circleCenter || bookingStep !== 1) return;
 
-    console.log('🔄 Redrawing circle with new radius:', radius);
     drawCircle(map, circleCenter.lngLat, radius);
+    highlightNearbyRivers(map, circleCenter.lngLat, radius);
   }, [radius, circleCenter, bookingStep]);
 
   // Fourth useEffect - Display fishing zones on map when fishingZones changes
@@ -801,6 +956,166 @@ const GaspesieMap = ({
         map.getCanvas().style.cursor = '';
       });
 
+      // Add river paths as native Mapbox GeoJSON layers
+      map.addSource('rivers', {
+        type: 'geojson',
+        data: buildRiverGeoJSON(),
+      });
+
+      // Invisible wide hit area for hover/click
+      map.addLayer({
+        id: 'rivers-hit',
+        type: 'line',
+        source: 'rivers',
+        paint: {
+          'line-color': 'transparent',
+          'line-width': 14,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+      });
+
+      // Glow stack: outer aura → inner glow → core stroke
+      const HOVER_BLUE = '#ff0800';   // brighter blue for hover
+      const SELECT_BLUE = '#f34821';  // vivid blue for selected
+      const GLOW_OUTER  = '#f66764';  // bright outer aura
+
+      const emptyFilter = ['==', ['get', 'id'], ''];
+
+      // Layer 1 — wide soft outer aura (feathered edges via line-blur)
+      map.addLayer({
+        id: 'rivers-glow-outer',
+        type: 'line',
+        source: 'rivers',
+        paint: {
+          'line-color': GLOW_OUTER,
+          'line-width': 24,
+          'line-blur': 34,
+          'line-opacity': 0.4,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        filter: emptyFilter,
+      });
+
+      // Layer 2 — tighter inner glow
+      map.addLayer({
+        id: 'rivers-glow-inner',
+        type: 'line',
+        source: 'rivers',
+        paint: {
+          'line-color': HOVER_BLUE,
+          'line-width': 14,
+          'line-blur': 7,
+          'line-opacity': 0.5,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        filter: emptyFilter,
+      });
+
+      // Layer 3 — crisp core highlight stroke
+      map.addLayer({
+        id: 'rivers-highlight',
+        type: 'line',
+        source: 'rivers',
+        paint: {
+          'line-color': HOVER_BLUE,
+          'line-width': 4.5,
+          'line-opacity': 0.95,
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        filter: emptyFilter,
+      });
+
+      // Hover cursor
+      map.on('mouseenter', 'rivers-hit', () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', 'rivers-hit', () => {
+        map.getCanvas().style.cursor = '';
+      });
+
+      // Helper: show/hide the glow stack for a given river id (or '' to hide)
+      const glowLayers = ['rivers-glow-outer', 'rivers-glow-inner', 'rivers-highlight'];
+      const setGlow = (id, color) => {
+        const filter = id ? ['==', ['get', 'id'], id] : ['==', ['get', 'id'], ''];
+        glowLayers.forEach(layer => map.setFilter(layer, filter));
+        if (color) {
+          map.setPaintProperty('rivers-glow-outer', 'line-color', color === SELECT_BLUE ? '#64B5F6' : GLOW_OUTER);
+          map.setPaintProperty('rivers-glow-inner', 'line-color', color);
+          map.setPaintProperty('rivers-highlight', 'line-color', color);
+        }
+      };
+
+      // Expose a stable handle so effects / parent-driven updates (e.g. the
+      // dropdown destination picker) can toggle river highlights without
+      // duplicating the layer/filter logic.
+      map._setRiverGlow = (id) => setGlow(id, id ? SELECT_BLUE : null);
+
+      // Multi-river highlight — used when a radius circle is placed to glow
+      // every river that falls within the search area.
+      map._setRiversGlow = (ids) => {
+        const filter = ids && ids.length > 0
+          ? ['in', ['get', 'id'], ['literal', ids]]
+          : ['==', ['get', 'id'], ''];
+        glowLayers.forEach(layer => map.setFilter(layer, filter));
+        if (ids && ids.length > 0) {
+          map.setPaintProperty('rivers-glow-outer', 'line-color', GLOW_OUTER);
+          map.setPaintProperty('rivers-glow-inner', 'line-color', HOVER_BLUE);
+          map.setPaintProperty('rivers-highlight', 'line-color', HOVER_BLUE);
+        }
+      };
+
+      // Hover highlight — skip when circle multi-glow is active so we don't
+      // replace the multi-filter with a single-id filter on every mousemove.
+      map.on('mousemove', 'rivers-hit', (e) => {
+        if (map._circleMode) return;
+        if (e.features && e.features.length > 0) {
+          const id = e.features[0].properties.id;
+          if (mapRef.current?._riverSelected !== id) {
+            setGlow(id, HOVER_BLUE);
+          }
+        }
+      });
+      map.on('mouseleave', 'rivers-hit', () => {
+        if (map._circleMode) return; // circle highlight stays untouched
+        const sel = mapRef.current?._riverSelected;
+        if (sel) {
+          setGlow(sel, SELECT_BLUE);
+        } else {
+          setGlow(null);
+        }
+      });
+
+      // Click to select/deselect.
+      // When in booking step 1 (destination), also sync to parent via
+      // onSelectRiver so MapApp can anchor chalet search to the river.
+      map.on('click', 'rivers-hit', (e) => {
+        if (e.features && e.features.length > 0) {
+          const id = e.features[0].properties.id;
+          const prev = mapRef.current?._riverSelected;
+          const isBookingDestinationStep = bookingStepRef.current === 1;
+
+          if (prev === id) {
+            mapRef.current._riverSelected = null;
+            setSelectedRiver(null);
+            setGlow(null);
+            if (isBookingDestinationStep && onSelectRiverRef.current) {
+              onSelectRiverRef.current(null);
+            }
+          } else {
+            mapRef.current._riverSelected = id;
+            setSelectedRiver(id);
+            setGlow(id, SELECT_BLUE);
+            if (isBookingDestinationStep && onSelectRiverRef.current) {
+              onSelectRiverRef.current(id);
+            }
+          }
+        }
+      });
+
       console.log('All layers added successfully!');
     });
   };
@@ -865,9 +1180,15 @@ const GaspesieMap = ({
           transition: 'height 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
           willChange: 'height',
         } : {
-          position: 'relative',
-          flex: '0 0 clamp(300px, 30vw, 420px)',
-          width: 'clamp(300px, 30vw, 420px)',
+          // NEW FLOW: at step 3 (guides + chalets) the panel goes full screen
+          // to give enough room for both guide and chalet cards plus filters.
+          position: bookingStep === 3 ? 'fixed' : 'relative',
+          top: bookingStep === 3 ? 0 : undefined,
+          left: bookingStep === 3 ? 0 : undefined,
+          right: bookingStep === 3 ? 0 : undefined,
+          bottom: bookingStep === 3 ? 0 : undefined,
+          flex: bookingStep === 3 ? 'none' : '0 0 clamp(300px, 30vw, 420px)',
+          width: bookingStep === 3 ? '100vw' : 'clamp(300px, 30vw, 420px)',
           maxWidth: '100%',
           height: '100%',
           minHeight: 0,
@@ -881,7 +1202,7 @@ const GaspesieMap = ({
           padding: 'clamp(14px, 3vh, 30px) clamp(12px, 2vw, 24px) clamp(12px, 2.2vh, 22px)',
           boxShadow: '6px 0 26px rgba(31, 58, 46, 0.14)',
           borderRight: '1px solid rgba(72, 102, 86, 0.16)',
-          zIndex: 100,
+          zIndex: bookingStep === 3 ? 600 : 100,
           fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
           overflow: 'hidden',
         }}
@@ -1148,245 +1469,754 @@ const GaspesieMap = ({
               ))}
             </div>
 
-            {/* Step 1: Trip Preferences (NEW FLOW) */}
-            {bookingStep === 1 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
-                  1. {browseMode === 'guide'
-                    ? t('Préférences de guide', 'Guide preferences')
-                    : browseMode === 'chalet'
-                    ? t('Préférences d\'hébergement', 'Accommodation preferences')
-                    : t('Préférences de voyage', 'Trip preferences')}
-                </h3>
-                
-                {/* Number of people */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <label style={{ fontSize: '14px', color: '#5A7766', fontWeight: '500' }}>
-                    {t('Nombre de personnes', 'Number of people')}
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="20"
-                    value={numberOfPeople}
-                    onChange={(e) => setNumberOfPeople(parseInt(e.target.value) || 1)}
-                    style={{
-                      padding: '12px',
+            {/* Step 1: Destination (NEW FLOW) — unified picker: search / river / map point */}
+            {bookingStep === 1 && (() => {
+              // Which input method is "active" — drives the selection card
+              const hasRiver = Boolean(selectedRiver);
+              const hasPoint = Boolean(selectedPoint?.lngLat);
+              const hasSelection = hasRiver || hasPoint;
+              const selectedRiverDetails = hasRiver && getRiverDetails
+                ? getRiverDetails(selectedRiver)
+                : null;
+
+              const clearRiver = () => {
+                setSelectedRiver(null);
+                if (mapRef.current) {
+                  mapRef.current._riverSelected = null;
+                  if (typeof mapRef.current._setRiverGlow === 'function') {
+                    mapRef.current._setRiverGlow(null);
+                  }
+                }
+                if (onSelectRiver) onSelectRiver(null);
+              };
+
+              const clearPoint = () => {
+                // Clear parent's selectedPoint — this triggers the selectedPoint
+                // useEffect which removes layers and clears the multi-glow.
+                if (onClick) onClick(null);
+              };
+
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
+                      1. {t('Votre destination', 'Your destination')}
+                    </h3>
+                    <p style={{ fontSize: '12px', color: '#5A7766', margin: '4px 0 0', lineHeight: 1.5 }}>
+                      {t(
+                        'Optionnel — choisissez une rivière, cherchez-en une ou cliquez sur la carte.',
+                        'Optional — pick a river, search for one, or click the map.'
+                      )}
+                    </p>
+                  </div>
+
+                  {/* Unified picker card */}
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: '#FFFCF7',
+                    borderRadius: '12px',
+                    border: '1px solid #E5E7EB',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px',
+                  }}>
+                    {/* Searchable river dropdown */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <label style={{
+                        fontSize: '11px',
+                        color: '#5A7766',
+                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em',
+                      }}>
+                        🔍 {t('Rechercher une rivière', 'Search a river')}
+                      </label>
+                      <select
+                        value={selectedRiver || ''}
+                        onChange={(e) => {
+                          const id = e.target.value || null;
+                          if (id) {
+                            // Selecting a river via dropdown: clear any custom point
+                            if (onSelectRiver) onSelectRiver(id);
+                            setSelectedRiver(id);
+                            if (mapRef.current) {
+                              mapRef.current._riverSelected = id;
+                              if (typeof mapRef.current._setRiverGlow === 'function') {
+                                mapRef.current._setRiverGlow(id);
+                              }
+                            }
+                          } else {
+                            clearRiver();
+                          }
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          border: '1.5px solid #D1D5DB',
+                          backgroundColor: '#FFFFFF',
+                          fontSize: '14px',
+                          color: '#1F3A2E',
+                          cursor: 'pointer',
+                          appearance: 'none',
+                          backgroundImage: 'url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'><path fill=\'%235A7766\' d=\'M2 4l4 4 4-4\'/></svg>")',
+                          backgroundRepeat: 'no-repeat',
+                          backgroundPosition: 'right 12px center',
+                          paddingRight: '34px',
+                        }}
+                      >
+                        <option value="">
+                          {t('— Toutes les rivières —', '— All rivers —')}
+                        </option>
+                        {[...knownRivers].sort((a, b) => a.localeCompare(b)).map((id) => (
+                          <option key={id} value={id}>
+                            {formatRiverName ? formatRiverName(id) : `Rivière ${id}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* OR divider */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      color: '#9CA3AF',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.08em',
+                    }}>
+                      <div style={{ flex: 1, height: '1px', backgroundColor: '#E5E7EB' }} />
+                      <span>{t('ou', 'or')}</span>
+                      <div style={{ flex: 1, height: '1px', backgroundColor: '#E5E7EB' }} />
+                    </div>
+
+                    {/* Map interaction hint */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      fontSize: '12px',
+                      color: '#2D5F4C',
+                      backgroundColor: 'rgba(74, 155, 142, 0.1)',
+                      border: '1px dashed #4A9B8E',
                       borderRadius: '8px',
-                      color: '#1F3A2E',
-                      border: '1.5px solid #5A7766',
-                      fontSize: '14px',
-                      backgroundColor: '#FFFCF7'
+                      padding: '10px 12px',
+                    }}>
+                      <span style={{ fontSize: '18px' }}>🗺️</span>
+                      <span style={{ lineHeight: 1.4 }}>
+                        {t(
+                          'Cliquez sur une rivière ou sur un point de la carte',
+                          'Click a river or a point on the map'
+                        )}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Current selection — adaptive card (river OR point) */}
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: hasSelection ? 'rgba(45, 95, 76, 0.08)' : 'transparent',
+                    border: hasSelection ? '1px solid #2D5F4C' : '1px dashed #D1D5DB',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: (hasPoint || hasRiver) ? '10px' : '0',
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '10px',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                        <span style={{ fontSize: '20px' }}>
+                          {hasRiver ? '🌊' : hasPoint ? '📍' : '✨'}
+                        </span>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            color: hasSelection ? '#1F3A2E' : '#9CA3AF',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            {hasRiver
+                              ? (formatRiverName ? formatRiverName(selectedRiver) : selectedRiver)
+                              : hasPoint
+                              ? t('Point personnalisé', 'Custom point')
+                              : t('Aucune destination', 'No destination')}
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#5A7766', marginTop: '2px' }}>
+                            {hasRiver
+                              ? (selectedRiverDetails?.description || t('Recherche autour de cette rivière', 'Search around this river'))
+                              : hasPoint
+                              ? t('Zone circulaire', 'Circular area')
+                              : t('Toute la Gaspésie sera explorée', 'Browsing all of Gaspésie')}
+                          </div>
+                        </div>
+                      </div>
+
+                      {hasSelection && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (hasRiver) clearRiver();
+                            if (hasPoint) clearPoint();
+                          }}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                            fontSize: '16px',
+                            color: '#5A7766',
+                            padding: '4px 8px',
+                            flexShrink: 0,
+                          }}
+                          aria-label={t('Retirer la sélection', 'Remove selection')}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    {hasRiver && selectedRiverDetails?.image && (
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
+                        marginTop: '2px',
+                      }}>
+                        <img
+                          src={selectedRiverDetails.image}
+                          alt={selectedRiverDetails.name || 'River'}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          style={{
+                            width: '52px',
+                            height: '52px',
+                            borderRadius: '8px',
+                            objectFit: 'cover',
+                            border: '1px solid #D1D5DB',
+                            backgroundColor: '#FFFFFF',
+                            flexShrink: 0,
+                          }}
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                        <span style={{ fontSize: '10px', color: '#6B7280', lineHeight: 1.3 }}>
+                          {t('Image de référence', 'Reference image')}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Radius slider + nearby rivers list */}
+                    {hasPoint && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            fontSize: '11px',
+                            color: '#5A7766',
+                          }}>
+                            <span>{t('Rayon', 'Radius')}</span>
+                            <span style={{ fontWeight: 600, color: '#1F3A2E' }}>{radius} km</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="5"
+                            max="100"
+                            value={radius}
+                            onChange={(e) => setRadius(parseInt(e.target.value))}
+                            style={{ width: '100%', accentColor: '#2D5F4C' }}
+                          />
+                        </div>
+
+                        {/* Nearby rivers list — mirrors what's highlighted on the map */}
+                        {nearbyRiverIds.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <span style={{
+                              fontSize: '11px',
+                              color: '#5A7766',
+                              fontWeight: 600,
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.04em',
+                            }}>
+                              🎣 {nearbyRiverIds.length} {t('rivière(s) dans la zone', nearbyRiverIds.length === 1 ? 'river in area' : 'rivers in area')}
+                            </span>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                              {nearbyRiverIds.map((id) => (
+                                <span key={id} style={{
+                                  fontSize: '11px',
+                                  padding: '3px 8px',
+                                  borderRadius: '20px',
+                                  backgroundColor: 'rgba(45, 95, 76, 0.12)',
+                                  border: '1px solid #2D5F4C',
+                                  color: '#1F3A2E',
+                                  fontWeight: 500,
+                                }}>
+                                  🌊 {formatRiverName ? formatRiverName(id) : id}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '11px', color: '#9CA3AF', fontStyle: 'italic' }}>
+                            {t('Aucune rivière dans cette zone', 'No rivers in this area')}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setBookingStep(2)}
+                    style={{
+                      width: '100%',
+                      padding: '14px 20px',
+                      backgroundColor: '#2D5F4C',
+                      color: '#FFFCF7',
+                      border: 'none',
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      fontWeight: '600',
+                      fontSize: '15px',
+                      marginTop: '4px',
                     }}
+                  >
+                    {t('Continuer →', 'Continue →')}
+                  </button>
+                </div>
+              );
+            })()}
+
+            {/* Step 2: Dates (NEW FLOW) */}
+            {bookingStep === 2 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
+                  2. {t('Vos dates', 'Your dates')}
+                </h3>
+
+                <p style={{ fontSize: '13px', color: '#5A7766', margin: 0, lineHeight: 1.5 }}>
+                  {t(
+                    'Sélectionnez une plage de dates en 2 clics: arrivée puis départ.',
+                    'Select your date range in 2 clicks: check-in then check-out.'
+                  )}
+                </p>
+
+                <div style={{
+                  backgroundColor: '#FFFCF7',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(45, 95, 76, 0.14)',
+                  overflow: 'hidden',
+                }}>
+                  <DateRangePicker
+                    onDateChange={(checkIn, checkOut) => {
+                      setStartDate(toIsoDateLocal(checkIn));
+                      setEndDate(toIsoDateLocal(checkOut));
+                    }}
+                    minDate={new Date()}
+                    initialCheckIn={parseIsoDateLocal(startDate)}
+                    initialCheckOut={parseIsoDateLocal(endDate)}
+                    monthsToShow={1}
                   />
                 </div>
 
-                {/* Fish type selection */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <label style={{ fontSize: '14px', color: '#5A7766', fontWeight: '500' }}>
-                    {t('Type de poisson recherché', 'Target fish species')}
-                  </label>
-                  <select
-                    value={fishType}
-                    onChange={(e) => setFishType(e.target.value)}
-                    style={{
-                      padding: '12px',
-                      borderRadius: '8px',
-                      border: '1.5px solid #5A7766',
-                      fontSize: '14px',
-                      color: '#1F3A2E',
-                      backgroundColor: '#FFFCF7',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <option value="">{t('-- Sélectionnez un poisson --', '-- Select a fish --')}</option>
-                    {FISH_TYPES && FISH_TYPES.map(fish => (
-                      <option key={fish.value} value={fish.value}>{fish.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Fishing zones info */}
-                {loadingZones && (
-                  <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766' }}>
-                    {t('Chargement des zones de pêche...', 'Loading fishing zones...')}
-                  </div>
-                )}
-                {fishType && !loadingZones && fishingZones.length > 0 && (
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: 'rgba(74, 155, 142, 0.1)',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    color: '#2D5F4C'
-                  }}>
-                    <strong>🎣 {fishingZones.length} {t('zone(s)', 'zone(s)')}</strong> {t('de pêche affichée(s) sur la carte', 'shown on the map')}
-                  </div>
-                )}
-                {fishType && !loadingZones && fishingZones.length === 0 && (
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    color: '#D97706'
-                  }}>
-                    {t('Aucune zone de pêche trouvée pour ce poisson', 'No fishing zones found for this fish')}
-                  </div>
-                )}
-
-                {/* Date selection - moved from step 3 */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <label style={{ fontSize: '14px', color: '#5A7766', fontWeight: '500' }}>
-                    {t('Dates du séjour', 'Trip dates')}
-                  </label>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <input
-                      type="date"
-                      value={startDate || ''}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      placeholder="Arrivée"
-                      style={{
-                        flex: 1,
-                        padding: '10px',
-                        borderRadius: '8px',
-                        border: '1.5px solid #5A7766',
-                        fontSize: '13px',
-                        color: '#1F3A2E',
-                        backgroundColor: '#FFFCF7'
-                      }}
-                    />
-                    <input
-                      type="date"
-                      value={endDate || ''}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      min={startDate || ''}
-                      placeholder="Départ"
-                      style={{
-                        flex: 1,
-                        padding: '10px',
-                        borderRadius: '8px',
-                        border: '1.5px solid #5A7766',
-                        color: '#1F3A2E',
-                        fontSize: '13px',
-                        backgroundColor: '#FFFCF7'
-                      }}
-                    />
-                  </div>
-                  {startDate && endDate && new Date(endDate) <= new Date(startDate) && (
-                    <div style={{
-                      padding: '8px',
-                      backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      color: '#DC2626'
-                    }}>
-                      {t('La date de départ doit être après la date d\'arrivée', 'Departure date must be after arrival date')}
-                    </div>
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(45, 95, 76, 0.18)',
+                  backgroundColor: 'rgba(32, 79, 61, 0.05)',
+                }}>
+                  <p style={{ margin: 0, fontSize: '11px', letterSpacing: '0.04em', fontWeight: 700, color: '#5A7766', textTransform: 'uppercase' }}>
+                    {t('Plage sélectionnée', 'Selected range')}
+                  </p>
+                  {!startDate && !endDate && (
+                    <p style={{ margin: 0, fontSize: '13px', color: '#355446' }}>
+                      {t('Cliquez une date d\'arrivée puis une date de départ.', 'Click a check-in date, then a check-out date.')}
+                    </p>
+                  )}
+                  {startDate && !endDate && (
+                    <p style={{ margin: 0, fontSize: '13px', color: '#355446' }}>
+                      {t('Arrivée', 'Check-in')}: <strong>{formatLongDate(startDate)}</strong>
+                    </p>
+                  )}
+                  {startDate && endDate && (
+                    <>
+                      <p style={{ margin: 0, fontSize: '13px', color: '#1F3A2E', fontWeight: 600 }}>
+                        {formatLongDate(startDate)} → {formatLongDate(endDate)}
+                      </p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#355446' }}>
+                        {Math.max(1, Math.round((parseIsoDateLocal(endDate) - parseIsoDateLocal(startDate)) / (1000 * 60 * 60 * 24)))} {t('nuit(s)', 'night(s)')}
+                      </p>
+                      {(() => {
+                        const activeOption = (alternativeDateOptions || []).find(
+                          (option) => option.startDate === startDate && option.endDate === endDate
+                        );
+                        if (!activeOption) return null;
+                        return (
+                          <p style={{ margin: 0, fontSize: '12px', color: '#355446' }}>
+                            {activeOption.guideCount || 0} {t('guides disponibles', 'guides available')} • {activeOption.chaletCount || 0} {t('chalets disponibles', 'chalets available')}
+                          </p>
+                        );
+                      })()}
+                    </>
                   )}
                 </div>
 
-                {/* Needs chalet checkbox - only shown in 'trip' mode */}
-                {browseMode === 'trip' && (
-                <div style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: '12px',
-                  padding: '12px',
-                  backgroundColor: 'rgba(255, 252, 247, 0.7)',
-                  borderRadius: '8px',
-                  border: '1px solid #E5E7EB'
-                }}>
-                  <input
-                    type="checkbox"
-                    id="needsChalet"
-                    checked={needsChalet}
-                    onChange={(e) => setNeedsChalet(e.target.checked)}
-                    style={{
-                      width: '20px',
-                      height: '20px',
-                      cursor: 'pointer',
-                      accentColor: '#2D5F4C'
-                    }}
-                  />
-                  <label 
-                    htmlFor="needsChalet" 
-                    style={{ 
-                      fontSize: '14px', 
-                      color: '#1F3A2E', 
-                      fontWeight: '500',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {t('J\'ai besoin d\'un chalet', 'I need a chalet')}
-                  </label>
-                </div>
+                {startDate && endDate && new Date(endDate) <= new Date(startDate) && (
+                  <div style={{
+                    padding: '10px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: '#DC2626',
+                  }}>
+                    {t('La date de départ doit être après la date d\'arrivée', 'Departure date must be after arrival date')}
+                  </div>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => setBookingStep(2)}
-                  disabled={!canProceedStep1}
-                  style={{
-                    width: '100%',
-                    padding: '14px 20px',
-                    backgroundColor: canProceedStep1 ? '#2D5F4C' : '#9CA3AF',
-                    color: '#FFFCF7',
-                    border: 'none',
-                    borderRadius: '12px',
-                    cursor: canProceedStep1 ? 'pointer' : 'not-allowed',
-                    fontWeight: '600',
-                    fontSize: '15px',
-                    marginTop: '12px'
-                  }}
-                >
-                  {t('Continuer →', 'Continue →')}
-                </button>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setBookingStep(1)}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      backgroundColor: 'transparent',
+                      color: '#5A7766',
+                      border: '1.5px solid #5A7766',
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      fontSize: '14px',
+                    }}
+                  >
+                    {t('← Retour', '← Back')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={goToResultsStep}
+                    disabled={!canProceedStep2}
+                    style={{
+                      flex: 1,
+                      padding: '14px',
+                      backgroundColor: canProceedStep2 ? '#2D5F4C' : '#9CA3AF',
+                      color: '#FFFCF7',
+                      border: 'none',
+                      borderRadius: '12px',
+                      cursor: canProceedStep2 ? 'pointer' : 'not-allowed',
+                      fontWeight: '600',
+                      fontSize: '14px',
+                    }}
+                  >
+                    {t('Continuer →', 'Continue →')}
+                  </button>
+                </div>
               </div>
             )}
 
-            {/* Step 2: Combined Guide + Chalet Selection (NEW FLOW) */}
-            {bookingStep === 2 && (
+            {/* Step 3: Guides + Chalets (NEW FLOW — full-screen overlay) */}
+            {bookingStep === 3 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
                 <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E', flexShrink: 0 }}>
-                  2. {browseMode === 'guide'
+                  3. {browseMode === 'guide'
                     ? t('Sélectionnez un guide', 'Select a guide')
                     : browseMode === 'chalet'
                     ? t('Sélectionnez un chalet', 'Select a chalet')
                     : t('Sélectionnez guide et hébergement', 'Select guide and accommodation')}
                 </h3>
 
-                {/* Summary of preferences */}
                 <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
                   padding: '10px 12px',
-                  backgroundColor: 'rgba(45, 95, 76, 0.08)',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  color: '#5A7766',
-                  flexShrink: 0
+                  backgroundColor: 'rgba(32, 79, 61, 0.045)',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(32, 79, 61, 0.14)',
+                  flexShrink: 0,
                 }}>
-                  <div>🎣 {t('Poisson', 'Fish')}: <strong>{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}</strong></div>
-                  <div>👥 {numberOfPeople} {t('personne(s)', 'person(s)')}</div>
-                  <div>🏠 {t('Chalet', 'Chalet')}: <strong>{needsChalet ? t('Oui', 'Yes') : t('Non', 'No')}</strong></div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                    <div>
+                      <p style={{ margin: 0, fontSize: '11px', fontWeight: 600, color: '#5A7766' }}>
+                        {t('Plage active', 'Active range')}
+                      </p>
+                      <p style={{ margin: '2px 0 0', fontSize: '13px', fontWeight: 700, color: '#1F3A2E' }}>
+                        {new Date(`${startDate}T00:00:00`).toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' })}
+                        {' - '}
+                        {new Date(`${endDate}T00:00:00`).toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' })}
+                      </p>
+                      {(() => {
+                        const activeOption = (alternativeDateOptions || []).find(
+                          (option) => option.startDate === startDate && option.endDate === endDate
+                        );
+                        if (!activeOption) return null;
+                        return (
+                          <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#355446' }}>
+                            {activeOption.guideCount || 0} {t('guides', 'guides')} • {activeOption.chaletCount || 0} {t('chalets', 'chalets')}
+                          </p>
+                        );
+                      })()}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {loadingAlternativeDates && (
+                        <span style={{ fontSize: '11px', color: '#5A7766' }}>
+                          {t('Analyse...', 'Analyzing...')}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowStep3FlexibleDates(prev => !prev)}
+                        style={{
+                          border: '1px solid #D1D5DB',
+                          backgroundColor: '#FFFCF7',
+                          borderRadius: '999px',
+                          padding: '4px 10px',
+                          fontSize: '11px',
+                          color: '#355446',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                        }}
+                      >
+                        {showStep3FlexibleDates
+                          ? t('Masquer dates', 'Hide dates')
+                          : t('Voir dates flexibles', 'View flexible dates')}
+                      </button>
+                    </div>
+                  </div>
+
+                  {showStep3FlexibleDates && (
+                    <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '2px' }}>
+                      {(alternativeDateOptions || []).map((option) => {
+                        const isSelected = option.startDate === startDate && option.endDate === endDate;
+                        const isOriginal = option.startDate === originalStartDate && option.endDate === originalEndDate;
+                        const isWeak = Boolean(option.isWeakOption);
+
+                        return (
+                          <button
+                            key={option.key || `${option.startDate}-${option.endDate}`}
+                            type="button"
+                            onClick={() => {
+                              applyAlternativeDateOption && applyAlternativeDateOption(option);
+                              setShowStep3FlexibleDates(false);
+                            }}
+                            style={{
+                              minWidth: '150px',
+                              borderRadius: '8px',
+                              border: isSelected
+                                ? '2px solid #2D5F4C'
+                                : isWeak
+                                ? '1px dashed #D97706'
+                                : '1px solid #CFE0D8',
+                              background: isSelected
+                                ? 'rgba(45, 95, 76, 0.12)'
+                                : isWeak
+                                ? 'rgba(217, 119, 6, 0.08)'
+                                : '#FFFCF7',
+                              color: '#1F3A2E',
+                              padding: '8px',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '4px',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 700 }}>
+                                {new Date(`${option.startDate}T00:00:00`).toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' })}
+                                {' - '}
+                                {new Date(`${option.endDate}T00:00:00`).toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' })}
+                              </span>
+                              {isOriginal && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, color: '#2D5F4C' }}>
+                                  {t('Original', 'Original')}
+                                </span>
+                              )}
+                            </div>
+
+                            <span style={{ fontSize: '10px', color: '#355446' }}>
+                              {option.guideCount || 0} {t('guides', 'guides')} • {option.chaletCount || 0} {t('chalets', 'chalets')}
+                            </span>
+
+                            <span style={{ fontSize: '10px', color: isWeak ? '#B45309' : '#5A7766' }}>
+                              {option.offsetDays === 0
+                                ? t('Dates demandées', 'Requested dates')
+                                : option.offsetDays > 0
+                                ? t(`+${option.offsetDays} jours`, `+${option.offsetDays} days`)
+                                : t(`${option.offsetDays} jours`, `${option.offsetDays} days`)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
+
+                {/* Filter row — progressive disclosure to reduce initial load */}
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  padding: '9px 10px',
+                  backgroundColor: 'rgba(45, 95, 76, 0.03)',
+                  borderRadius: '10px',
+                  border: '1px solid #E6ECE9',
+                  flexShrink: 0,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#355446', fontWeight: 600 }}>
+                      {t('Filtres', 'Filters')}: {numberOfPeople} {t('pers.', 'people')}
+                      {' • '}
+                      {browseMode !== 'chalet'
+                        ? (fishType ? FISH_TYPES?.find(f => f.value === fishType)?.label || fishType : t('Tous poissons', 'All fish'))
+                        : t('Sans filtre poisson', 'No fish filter')}
+                      {' • '}
+                      {needsChalet ? t('Chalet', 'Chalet') : t('Sans chalet', 'No chalet')}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setShowStep3Filters(prev => !prev)}
+                      style={{
+                        border: '1px solid #D1D5DB',
+                        backgroundColor: '#FFFCF7',
+                        borderRadius: '999px',
+                        padding: '4px 10px',
+                        fontSize: '11px',
+                        color: '#355446',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {showStep3Filters ? t('Masquer', 'Hide') : t('Modifier', 'Edit')}
+                    </button>
+                  </div>
+
+                  {showStep3Filters && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {browseMode !== 'chalet' && (
+                        <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontSize: '11px', color: '#5A7766', fontWeight: '500' }}>
+                            {t('Poisson (optionnel)', 'Fish (optional)')}
+                          </label>
+                          <select
+                            value={fishType}
+                            onChange={(e) => setFishType(e.target.value)}
+                            style={{
+                              padding: '7px',
+                              borderRadius: '6px',
+                              border: '1px solid #5A7766',
+                              fontSize: '12px',
+                              color: '#1F3A2E',
+                              backgroundColor: '#FFFCF7',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <option value="">{t('Tous', 'All')}</option>
+                            {FISH_TYPES && FISH_TYPES.map(fish => (
+                              <option key={fish.value} value={fish.value}>{fish.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div style={{ flex: '1 1 120px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={{ fontSize: '11px', color: '#5A7766', fontWeight: '500' }}>
+                          {t('Personnes', 'People')}
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          value={numberOfPeople || ''}
+                          onChange={(e) => setNumberOfPeople(parseInt(e.target.value) || 1)}
+                          style={{
+                            padding: '7px',
+                            borderRadius: '6px',
+                            border: '1px solid #5A7766',
+                            fontSize: '12px',
+                            color: '#1F3A2E',
+                            backgroundColor: '#FFFCF7',
+                          }}
+                        />
+                      </div>
+
+                      {browseMode === 'trip' && (
+                        <div style={{
+                          flex: '1 1 120px',
+                          display: 'flex',
+                          alignItems: 'flex-end',
+                          gap: '6px',
+                        }}>
+                          <input
+                            type="checkbox"
+                            id="needsChaletStep3"
+                            checked={needsChalet}
+                            onChange={(e) => setNeedsChalet(e.target.checked)}
+                            style={{
+                              width: '16px',
+                              height: '16px',
+                              cursor: 'pointer',
+                              accentColor: '#2D5F4C',
+                            }}
+                          />
+                          <label
+                            htmlFor="needsChaletStep3"
+                            style={{
+                              fontSize: '12px',
+                              color: '#1F3A2E',
+                              fontWeight: '500',
+                              cursor: 'pointer',
+                              paddingBottom: '2px',
+                            }}
+                          >
+                            {t('Inclure chalet', 'Include chalet')}
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {loadingZones && (
+                  <div style={{ textAlign: 'center', padding: '4px', color: '#5A7766', fontSize: '11px', flexShrink: 0 }}>
+                    {t('Chargement des zones de pêche...', 'Loading fishing zones...')}
+                  </div>
+                )}
 
                 {/* Scrollable content area for guide and chalet sections */}
                 <div style={{ 
                   flex: 1, 
-                  overflowY: 'auto', 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: '16px',
-                  paddingRight: '4px'
+                  minHeight: 0,
+                  overflow: 'hidden',
+                  display: 'grid',
+                  gridTemplateColumns: (!isMobile && needsChalet && browseMode !== 'chalet') ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
+                  gap: '12px',
                 }}>
                   {/* GUIDE SECTION - hidden in chalet-only mode */}
                   {browseMode !== 'chalet' && (
                   <div style={{ 
-                    borderBottom: needsChalet ? '1px solid #E5E7EB' : 'none', 
-                    paddingBottom: needsChalet ? '16px' : '0'
+                    minHeight: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    border: '1px solid #E3EAE6',
+                    borderRadius: '10px',
+                    backgroundColor: '#FFFCF7',
+                    padding: '10px'
                   }}>
-                    <h4 style={{ margin: '0 0 12px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
-                      {t('🧭 Guides disponibles', '🧭 Available guides')}
+                    <h4 style={{ margin: '0 0 10px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
+                      {t('Guides disponibles', 'Available guides')}
                     </h4>
 
                   {loadingGuides ? (
@@ -1401,20 +2231,22 @@ const GaspesieMap = ({
                       color: '#D97706',
                       fontSize: '13px'
                     }}>
-                      {t('Aucun guide spécialisé trouvé pour', 'No specialized guide found for')} "{FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}"
+                      {fishType
+                        ? `${t('Aucun guide spécialisé trouvé pour', 'No specialized guide found for')} "${FISH_TYPES?.find(f => f.value === fishType)?.label || fishType}"`
+                        : t('Aucun guide trouvé pour ces dates', 'No guides found for these dates')}
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minHeight: 0, overflowY: 'auto', paddingRight: '2px' }}>
                       {/* Option to skip guide */}
                       <div
                         onClick={() => handleSelectGuide(null)}
                         style={{
-                          padding: '10px',
+                          padding: '8px 10px',
                           backgroundColor: selectedGuide === null ? 'rgba(45, 95, 76, 0.15)' : '#FFFCF7',
                           borderRadius: '8px',
                           border: selectedGuide === null ? '2px solid #2D5F4C' : '1px dashed #D1D5DB',
                           cursor: 'pointer',
-                          fontSize: '13px'
+                          fontSize: '12px'
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -1422,178 +2254,248 @@ const GaspesieMap = ({
                           <span style={{ color: '#5A7766' }}>{t('Continuer sans guide', 'Continue without a guide')}</span>
                         </div>
                       </div>
-                      
-                      {/* Guide list */}
-                      <div style={{ maxHeight: selectedGuide ? '100px' : '150px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {availableGuides.map((guide) => (
-                          <div
-                            key={guide.guide_id}
-                            onClick={() => handleSelectGuide(guide)}
-                            style={{
-                              padding: '10px',
-                              backgroundColor: selectedGuide?.guide_id === guide.guide_id ? 'rgba(45, 95, 76, 0.15)' : '#FFFCF7',
-                              borderRadius: '8px',
-                              border: selectedGuide?.guide_id === guide.guide_id ? '2px solid #2D5F4C' : '1px solid #D1D5DB',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                              <AvatarImage
-                                src={guide.avatarSrc}
-                                name={guide.name || 'Guide'}
-                                alt={guide.name || 'Guide'}
-                                imgStyle={{
-                                  width: '32px',
-                                  height: '32px',
-                                  borderRadius: '50%',
-                                  objectFit: 'cover',
-                                  border: '1px solid rgba(74, 155, 142, 0.35)',
+
+                      {/* Guide list — compact rows, details only on expand */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {[...availableGuides]
+                          .sort((a, b) => (b.is_available === true) - (a.is_available === true))
+                          .map((guide) => {
+                            const isGuideSelected = selectedGuide?.guide_id === guide.guide_id;
+                            const isGuideExpanded = expandedGuideId === guide.guide_id;
+                            const isAvailable = guide.is_available !== false;
+
+                            return (
+                              <div
+                                key={guide.guide_id}
+                                style={{
+                                  padding: '7px 8px',
+                                  backgroundColor: isGuideSelected ? 'rgba(45, 95, 76, 0.1)' : '#FFFCF7',
+                                  borderRadius: '8px',
+                                  border: isGuideSelected ? '1.5px solid #2D5F4C' : '1px solid #E1E7E3',
+                                  opacity: isAvailable ? 1 : 0.7,
                                 }}
-                                fallbackStyle={{
-                                  width: '32px',
-                                  height: '32px',
-                                  borderRadius: '50%',
-                                  backgroundColor: '#4A9B8E',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  color: 'white',
-                                  fontWeight: '600',
-                                  fontSize: '12px',
-                                }}
-                                fallback="GU"
-                              />
-                              <div>
-                                <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
-                                  {guide.name}
-                                </p>
-                                {guide.fish_types && guide.fish_types.length > 0 && (
-                                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#5A7766' }}>
-                                    🎣 {guide.fish_types.slice(0, 3).join(', ')}
-                                  </p>
+                              >
+                                <div
+                                  onClick={() => {
+                                    setExpandedGuideId((prev) => prev === guide.guide_id ? null : guide.guide_id);
+                                    if (isAvailable && !isGuideSelected) {
+                                      handleSelectGuide(guide);
+                                    }
+                                  }}
+                                  style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
+                                >
+                                  <AvatarImage
+                                    src={guide.avatarSrc}
+                                    name={guide.name || 'Guide'}
+                                    alt={guide.name || 'Guide'}
+                                    imgStyle={{
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '50%',
+                                      objectFit: 'cover',
+                                      border: '1px solid rgba(74, 155, 142, 0.35)',
+                                    }}
+                                    fallbackStyle={{
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '50%',
+                                      backgroundColor: '#4A9B8E',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: 'white',
+                                      fontWeight: '600',
+                                      fontSize: '12px',
+                                    }}
+                                    fallback="GU"
+                                  />
+                                  <div style={{ flex: 1 }}>
+                                    <p style={{ margin: 0, fontWeight: '600', fontSize: '12px', color: '#1F3A2E' }}>
+                                      {guide.name}
+                                      {!isAvailable && (
+                                        <span style={{
+                                          marginLeft: 6,
+                                          fontSize: 10,
+                                          padding: '2px 6px',
+                                          borderRadius: 4,
+                                          backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                                          color: '#D97706',
+                                          fontWeight: 500,
+                                        }}>
+                                          {t('Non dispo', 'Unavailable')}
+                                        </span>
+                                      )}
+                                    </p>
+                                    {guide.fish_types && guide.fish_types.length > 0 && (
+                                      <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5A7766' }}>
+                                        {guide.fish_types.slice(0, 3).join(', ')}
+                                      </p>
+                                    )}
+                                  </div>
+
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    {isAvailable && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (isGuideSelected) {
+                                            handleSelectGuide(null);
+                                            if (isGuideExpanded) setExpandedGuideId(null);
+                                          } else {
+                                            handleSelectGuide(guide);
+                                            setExpandedGuideId(guide.guide_id);
+                                          }
+                                        }}
+                                        style={{
+                                          border: isGuideSelected ? '1px solid #2D5F4C' : '1px solid #C5D2CB',
+                                          backgroundColor: isGuideSelected ? '#2D5F4C' : '#FFFCF7',
+                                          color: isGuideSelected ? '#FFFCF7' : '#2D5F4C',
+                                          borderRadius: '999px',
+                                          padding: '4px 9px',
+                                          fontSize: '11px',
+                                          fontWeight: 600,
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        {isGuideSelected ? t('Choisi', 'Selected') : t('Choisir', 'Select')}
+                                      </button>
+                                    )}
+
+                                    <span style={{ fontSize: '14px', color: '#5A7766', lineHeight: 1 }}>
+                                      {isGuideExpanded ? '▾' : '▸'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {isGuideExpanded && (
+                                  <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #E8ECEA' }}>
+                                    {!isAvailable && (
+                                      <div style={{
+                                        padding: '8px 10px',
+                                        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                                        borderRadius: '7px',
+                                        color: '#B45309',
+                                        fontSize: '11px'
+                                      }}>
+                                        {t('Ce guide n\'est pas disponible pour la plage de dates active.', 'This guide is unavailable for the active date range.')}
+                                      </div>
+                                    )}
+
+                                    {isAvailable && (
+                                      <p style={{ fontSize: '11px', color: '#5A7766', margin: '0 0 6px' }}>
+                                        {t('Disponibilités pour vos dates actives', 'Availability for your active dates')}
+                                      </p>
+                                    )}
+
+                                    {!isGuideSelected && (
+                                      <div style={{
+                                        padding: '7px 9px',
+                                        borderRadius: '6px',
+                                        border: '1px solid #E3EAE6',
+                                        backgroundColor: '#FCFDFC',
+                                        fontSize: '11px',
+                                        color: '#5A7766',
+                                      }}>
+                                        {t('Sélectionnez ce guide pour charger et choisir des créneaux.', 'Select this guide to load and choose time slots.')}
+                                      </div>
+                                    )}
+
+                                    {isGuideSelected && (loadingGuideAvailability ? (
+                                      <div style={{ textAlign: 'center', padding: '10px', color: '#5A7766', fontSize: '12px' }}>
+                                        {t('Chargement des disponibilités...', 'Loading availability...')}
+                                      </div>
+                                    ) : guideAvailabilityEvents && guideAvailabilityEvents.length > 0 ? (
+                                      <div style={{ maxHeight: '170px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        {(() => {
+                                          const eventsByDate = guideAvailabilityEvents.reduce((acc, event) => {
+                                            const date = event.date || (event.start ? event.start.split('T')[0] : 'unknown');
+                                            if (!acc[date]) acc[date] = [];
+                                            acc[date].push(event);
+                                            return acc;
+                                          }, {});
+
+                                          return Object.entries(eventsByDate).map(([date, events]) => (
+                                            <div key={date} style={{ marginBottom: '4px' }}>
+                                              <div style={{
+                                                fontSize: '10px',
+                                                fontWeight: '600',
+                                                color: '#1F3A2E',
+                                                marginBottom: '3px',
+                                                padding: '3px 7px',
+                                                backgroundColor: 'rgba(45, 95, 76, 0.06)',
+                                                borderRadius: '4px'
+                                              }}>
+                                                {new Date(date + 'T00:00:00').toLocaleDateString(uiLocale, {
+                                                  weekday: 'short',
+                                                  day: 'numeric',
+                                                  month: 'short'
+                                                })}
+                                              </div>
+                                              {events.map((event) => {
+                                                const isSelected = selectedTimeSlots?.some(slot => slot.id === event.id);
+                                                const startTime = event.start ? new Date(event.start).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
+                                                const endTime = event.end ? new Date(event.end).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
+
+                                                return (
+                                                  <div
+                                                    key={event.id}
+                                                    onClick={() => handleSelectTimeSlot && handleSelectTimeSlot(event)}
+                                                    style={{
+                                                      padding: '6px 8px',
+                                                      backgroundColor: isSelected ? 'rgba(34, 197, 94, 0.15)' : '#FFFCF7',
+                                                      borderRadius: '5px',
+                                                      border: isSelected ? '1.5px solid #22C55E' : '1px solid #E5E7EB',
+                                                      cursor: 'pointer',
+                                                      display: 'flex',
+                                                      alignItems: 'center',
+                                                      gap: '7px',
+                                                      marginBottom: '3px',
+                                                    }}
+                                                  >
+                                                    <span style={{ fontSize: '14px', opacity: isSelected ? 1 : 0.45 }}>
+                                                      {isSelected ? '✓' : '○'}
+                                                    </span>
+                                                    <p style={{ margin: 0, fontSize: '11px', fontWeight: '500', color: '#1F3A2E' }}>
+                                                      {startTime} - {endTime}
+                                                    </p>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          ));
+                                        })()}
+                                      </div>
+                                    ) : (
+                                      <div style={{
+                                        padding: '10px',
+                                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                                        borderRadius: '8px',
+                                        color: '#D97706',
+                                        fontSize: '11px',
+                                        textAlign: 'center'
+                                      }}>
+                                        {t('Aucun créneau disponible pour cette période.', 'No slots available for this range.')}
+                                      </div>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
-                            </div>
-                          </div>
-                        ))}
+                            );
+                          })}
                       </div>
 
-                      {/* TIME SLOTS SECTION - shown when a guide is selected */}
-                      {selectedGuide && (
-                        <div style={{ marginTop: '12px' }}>
-                          <h5 style={{ margin: '0 0 8px', fontSize: '13px', color: '#1F3A2E', fontWeight: '600' }}>
-                            📅 {t('Disponibilités de', 'Availability for')} {selectedGuide.name}
-                          </h5>
-                          <p style={{ fontSize: '11px', color: '#5A7766', margin: '0 0 8px' }}>
-                            {t('Sélectionnez les créneaux horaires souhaités', 'Select your preferred time slots')}
-                          </p>
-
-                          {loadingGuideAvailability ? (
-                            <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766', fontSize: '12px' }}>
-                              {t('Chargement des disponibilités...', 'Loading availability...')}
-                            </div>
-                          ) : guideAvailabilityEvents && guideAvailabilityEvents.length > 0 ? (
-                            <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                              {/* Group events by date */}
-                              {(() => {
-                                // Group events by date
-                                const eventsByDate = guideAvailabilityEvents.reduce((acc, event) => {
-                                  const date = event.date || (event.start ? event.start.split('T')[0] : 'unknown');
-                                  if (!acc[date]) acc[date] = [];
-                                  acc[date].push(event);
-                                  return acc;
-                                }, {});
-
-                                return Object.entries(eventsByDate).map(([date, events]) => (
-                                  <div key={date} style={{ marginBottom: '8px' }}>
-                                    <div style={{ 
-                                      fontSize: '11px', 
-                                      fontWeight: '600', 
-                                      color: '#1F3A2E',
-                                      marginBottom: '4px',
-                                      padding: '4px 8px',
-                                      backgroundColor: 'rgba(45, 95, 76, 0.08)',
-                                      borderRadius: '4px'
-                                    }}>
-                                      {new Date(date + 'T00:00:00').toLocaleDateString(uiLocale, { 
-                                        weekday: 'short', 
-                                        day: 'numeric', 
-                                        month: 'short' 
-                                      })}
-                                    </div>
-                                    {events.map((event) => {
-                                      const isSelected = selectedTimeSlots?.some(slot => slot.id === event.id);
-                                      const startTime = event.start ? new Date(event.start).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
-                                      const endTime = event.end ? new Date(event.end).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
-                                      
-                                      return (
-                                        <div
-                                          key={event.id}
-                                          onClick={() => handleSelectTimeSlot && handleSelectTimeSlot(event)}
-                                          style={{
-                                            padding: '8px 10px',
-                                            backgroundColor: isSelected ? 'rgba(34, 197, 94, 0.15)' : '#FFFCF7',
-                                            borderRadius: '6px',
-                                            border: isSelected ? '2px solid #22C55E' : '1px solid #E5E7EB',
-                                            cursor: 'pointer',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'space-between',
-                                            marginBottom: '4px',
-                                            transition: 'all 0.2s ease'
-                                          }}
-                                        >
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <span style={{ 
-                                              fontSize: '14px',
-                                              opacity: isSelected ? 1 : 0.5
-                                            }}>
-                                              {isSelected ? '✓' : '○'}
-                                            </span>
-                                            <div>
-                                              <p style={{ margin: 0, fontSize: '12px', fontWeight: '500', color: '#1F3A2E' }}>
-                                                {startTime} - {endTime}
-                                              </p>
-                                              {event.summary && event.summary.toLowerCase() !== 'disponible' && (
-                                                <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5A7766' }}>
-                                                  {event.summary}
-                                                </p>
-                                              )}
-                                            </div>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                ));
-                              })()}
-                            </div>
-                          ) : (
-                            <div style={{
-                              padding: '12px',
-                              backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                              borderRadius: '8px',
-                              color: '#D97706',
-                              fontSize: '12px',
-                              textAlign: 'center'
-                            }}>
-                              {t('Aucune disponibilité trouvée pour les dates sélectionnées', 'No availability found for selected dates')} ({startDate} - {endDate})
-                            </div>
-                          )}
-
-                          {/* Selected slots summary */}
-                          {selectedTimeSlots && selectedTimeSlots.length > 0 && (
-                            <div style={{
-                              marginTop: '8px',
-                              padding: '8px',
-                              backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              color: '#059669'
-                            }}>
-                              ✓ {selectedTimeSlots.length} {t('créneau(x) sélectionné(s)', 'slot(s) selected')}
-                            </div>
-                          )}
+                      {/* Selected slot count stays visible but compact */}
+                      {selectedGuide && selectedTimeSlots && selectedTimeSlots.length > 0 && (
+                        <div style={{
+                          marginTop: '6px',
+                          padding: '7px 9px',
+                          backgroundColor: 'rgba(34, 197, 94, 0.08)',
+                          borderRadius: '8px',
+                          fontSize: '11px',
+                          color: '#047857'
+                        }}>
+                          ✓ {selectedTimeSlots.length} {t('créneau(x) sélectionné(s)', 'slot(s) selected')} • {selectedGuide?.name}
                         </div>
                       )}
                     </div>
@@ -1603,43 +2505,36 @@ const GaspesieMap = ({
 
                 {/* CHALET SECTION - only if needsChalet is true (always shown in chalet mode) */}
                 {needsChalet && (
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{
+                    minHeight: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    border: '1px solid #E3EAE6',
+                    borderRadius: '10px',
+                    backgroundColor: '#FFFCF7',
+                    padding: '10px'
+                  }}>
                     <h4 style={{ margin: '0 0 8px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
-                      {t('🏠 Chalets disponibles', '🏠 Available chalets')}
+                      {t('Chalets disponibles', 'Available chalets')}
                     </h4>
-                    
-                    <p style={{ fontSize: '12px', color: '#5A7766', margin: '0 0 8px' }}>
-                      {t('Cliquez sur la carte pour définir votre zone de recherche', 'Click on the map to set your search area')}
-                    </p>
 
-                    {/* Radius slider */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '12px' }}>
-                      <label style={{ fontSize: '12px', color: '#5A7766' }}>
-                        {t('Rayon', 'Radius')}: {radius} km
-                      </label>
-                      <input
-                        type="range"
-                        min="5"
-                        max="100"
-                        value={radius}
-                        onChange={(e) => setRadius(parseInt(e.target.value))}
-                        style={{ width: '100%' }}
-                      />
-                    </div>
-
-                    {!selectedPoint?.lngLat ? (
+                    {!selectedPoint?.lngLat && !selectedRiverProp ? (
                       <div style={{
                         padding: '12px',
-                        backgroundColor: 'rgba(74, 155, 142, 0.1)',
+                        backgroundColor: 'rgba(74, 155, 142, 0.08)',
                         borderRadius: '8px',
-                        border: '1px dashed #4A9B8E'
+                        border: '1px dashed #4A9B8E',
+                        fontSize: '12px',
+                        color: '#2D5F4C',
+                        textAlign: 'center',
                       }}>
-                        <p style={{ fontSize: '12px', color: '#2D5F4C', margin: 0, textAlign: 'center' }}>
-                          👆 {t('Cliquez sur la carte', 'Click on the map')}
-                        </p>
+                        {t(
+                          'Retournez à l\'étape 1 pour choisir une destination et voir les chalets à proximité.',
+                          'Go back to step 1 to pick a destination and see nearby chalets.'
+                        )}
                       </div>
                     ) : (
-                      <div>
+                      <div style={{ minHeight: 0, overflowY: 'auto', paddingRight: '2px' }}>
                         {loadingChalets && (
                           <div style={{ textAlign: 'center', padding: '16px', color: '#5A7766' }}>
                             {t('Chargement des chalets...', 'Loading chalets...')}
@@ -1660,14 +2555,14 @@ const GaspesieMap = ({
 
                         {!loadingChalets && !chaletError && chalets.length === 0 && (
                           <div style={{
-                            padding: '12px',
-                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            padding: '10px 12px',
+                            backgroundColor: 'rgba(90, 119, 102, 0.08)',
                             borderRadius: '8px',
-                            color: '#DC2626',
+                            color: '#4B6256',
                             fontSize: '12px',
                             textAlign: 'center'
                           }}>
-                            {t('Aucun chalet trouvé à proximité', 'No chalet found nearby')}
+                            {t('Aucun chalet trouvé pour ces dates à proximité.', 'No chalet found nearby for these dates.')}
                           </div>
                         )}
 
@@ -1794,325 +2689,57 @@ const GaspesieMap = ({
 
                 {/* Selection summary */}
                 <div style={{
-                  padding: '10px',
-                  backgroundColor: '#FFFCF7',
+                  padding: '8px 10px',
+                  backgroundColor: 'rgba(255, 252, 247, 0.85)',
                   borderRadius: '8px',
-                  border: '1px solid #E5E7EB',
-                  fontSize: '12px',
+                  border: '1px solid #E3EAE6',
+                  fontSize: '11px',
                   flexShrink: 0
                 }}>
-                  <div><strong>{t('Guide', 'Guide')}:</strong> {selectedGuide ? selectedGuide.name : t('Aucun', 'None')}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 12px' }}>
+                    <span><strong>{t('Guide', 'Guide')}:</strong> {selectedGuide ? selectedGuide.name : t('Aucun', 'None')}</span>
+                    {needsChalet && (
+                      <span><strong>{t('Chalet', 'Chalet')}:</strong> {selectedChalet ? selectedChalet.name : t('Aucun', 'None')}</span>
+                    )}
+                  </div>
                   {selectedGuide && selectedTimeSlots && selectedTimeSlots.length > 0 && (
-                    <div style={{ marginTop: '4px', fontSize: '11px', color: '#5A7766' }}>
+                    <div style={{ marginTop: '3px', fontSize: '10px', color: '#5A7766' }}>
                       <strong>{t('Créneaux', 'Time slots')}:</strong> {selectedTimeSlots.length} {t('sélectionné(s)', 'selected')}
                     </div>
                   )}
-                  {needsChalet && (
-                    <div><strong>{t('Chalet', 'Chalet')}:</strong> {selectedChalet ? selectedChalet.name : t('Aucun', 'None')}</div>
-                  )}
                 </div>
 
-                {/* Navigation buttons */}
-                <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    onClick={() => setBookingStep(1)}
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      backgroundColor: 'transparent',
-                      color: '#5A7766',
-                      border: '1.5px solid #5A7766',
-                      borderRadius: '10px',
-                      cursor: 'pointer',
-                      fontWeight: '500',
-                      fontSize: '13px'
-                    }}
-                  >
-                    {t('← Retour', '← Back')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={proceedToStep3}
-                    disabled={!canProceedStep2}
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      backgroundColor: canProceedStep2 ? '#2D5F4C' : '#9CA3AF',
-                      color: '#FFFCF7',
-                      border: 'none',
-                      borderRadius: '10px',
-                      cursor: canProceedStep2 ? 'pointer' : 'not-allowed',
-                      fontWeight: '600',
-                      fontSize: '13px'
-                    }}
-                  >
-                    {t('Continuer →', 'Continue →')}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Step 3: Featured Activities (NEW - replaced date selection) */}
-            {bookingStep === 3 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
-                  {t('3. Activités à proximité', '3. Nearby activities')}
-                </h3>
-
-                {/* Selection summary */}
-                <div style={{
-                  padding: '12px',
-                  backgroundColor: 'rgba(45, 95, 76, 0.1)',
-                  borderRadius: '8px',
-                  fontSize: '13px',
-                  color: '#2D5F4C'
-                }}>
-                  <div><strong>📅 {t('Dates', 'Dates')}:</strong> {startDate} {t('au', 'to')} {endDate}</div>
-                  {selectedGuide && (
-                    <>
-                      <div><strong>🧭 {t('Guide', 'Guide')}:</strong> {selectedGuide.name}</div>
-                      {selectedTimeSlots && selectedTimeSlots.length > 0 && (
-                        <div style={{ fontSize: '11px', marginTop: '4px' }}>
-                          <strong>⏰ {t('Créneaux', 'Time slots')}:</strong> {selectedTimeSlots.map(slot => {
-                            const startTime = new Date(slot.startTime).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' });
-                            const endTime = new Date(slot.endTime).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' });
-                            const date = new Date(slot.date + 'T00:00:00').toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' });
-                            return `${date} ${startTime}-${endTime}`;
-                          }).join(', ')}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {selectedChalet && needsChalet && (
-                    <div><strong>🏠 {t('Chalet', 'Chalet')}:</strong> {selectedChalet.name}</div>
-                  )}
-                </div>
-
-                {/* Featured activities header */}
-                <div style={{
-                  padding: '16px',
-                  background: 'linear-gradient(135deg, rgba(74, 155, 142, 0.15) 0%, rgba(45, 95, 76, 0.1) 100%)',
-                  borderRadius: '12px',
-                  textAlign: 'center'
-                }}>
-                  <h4 style={{ margin: '0 0 8px', fontSize: '15px', color: '#1F3A2E' }}>
-                    🌲 Découvrez la région
-                  </h4>
-                  <p style={{ margin: 0, fontSize: '13px', color: '#5A7766' }}>
-                    Activités populaires près de votre hébergement
-                  </p>
-                </div>
-
-                {/* Featured activities list */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {/* Activity 1 */}
-                  <div style={{
-                    padding: '14px',
-                    backgroundColor: '#FFFCF7',
-                    borderRadius: '10px',
-                    border: '1px solid #E5E7EB',
-                    display: 'flex',
-                    gap: '12px',
-                    alignItems: 'center'
-                  }}>
-                    <div style={{
-                      width: '44px',
-                      height: '44px',
-                      borderRadius: '10px',
-                      backgroundColor: 'rgba(74, 155, 142, 0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '22px',
-                      flexShrink: 0
-                    }}>
-                      🚣
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
-                        Kayak sur la rivière
-                      </p>
-                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#5A7766' }}>
-                        Location disponible • 2h à 4h
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Activity 2 */}
-                  <div style={{
-                    padding: '14px',
-                    backgroundColor: '#FFFCF7',
-                    borderRadius: '10px',
-                    border: '1px solid #E5E7EB',
-                    display: 'flex',
-                    gap: '12px',
-                    alignItems: 'center'
-                  }}>
-                    <div style={{
-                      width: '44px',
-                      height: '44px',
-                      borderRadius: '10px',
-                      backgroundColor: 'rgba(74, 155, 142, 0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '22px',
-                      flexShrink: 0
-                    }}>
-                      🥾
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
-                        Randonnée pédestre
-                      </p>
-                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#5A7766' }}>
-                        Sentiers balisés • Tous niveaux
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Activity 3 */}
-                  <div style={{
-                    padding: '14px',
-                    backgroundColor: '#FFFCF7',
-                    borderRadius: '10px',
-                    border: '1px solid #E5E7EB',
-                    display: 'flex',
-                    gap: '12px',
-                    alignItems: 'center'
-                  }}>
-                    <div style={{
-                      width: '44px',
-                      height: '44px',
-                      borderRadius: '10px',
-                      backgroundColor: 'rgba(74, 155, 142, 0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '22px',
-                      flexShrink: 0
-                    }}>
-                      🦌
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
-                        Observation de la faune
-                      </p>
-                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#5A7766' }}>
-                        Orignal, cerf, oiseaux
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Activity 4 */}
-                  <div style={{
-                    padding: '14px',
-                    backgroundColor: '#FFFCF7',
-                    borderRadius: '10px',
-                    border: '1px solid #E5E7EB',
-                    display: 'flex',
-                    gap: '12px',
-                    alignItems: 'center'
-                  }}>
-                    <div style={{
-                      width: '44px',
-                      height: '44px',
-                      borderRadius: '10px',
-                      backgroundColor: 'rgba(74, 155, 142, 0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '22px',
-                      flexShrink: 0
-                    }}>
-                      🍽️
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontWeight: '600', fontSize: '13px', color: '#1F3A2E' }}>
-                        Gastronomie locale
-                      </p>
-                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#5A7766' }}>
-                        Restaurants et producteurs
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Availability status */}
-                {checkingAvailability && (
-                  <div style={{ textAlign: 'center', padding: '12px', color: '#5A7766' }}>
-                    {t('Vérification de la disponibilité...', 'Checking availability...')}
-                  </div>
-                )}
-
-                {/* Date conflicts */}
-                {dateConflicts && (
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                    borderRadius: '8px',
-                    fontSize: '13px'
-                  }}>
-                    {dateConflicts.guide && (
-                      <div style={{ color: '#DC2626', marginBottom: dateConflicts.chalet ? '8px' : 0 }}>
-                        ⚠️ {dateConflicts.guide.message}
-                      </div>
-                    )}
-                    {dateConflicts.chalet && (
-                      <div style={{ color: '#DC2626' }}>
-                        ⚠️ {dateConflicts.chalet.message}
-                      </div>
-                    )}
-                    <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#5A7766' }}>
-                      {t('Veuillez retourner à l\'étape 1 pour modifier vos dates.', 'Please return to step 1 to change your dates.')}
-                    </p>
-                  </div>
-                )}
-
-                {/* Success indicator */}
-                {!checkingAvailability && !dateConflicts && (
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                    borderRadius: '8px',
-                    fontSize: '13px',
-                    color: '#059669'
-                  }}>
-                    {t('✓ Disponibilité confirmée pour vos dates', '✓ Availability confirmed for your dates')}
-                  </div>
-                )}
-
-                {/* Booking error display */}
+                {/* Booking error display (shows above nav when handleBookGuide fails) */}
                 {bookingError && (
                   <div style={{
-                    padding: '12px',
+                    padding: '10px 12px',
                     backgroundColor: 'rgba(239, 68, 68, 0.1)',
                     borderRadius: '8px',
-                    fontSize: '13px',
-                    color: '#DC2626'
+                    fontSize: '12px',
+                    color: '#DC2626',
+                    flexShrink: 0,
                   }}>
                     ⚠️ {bookingError}
                   </div>
                 )}
 
-                {/* Navigation */}
-                <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                {/* Navigation buttons: Back → step 2 | Reserve → handleBookGuide → step 4 */}
+                <div style={{ display: 'flex', gap: '8px', flexShrink: 0, position: 'sticky', bottom: 0, background: '#FAF7F1', paddingTop: '6px' }}>
                   <button
                     type="button"
                     onClick={() => setBookingStep(2)}
                     disabled={isCreatingBooking}
                     style={{
                       flex: 1,
-                      padding: '12px',
+                      padding: '11px',
                       backgroundColor: 'transparent',
                       color: '#5A7766',
                       border: '1.5px solid #5A7766',
-                      borderRadius: '10px',
+                      borderRadius: '9px',
                       cursor: isCreatingBooking ? 'not-allowed' : 'pointer',
                       fontWeight: '500',
-                      fontSize: '14px',
-                      opacity: isCreatingBooking ? 0.6 : 1
+                      fontSize: '12px',
+                      opacity: isCreatingBooking ? 0.6 : 1,
                     }}
                   >
                     {t('← Retour', '← Back')}
@@ -2123,29 +2750,29 @@ const GaspesieMap = ({
                     disabled={!canProceedStep3 || isCreatingBooking}
                     style={{
                       flex: 1,
-                      padding: '12px',
+                      padding: '11px',
                       backgroundColor: (canProceedStep3 && !isCreatingBooking) ? '#2D5F4C' : '#9CA3AF',
                       color: '#FFFCF7',
                       border: 'none',
-                      borderRadius: '10px',
+                      borderRadius: '9px',
                       cursor: (canProceedStep3 && !isCreatingBooking) ? 'pointer' : 'not-allowed',
                       fontWeight: '600',
-                      fontSize: '14px',
+                      fontSize: '12px',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '8px'
+                      gap: '8px',
                     }}
                   >
                     {isCreatingBooking ? (
                       <>
                         <span style={{
-                          width: '16px',
-                          height: '16px',
+                          width: '14px',
+                          height: '14px',
                           border: '2px solid #FFFCF7',
                           borderTopColor: 'transparent',
                           borderRadius: '50%',
-                          animation: 'spin 1s linear infinite'
+                          animation: 'spin 1s linear infinite',
                         }} />
                         {t('Réservation...', 'Booking...')}
                       </>
@@ -2684,18 +3311,75 @@ const GaspesieMap = ({
       </div>
 
       {/* Map Container - 80% */}
-      <div 
-        ref={mapContainerRef} 
-        style={{ 
-          position: 'relative',
-          top: 0,
-          left: 0,
-          flex: '1 1 auto',
-          minWidth: 0,
-          justifyContent: 'flex-end',
-          height: '100%' 
-        }} 
-      />
+      <div style={{
+        position: 'relative',
+        flex: '1 1 auto',
+        minWidth: 0,
+        height: '100%',
+        overflow: 'hidden',
+      }}>
+        <div
+          ref={mapContainerRef}
+          style={{ position: 'absolute', inset: 0 }}
+        />
+
+        {/* River layers are now rendered natively by Mapbox — no HTML SVG overlay */}
+
+        {/* Selected river info box */}
+        {selectedRiver && (
+          (() => {
+            const selectedRiverMeta = getRiverDetails ? getRiverDetails(selectedRiver) : null;
+            const title = formatRiverName ? formatRiverName(selectedRiver) : selectedRiver;
+            const subtitle = selectedRiverMeta?.description || 'Zone de peche selectionnee';
+            return (
+          <div style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            zIndex: 20,
+            background: 'rgba(255,252,247,0.96)',
+            border: '1px solid rgba(33,150,243,0.35)',
+            borderRadius: 10,
+            padding: '10px 16px',
+            fontSize: 13,
+            color: '#1a3a2a',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+            minWidth: 140,
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              {title}
+            </div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 6, lineHeight: 1.35 }}>
+              {subtitle}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedRiver(null);
+                mapRef.current._riverSelected = null;
+                const map = mapRef.current;
+                if (map) {
+                  const hide = ['==', ['get', 'id'], ''];
+                  ['rivers-glow-outer', 'rivers-glow-inner', 'rivers-highlight'].forEach(l => {
+                    if (map.getLayer(l)) map.setFilter(l, hide);
+                  });
+                }
+              }}
+              style={{
+                background: 'none',
+                border: '1px solid #ccc',
+                borderRadius: 6,
+                padding: '3px 10px',
+                cursor: 'pointer',
+                fontSize: 12,
+                color: '#555',
+              }}
+            >Fermer</button>
+          </div>
+            );
+          })()
+        )}
+      </div>
 
       {mapInitError && (
         <div

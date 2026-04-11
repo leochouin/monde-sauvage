@@ -42,6 +42,38 @@
     gap: 32px;
 }
 
+.date-picker-months.single-month {
+    grid-template-columns: 1fr;
+    gap: 0;
+}
+
+.date-range-picker.single-month {
+    padding: 12px;
+}
+
+.date-range-picker.single-month .date-picker-month {
+    min-width: 0;
+    width: 100%;
+}
+
+.date-range-picker.single-month .date-picker-controls {
+    margin-bottom: 12px;
+}
+
+.date-range-picker.single-month .date-picker-day-names {
+    gap: 1px;
+    margin-bottom: 6px;
+}
+
+.date-range-picker.single-month .date-picker-days-grid {
+    gap: 1px;
+}
+
+.date-range-picker.single-month .date-picker-day {
+    min-height: 32px;
+    font-size: 0.8125rem;
+}
+
 @media (max-width: 768px) {
     .date-picker-months {
         grid-template-columns: 1fr;

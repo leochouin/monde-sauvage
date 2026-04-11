@@ -1,0 +1,232 @@
+GASPESIE RIVER MODAL GUIDE
+Purpose: numbering guide + short modal copy for a coding agent.
+Source basis: handwritten Monde Sauvage map + real Gaspésie river references.
+Important: some labels on the hand-drawn map are crystal clear; others were inferred from geography because the handwriting is stylized.
+Recommendation: keep the IDs stable, but visually recheck any entry marked confidence=medium before hard-coding final production copy.
+
+NUMBERING LOGIC
+- IDs are assigned in a practical map-reading order from west/left toward east/right, then to the lower-right river cluster.
+- Use the "map_position_hint" to know which river is which when looking at the illustration.
+- If your SVG/path layer already has separate river paths, map each path to the matching river_id below.
+
+ALIASES / NORMALIZATION NOTES
+- "Pabos" on the map may refer to the 3-river Pabos system in general, not a single standalone river card.
+- "du Grand Pabos" => normalize to "Grand Pabos".
+- "du Grand Pabos Ouest" => normalize to "Grand Pabos Ouest".
+- Some north-coast names were inferred from location and regional geography because the handwriting is harder to read there.
+
+==================================================
+RIVER 01
+river_id: 1
+slug: matapedia
+name: Matapédia
+confidence: high
+map_position_hint: far left / southwest edge of the peninsula, entering the bay beside the two birds
+modal_blurb: The Matapédia is one of the iconic gateway rivers of Gaspésie. Flowing through the Matapédia Valley into the Restigouche system, it is famous for Atlantic salmon and for the dramatic valley landscape that frames the western entrance to the peninsula.
+length_km: 112.7
+mouth: Restigouche River
+image_url: https://commons.wikimedia.org/wiki/Special:FilePath/PecheurSaumonRiviereMatapedia.JPG
+info_url: https://en.wikipedia.org/wiki/Matapedia_River
+
+RIVER 02
+river_id: 2
+slug: cascapedia
+name: Cascapédia
+confidence: high
+map_position_hint: upper-left of center, vertical river dropping south from the north coast, left of Bonaventure
+modal_blurb: The Cascapédia is one of the legendary salmon rivers of the Gaspé Peninsula. It rises in the Chic-Choc region and flows to Cascapedia Bay, known for clear water, big fish, and a long-standing fly-fishing reputation.
+length_km: 120
+mouth: Cascapedia Bay / Chaleur Bay
+image_url: https://commons.wikimedia.org/wiki/Special:FilePath/Rivière_Cascapédia.jpg
+info_url: https://en.wikipedia.org/wiki/Cascap%C3%A9dia_River
+
+RIVER 03
+river_id: 3
+slug: petite-cascapedia
+name: Petite Cascapédia
+confidence: medium
+map_position_hint: south side of the peninsula, west of Bonaventure and east of Matapédia; smaller river that also drains toward Chaleur Bay
+modal_blurb: The Petite Cascapédia is a smaller but well-known salmon river on the south side of Gaspésie. It is valued for its quieter setting and for the wild feel of its forested watershed.
+length_km: 92
+mouth: Chaleur Bay
+image_url: 
+info_url: https://zecpetitecascapedia.com/en/petite-cascapedia-river/
+
+RIVER 04
+river_id: 4
+slug: bonaventure
+name: Bonaventure
+confidence: high
+map_position_hint: upper-middle of the map, broad blue river flowing east-west under the hotel/pin area, then continuing south through the center
+modal_blurb: The Bonaventure is one of Gaspésie's most celebrated rivers, admired for exceptionally clear and cold water. Rising in the Chic-Choc Mountains, it is closely associated with salmon fishing, canoeing, and classic Gaspé scenery.
+length_km: 115
+mouth: Chaleur Bay at Bonaventure
+image_url: https://commons.wikimedia.org/wiki/Special:FilePath/Rivi%C3%A8re_Bonaventure_02.JPG
+info_url: https://en.wikipedia.org/wiki/Bonaventure_River
+
+RIVER 05
+river_id: 5
+slug: nouvelle
+name: Nouvelle
+confidence: high
+map_position_hint: upper-middle-right, river labeled near the skier, flowing generally eastward before reaching the south shore
+modal_blurb: The Nouvelle River flows from the Notre-Dame Mountains toward Chaleur Bay. It is part of the south-shore river network that gives western Gaspésie its strong salmon and wilderness identity.
+length_km: 76
+mouth: Chaleur Bay at Nouvelle
+image_url: 
+info_url: https://en.wikipedia.org/wiki/Rivi%C3%A8re-Nouvelle
+
+RIVER 06
+river_id: 6
+slug: madeleine
+name: Madeleine
+confidence: medium
+map_position_hint: north coast inferred label; use for the major north-shore salmon river east of Sainte-Anne-des-Monts and west of the far tip
+modal_blurb: The Madeleine is one of the major salmon rivers of the north coast of Gaspésie. It is known for long runs through rugged terrain, clear water, and a strong reputation among anglers exploring the peninsula's Saint-Lawrence side.
+length_km: 115 to 150 (sources vary)
+mouth: Gulf / Estuary of the Saint Lawrence at Sainte-Madeleine-de-la-Rivière-Madeleine
+image_url: 
+info_url: https://www.saumonquebec.com/en/gaspe-peninsula/madeleine-river
+
+RIVER 07
+river_id: 7
+slug: mont-louis
+name: Mont-Louis
+confidence: medium
+map_position_hint: north coast inferred label, between Madeleine and Cap-Chat on the western half of the north shore
+modal_blurb: The Mont-Louis River descends from the Chic-Choc highlands to the Saint Lawrence. Compact but scenic, it fits the classic north-coast Gaspésie profile: mountain source, steep valley, and quick access to the sea.
+length_km: 50.5
+mouth: Saint Lawrence estuary at Saint-Maxime-du-Mont-Louis
+image_url: 
+info_url: https://fr.wikipedia.org/wiki/Rivi%C3%A8re_de_Mont-Louis
+
+RIVER 08
+river_id: 8
+slug: cap-chat
+name: Cap-Chat
+confidence: medium
+map_position_hint: north coast inferred label, western side of the north shore near the Cap-Chat / Sainte-Anne-des-Monts sector
+modal_blurb: The Cap-Chat River is a north-shore salmon river known for cold clear water and a gravel bed. It is relatively accessible and helps anchor the outdoor identity of the Haute-Gaspésie coast.
+length_km: 56.6 to 57.5
+mouth: Saint Lawrence
+image_url: 
+info_url: https://www.saumonquebec.com/en/gaspe-peninsula/cap-chat-river
+
+RIVER 09
+river_id: 9
+slug: dartmouth
+name: Dartmouth
+confidence: high
+map_position_hint: upper-right coast, river label near the fox and close to the tip-side coastline
+modal_blurb: The Dartmouth River flows through a largely wild northeastern landscape before reaching the Gaspé area. Its remote feel and mountain scenery make it one of the memorable salmon rivers of the peninsula's eastern side.
+length_km: 63.1
+mouth: Gaspé Bay area
+image_url: 
+info_url: https://en.wikipedia.org/wiki/Zec_de_la_Rivi%C3%A8re-Dartmouth
+
+RIVER 10
+river_id: 10
+slug: york
+name: York
+confidence: high
+map_position_hint: right-center, just above Saint-Jean, flowing east toward Gaspé Bay
+modal_blurb: The York is one of the flagship salmon rivers near Gaspé. It is widely admired for its emerald-toned water, strong salmon reputation, and its direct link to the outdoor culture of the eastern peninsula.
+length_km: 94.1 to 98
+mouth: Gaspé Bay
+image_url: https://commons.wikimedia.org/wiki/Special:FilePath/York-gaspe-atlanticsalmon.jpg
+info_url: https://saumongaspe.com/en/riviere-york/information.html
+
+RIVER 11
+river_id: 11
+slug: saint-jean
+name: Saint-Jean
+confidence: high
+map_position_hint: right-center, large horizontal river clearly labeled SAINT-JEAN, below York
+modal_blurb: The Saint-Jean is one of the best-known salmon rivers of eastern Gaspésie. Rising in the Chic-Choc Mountains and running toward Gaspé Bay, it combines wilderness headwaters with a strong sporting heritage.
+length_km: 90
+mouth: Gaspé Bay
+image_url: 
+info_url: https://en.wikipedia.org/wiki/Rivi%C3%A8re-Saint-Jean%2C_Gasp%C3%A9sie%E2%80%93%C3%8Eles-de-la-Madeleine%2C_Quebec
+
+RIVER 12
+river_id: 12
+slug: malbaie-perce
+name: Malbaie
+confidence: medium
+map_position_hint: inferred east-side / Percé sector river; use only if your artwork path clearly matches a river near the far eastern tip
+modal_blurb: The Malbaie in the Percé sector is a smaller eastern Gaspésie river that flows toward La Malbaie Bay. It adds to the dense network of coastal rivers that define the rugged eastern end of the peninsula.
+length_km: not clearly verified from quick source pass
+mouth: La Malbaie Bay / Gulf of Saint Lawrence
+image_url: 
+info_url: https://fr.wikipedia.org/wiki/Rivi%C3%A8re_Malbaie_%28Perc%C3%A9%29
+
+RIVER 13
+river_id: 13
+slug: grande-riviere
+name: Grande Rivière
+confidence: high
+map_position_hint: lower-right, larger south-shore river near the town/wharf area east of the Pabos cluster
+modal_blurb: Grande Rivière is a prominent south-shore river of the Percé area. It runs from the interior highlands to Chaleur Bay and is well known in the Gaspésie salmon-river network.
+length_km: 60 to 70.1 (sources vary)
+mouth: Chaleur Bay at Grande-Rivière
+image_url: 
+info_url: https://www.saumonquebec.com/en/gaspe-peninsula/grande-riviere
+
+RIVER 14
+river_id: 14
+slug: petit-pabos
+name: Petit Pabos
+confidence: high
+map_position_hint: lower-right cluster, smaller river branch west of Grande Rivière and south/east of the lodge pin area
+modal_blurb: The Petit Pabos is one of the three famous Pabos rivers near Chandler. It is a clear-water salmon river and part of a trio often grouped together by anglers exploring this part of the peninsula.
+length_km: 61.6
+mouth: Chaleur Bay near Chandler
+image_url: https://commons.wikimedia.org/wiki/Special:FilePath/Small_pabos_river_salmons.jpg
+info_url: https://en.wikipedia.org/wiki/Petit_Pabos_River
+
+RIVER 15
+river_id: 15
+slug: grand-pabos
+name: Grand Pabos
+confidence: high
+map_position_hint: lower-right cluster, main Pabos river north of Grand Pabos Ouest and west of Grande Rivière
+modal_blurb: The Grand Pabos is another of the three Pabos rivers and has long been associated with Atlantic salmon. Its name comes from the Mi'kmaq word pabog, often interpreted as tranquil waters.
+length_km: 42
+mouth: Pabos Bay / Chaleur Bay at Chandler
+image_url: https://commons.wikimedia.org/wiki/Special:FilePath/Riviere_Grand_Pabos.jpg
+info_url: https://en.wikipedia.org/wiki/Grand_Pabos_River
+
+RIVER 16
+river_id: 16
+slug: grand-pabos-ouest
+name: Grand Pabos Ouest
+confidence: high
+map_position_hint: lower-right cluster, southern/western Pabos branch, typically read as the western sister river of Grand Pabos
+modal_blurb: Grand Pabos Ouest completes the well-known Pabos trio. Like the other two, it is a salmon river tied to the Chandler area and to the broader outdoor identity of southern Gaspésie.
+length_km: 47.3
+mouth: Pabos Bay / Chaleur Bay
+image_url: 
+info_url: https://en.wikipedia.org/wiki/Grand_Pabos_West_River
+
+RIVER 17
+river_id: 17
+slug: sainte-anne
+name: Sainte-Anne
+confidence: medium
+map_position_hint: north-coast inferred label; use for the major river associated with Sainte-Anne-des-Monts on the Saint-Lawrence side
+modal_blurb: The Sainte-Anne is one of the signature rivers of Haute-Gaspésie. It runs from the mountains to Sainte-Anne-des-Monts and is known for a scenic valley, salmon presence, and a strong connection to the national park landscape.
+length_km: 74
+mouth: Saint Lawrence at Sainte-Anne-des-Monts
+image_url: 
+info_url: https://en.wikipedia.org/wiki/Sainte-Anne_River_%28La_Haute-Gasp%C3%A9sie%29
+
+==================================================
+IMPLEMENTATION NOTES FOR CODING AGENT
+1. Use river_id as the stable key.
+2. Use name for the card title.
+3. Use modal_blurb as the short body text.
+4. Use map_position_hint during manual QA when matching SVG paths to data entries.
+5. For entries with confidence=medium, confirm the handwritten label visually before shipping.
+6. If you only want the strongest, safest set for V1, prioritize: 1, 2, 4, 5, 9, 10, 11, 13, 14, 15, 16.
+7. If image_url is empty, fall back to a local placeholder or a later curated asset.
+8. Wikimedia hotlinks may redirect; for production, consider downloading and self-hosting the chosen image.

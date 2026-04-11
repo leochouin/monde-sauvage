@@ -1,13 +1,18 @@
 import { useState } from "react";
 import supabase from '../utils/supabase.js';
 
-export default function LoginModal({ isLoginOpen, onLoginClose }) {
+export default function LoginModal({ isLoginOpen, onLoginClose, language = 'fr' }) {
     const [isRegister, setIsRegister] = useState(false);
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
     const [loading, setLoading] = useState(false);
+    const [resendLoading, setResendLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [infoMessage, setInfoMessage] = useState(null);
+    const isEnglish = language === 'en';
+    const t = (frText, enText) => (isEnglish ? enText : frText);
+    const signupRedirectTo = `${globalThis.location.origin}/map`;
 
     if (!isLoginOpen) return null;
 
@@ -16,15 +21,17 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
         setPassword("");
         setConfirmPassword("");
         setError(null);
+        setInfoMessage(null);
     };
 
     const handleEmailPasswordSubmit = async () => {
         setLoading(true);
         setError(null);
+        setInfoMessage(null);
 
         // Validate passwords match for registration
         if (isRegister && password !== confirmPassword) {
-            setError("Passwords don't match");
+            setError(t('Les mots de passe ne correspondent pas', "Passwords don't match"));
             setLoading(false);
             return;
         }
@@ -34,7 +41,10 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                 // Sign up new user
                 const { data, error: signUpError } = await supabase.auth.signUp({
                     email,
-                    password
+                    password,
+                    options: {
+                        emailRedirectTo: signupRedirectTo,
+                    },
                 });
                 
                 if (signUpError) throw signUpError;
@@ -47,9 +57,31 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                     );
                 }
 
-                // Success message (some providers require email confirmation)
-                alert("Account created! Check your email to confirm.");
-                onLoginClose();
+                const requiresEmailConfirmation = !data?.session;
+                const appearsExistingAccount = Array.isArray(data?.user?.identities) && data.user.identities.length === 0;
+
+                // Keep existing flow when a session is returned; otherwise guide to confirmation + resend.
+                if (!requiresEmailConfirmation) {
+                    setInfoMessage(t('Compte créé! Vous êtes maintenant connecté.', 'Account created! You are now signed in.'));
+                    window.location.href = '/';
+                    return;
+                }
+
+                if (appearsExistingAccount) {
+                    setInfoMessage(
+                        t(
+                            'Ce courriel semble déjà utilisé. Si le compte existe, vérifiez vos courriels (et les indésirables) ou renvoyez le lien de confirmation.',
+                            'This email appears to be already used. If the account exists, check your inbox (and spam) or resend the confirmation link.'
+                        )
+                    );
+                } else {
+                    setInfoMessage(
+                        t(
+                            'Compte créé. Vérifiez votre courriel pour confirmer votre compte. Vous pouvez aussi renvoyer le courriel ci-dessous.',
+                            'Account created. Check your email to confirm your account. You can also resend the email below.'
+                        )
+                    );
+                }
             } else {
                 // Sign in existing user
                 const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -66,6 +98,41 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
             setError(err.message);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleResendConfirmation = async () => {
+        setError(null);
+        setInfoMessage(null);
+
+        const normalizedEmail = email.trim();
+        if (!normalizedEmail) {
+            setError(t('Entrez un courriel avant de renvoyer le lien.', 'Enter an email before resending the link.'));
+            return;
+        }
+
+        try {
+            setResendLoading(true);
+            const { error: resendError } = await supabase.auth.resend({
+                type: 'signup',
+                email: normalizedEmail,
+                options: {
+                    emailRedirectTo: signupRedirectTo,
+                },
+            });
+
+            if (resendError) throw resendError;
+
+            setInfoMessage(
+                t(
+                    'Courriel de confirmation renvoyé. Vérifiez votre boîte de réception et les indésirables.',
+                    'Confirmation email resent. Check your inbox and spam folder.'
+                )
+            );
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setResendLoading(false);
         }
     };
 
@@ -100,7 +167,7 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
 
                 <div className="login-modal-content">
                     <h2 className="login-modal-title">
-                        {isRegister ? "Create Account" : "Welcome Back"}
+                        {isRegister ? t('Créer un compte', 'Create Account') : t('Bon retour', 'Welcome Back')}
                     </h2>
 
                     {error && (
@@ -109,10 +176,16 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                         </div>
                     )}
 
+                    {infoMessage && (
+                        <div className="login-success" role="status" aria-live="polite">
+                            {infoMessage}
+                        </div>
+                    )}
+
                     <div className="login-modal-form">
                         <div className="login-input-group">
                             <label htmlFor="email" className="login-label">
-                                Email
+                                {t('Courriel', 'Email')}
                             </label>
                             <input
                                 id="email"
@@ -120,14 +193,14 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 className="login-input"
-                                placeholder="you@example.com"
+                                placeholder={t('vous@exemple.com', 'you@example.com')}
                                 disabled={loading}
                             />
                         </div>
 
                         <div className="login-input-group">
                             <label htmlFor="password" className="login-label">
-                                Password
+                                {t('Mot de passe', 'Password')}
                             </label>
                             <input
                                 id="password"
@@ -143,7 +216,7 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                         {isRegister && (
                             <div className="login-input-group">
                                 <label htmlFor="confirmPassword" className="login-label">
-                                    Confirm Password
+                                    {t('Confirmer le mot de passe', 'Confirm Password')}
                                 </label>
                                 <input
                                     id="confirmPassword"
@@ -161,14 +234,25 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                             type="button" 
                             className="login-submit-btn"
                             onClick={handleEmailPasswordSubmit}
-                            disabled={loading}
+                            disabled={loading || resendLoading}
                         >
-                            {loading ? 'Loading...' : (isRegister ? "Sign Up" : "Log In")}
+                            {loading ? t('Chargement...', 'Loading...') : (isRegister ? t('Créer un compte', 'Sign Up') : t('Se connecter', 'Log In'))}
                         </button>
+
+                        {isRegister && (
+                            <button
+                                type="button"
+                                className="login-submit-btn"
+                                onClick={handleResendConfirmation}
+                                disabled={loading || resendLoading || !email.trim()}
+                            >
+                                {resendLoading ? t('Renvoi...', 'Resending...') : t('Renvoyer le courriel de confirmation', 'Resend confirmation email')}
+                            </button>
+                        )}
                     </div>
 
                     <div className="login-divider">
-                        <span className="login-divider-text">Or continue with</span>
+                        <span className="login-divider-text">{t('Ou continuer avec', 'Or continue with')}</span>
                     </div>
 
                     <button 
@@ -195,18 +279,18 @@ export default function LoginModal({ isLoginOpen, onLoginClose }) {
                                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                             />
                         </svg>
-                        Sign in with Google
+                        {t('Se connecter avec Google', 'Sign in with Google')}
                     </button>
 
                     <div className="login-toggle">
-                        {isRegister ? "Already have an account?" : "Don't have an account?"}{" "}
+                        {isRegister ? t('Vous avez déjà un compte?', 'Already have an account?') : t('Vous n\'avez pas de compte?', "Don't have an account?")}{" "}
                         <button
                             type="button"
                             onClick={toggleMode}
                             className="login-toggle-btn"
                             disabled={loading}
                         >
-                            {isRegister ? "Log in" : "Sign up"}
+                            {isRegister ? t('Se connecter', 'Log in') : t('S\'inscrire', 'Sign up')}
                         </button>
                     </div>
                 </div>
