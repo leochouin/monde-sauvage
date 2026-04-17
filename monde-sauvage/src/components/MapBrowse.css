@@ -1,0 +1,325 @@
+/* ═══════════════════════════════════════════════════════
+   MapBrowse – Dual marker system + preview cards
+   Scoped to booking step 3 (guide + chalet selection)
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Chalet Price Pill Marker ─────────────────────────── */
+.ms-chalet-marker {
+  background: #FFFCF7;
+  border: 2px solid #2D5F4C;
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1F3A2E;
+  font-family: "Avenir Next", "Segoe UI", Roboto, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(31, 58, 46, 0.18);
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.18s ease,
+              background-color 0.15s ease,
+              border-color 0.15s ease;
+  transform-origin: center bottom;
+  z-index: 2;
+  position: relative;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ms-chalet-marker::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid #2D5F4C;
+}
+
+.ms-chalet-marker:hover,
+.ms-chalet-marker.ms-marker-hover {
+  transform: scale(1.12);
+  box-shadow: 0 4px 16px rgba(31, 58, 46, 0.28);
+  background: #2D5F4C;
+  color: #FFFCF7;
+  border-color: #2D5F4C;
+  z-index: 10;
+}
+
+.ms-chalet-marker:hover::after,
+.ms-chalet-marker.ms-marker-hover::after {
+  border-top-color: #2D5F4C;
+}
+
+.ms-chalet-marker.ms-marker-active {
+  background: #1F3A2E;
+  color: #FFFCF7;
+  border-color: #1F3A2E;
+  transform: scale(1.15);
+  box-shadow: 0 6px 20px rgba(31, 58, 46, 0.35);
+  z-index: 11;
+}
+
+.ms-chalet-marker.ms-marker-active::after {
+  border-top-color: #1F3A2E;
+}
+
+/* ── Guide Icon Marker ────────────────────────────────── */
+.ms-guide-marker {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #E87B35, #D4692B);
+  border: 2.5px solid #FFFCF7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(232, 123, 53, 0.3);
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.18s ease;
+  transform-origin: center bottom;
+  z-index: 1;
+  position: relative;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ms-guide-marker::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid #D4692B;
+}
+
+.ms-guide-marker svg {
+  width: 18px;
+  height: 18px;
+  fill: #FFFCF7;
+  flex-shrink: 0;
+}
+
+.ms-guide-marker:hover,
+.ms-guide-marker.ms-marker-hover {
+  transform: scale(1.18);
+  box-shadow: 0 4px 18px rgba(232, 123, 53, 0.45);
+  z-index: 10;
+}
+
+.ms-guide-marker.ms-marker-active {
+  transform: scale(1.22);
+  box-shadow: 0 6px 22px rgba(232, 123, 53, 0.5);
+  border-color: #1F3A2E;
+  z-index: 11;
+}
+
+/* ── Preview Card (shared) ────────────────────────────── */
+.ms-preview-card {
+  position: absolute;
+  width: 280px;
+  background: #FFFCF7;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(31, 58, 46, 0.2), 0 2px 8px rgba(0,0,0,0.06);
+  overflow: hidden;
+  font-family: "Avenir Next", "Segoe UI", Roboto, sans-serif;
+  z-index: 100;
+  animation: msPreviewIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  cursor: default;
+}
+
+@keyframes msPreviewIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ms-preview-card-image {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  display: block;
+  background: #E8E4DC;
+}
+
+.ms-preview-card-body {
+  padding: 12px 14px 14px;
+}
+
+.ms-preview-card-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.ms-preview-card-badge.ms-badge-chalet {
+  background: rgba(45, 95, 76, 0.1);
+  color: #2D5F4C;
+}
+
+.ms-preview-card-badge.ms-badge-guide {
+  background: rgba(232, 123, 53, 0.12);
+  color: #C4601F;
+}
+
+.ms-preview-card-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1F3A2E;
+  line-height: 1.3;
+}
+
+.ms-preview-card-subtitle {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #5A7766;
+  line-height: 1.4;
+}
+
+.ms-preview-card-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1F3A2E;
+  margin: 0 0 10px;
+}
+
+.ms-preview-card-price span {
+  font-weight: 400;
+  font-size: 12px;
+  color: #5A7766;
+}
+
+.ms-preview-card-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.ms-preview-card-meta-tag {
+  padding: 3px 8px;
+  background: rgba(90, 119, 102, 0.08);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #4B6256;
+}
+
+.ms-preview-card-cta {
+  display: block;
+  width: 100%;
+  padding: 9px 0;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #214537, #2F5C49);
+  color: #FFFCF7;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.ms-preview-card-cta:hover {
+  opacity: 0.9;
+}
+
+.ms-preview-card-cta.ms-cta-guide {
+  background: linear-gradient(145deg, #D4692B, #E87B35);
+}
+
+.ms-preview-card-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+  z-index: 2;
+}
+
+.ms-preview-card-close:hover {
+  background: rgba(0,0,0,0.7);
+}
+
+/* ── Guide avatar in preview ──────────────────────────── */
+.ms-preview-guide-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 14px 0;
+}
+
+.ms-preview-guide-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid rgba(232, 123, 53, 0.3);
+  flex-shrink: 0;
+}
+
+/* ── Map Legend (bottom center of map area) ────────────── */
+.ms-map-legend {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  padding: 6px 14px;
+  background: rgba(255, 252, 247, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 20px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+  z-index: 5;
+  font-family: "Avenir Next", "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  color: #4B6256;
+  pointer-events: none;
+}
+
+.ms-map-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ms-legend-chalet-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: #2D5F4C;
+  border: 1px solid #FFFCF7;
+}
+
+.ms-legend-guide-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #E87B35;
+  border: 1px solid #FFFCF7;
+}

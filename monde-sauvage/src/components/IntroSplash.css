@@ -11,6 +11,7 @@
   overflow: hidden;
   background: #000;
   opacity: 1;
+  cursor: pointer;
   transition: opacity 1s cubic-bezier(0.22, 1, 0.36, 1);
 }
 

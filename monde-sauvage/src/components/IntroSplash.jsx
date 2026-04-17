@@ -13,6 +13,14 @@ export default function IntroSplash({ onComplete }) {
   const [videoEnded, setVideoEnded] = useState(false);
   const [totalDurationMs, setTotalDurationMs] = useState(FALLBACK_DURATION_MS);
 
+  const handleSkip = () => {
+    if (fadeOut || isDone) {
+      return;
+    }
+
+    setFadeOut(true);
+  };
+
   const handleVideoMetadata = (event) => {
     const nextDurationSeconds = event?.currentTarget?.duration;
 
@@ -68,7 +76,12 @@ export default function IntroSplash({ onComplete }) {
   }
 
   return (
-    <div className={`intro-splash ${fadeOut ? 'intro-splash--fade-out' : ''}`} aria-hidden="true">
+    <div
+      className={`intro-splash ${fadeOut ? 'intro-splash--fade-out' : ''}`}
+      aria-hidden="true"
+      onClick={handleSkip}
+      onPointerDown={handleSkip}
+    >
       <div className="intro-splash__background" />
       <video
         className="intro-splash__video"

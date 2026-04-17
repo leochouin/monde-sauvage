@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AvatarImage from './AvatarImage.jsx';
 import DateRangePicker from './DateRangePicker.jsx';
 import supabase from '../utils/supabase.js';
 import useAvatarSource from '../utils/useAvatarSource.js';
 import { buildRiverGeoJSON } from '../utils/riverPaths.js';
+import { useStep3Markers, PreviewCard, MapLegend } from './MapBrowse.jsx';
+import { RIVER_CENTERS_BY_PATH_ID } from '../utils/riverGuideData.js';
 
 let mapboxAssetsPromise = null;
 
@@ -183,8 +185,6 @@ const GaspesieMap = ({
   chalets,
   loadingChalets,
   chaletError,
-  expandedEstablishments,
-  toggleEstablishment,
   handleSelectedChalet,
   selectedPoint,
   // NEW FLOW: Step 1 destination — river + radius coexist
@@ -215,6 +215,7 @@ const GaspesieMap = ({
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const mapStyleLoaded = useRef(false);
+  const [mapReady, setMapReady] = useState(false);
 
   const [circleCenter, setCircleCenter] = useState(null);
   // Rivers within the current circle radius — shown in sidebar + drives multi-glow.
@@ -279,6 +280,54 @@ const GaspesieMap = ({
   const [showStep3FlexibleDates, setShowStep3FlexibleDates] = useState(false);
   const [showStep3Filters, setShowStep3Filters] = useState(false);
   const sheetTouchStartY = useRef(0);
+
+  // Stable guide coordinates derived from river centers for step 3 markers.
+  // Uses guide_id hash to pick a consistent river + small offset per guide.
+  const step3GuideCoords = useMemo(() => {
+    const coords = {};
+    const riverKeys = Object.keys(RIVER_CENTERS_BY_PATH_ID);
+    if (riverKeys.length === 0) return coords;
+    (availableGuides || []).forEach((g) => {
+      const gid = g.guide_id || g.id || '';
+      const hash = Math.abs((gid.charCodeAt(0) || 0) + (gid.charCodeAt(1) || 0) + (gid.charCodeAt(2) || 0));
+      const pick = RIVER_CENTERS_BY_PATH_ID[riverKeys[hash % riverKeys.length]];
+      if (pick) {
+        const seed = (hash * 9301 + 49297) % 233280;
+        coords[gid] = {
+          lng: pick.lng + ((seed / 233280) - 0.5) * 0.06,
+          lat: pick.lat + (((seed * 7) % 233280) / 233280 - 0.5) * 0.03,
+        };
+      }
+    });
+    return coords;
+  }, [availableGuides]);
+
+  // Step 3 markers: dual chalet + guide pins on the map
+  const step3MarkersActive = bookingStep === 3 && mapReady;
+  const {
+    hoveredId: s3HoveredId,
+    hoveredType: s3HoveredType,
+    previewItem: s3PreviewItem,
+    previewType: s3PreviewType,
+    previewPos: s3PreviewPos,
+    closePreview: s3ClosePreview,
+    handlePreviewSelect: s3PreviewSelect,
+    highlightMarker: s3Highlight,
+    clearHighlight: s3ClearHighlight,
+    flyToMarker: s3FlyTo,
+  } = useStep3Markers({
+    mapRef,
+    mapReady,
+    active: step3MarkersActive,
+    chalets,
+    guides: availableGuides,
+    guideCoords: step3GuideCoords,
+    selectedChalet,
+    selectedGuide,
+    onSelectChalet: handleSelectedChalet,
+    onSelectGuide: handleSelectGuide,
+    language,
+  });
 
   // Enable map gestures only while pointer is over the map container so
   // trackpad zoom/pan feels immediate without hijacking page scroll elsewhere.
@@ -929,6 +978,7 @@ const GaspesieMap = ({
 
     map.on('load', () => {
       console.log('Map loaded successfully!');
+      setMapReady(true);
       const mapImage = '/NewMap.png';
 
       // Add vector source for businesses
@@ -1407,15 +1457,10 @@ const GaspesieMap = ({
           transition: 'height 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
           willChange: 'height',
         } : {
-          // NEW FLOW: at step 3 (guides + chalets) the panel goes full screen
-          // to give enough room for both guide and chalet cards plus filters.
-          position: bookingStep === 3 ? 'fixed' : 'relative',
-          top: bookingStep === 3 ? 0 : undefined,
-          left: bookingStep === 3 ? 0 : undefined,
-          right: bookingStep === 3 ? 0 : undefined,
-          bottom: bookingStep === 3 ? 0 : undefined,
-          flex: bookingStep === 3 ? 'none' : '0 0 clamp(300px, 30vw, 420px)',
-          width: bookingStep === 3 ? '100vw' : 'clamp(300px, 30vw, 420px)',
+          // Step 3: split layout — panel takes ~45% width, map stays visible alongside
+          position: 'relative',
+          flex: bookingStep === 3 ? '0 0 clamp(360px, 45vw, 560px)' : '0 0 clamp(300px, 30vw, 420px)',
+          width: bookingStep === 3 ? 'clamp(360px, 45vw, 560px)' : 'clamp(300px, 30vw, 420px)',
           maxWidth: '100%',
           height: '100%',
           minHeight: 0,
@@ -1429,7 +1474,7 @@ const GaspesieMap = ({
           padding: 'clamp(14px, 3vh, 30px) clamp(12px, 2vw, 24px) clamp(12px, 2.2vh, 22px)',
           boxShadow: '6px 0 26px rgba(31, 58, 46, 0.14)',
           borderRight: '1px solid rgba(72, 102, 86, 0.16)',
-          zIndex: bookingStep === 3 ? 600 : 100,
+          zIndex: 100,
           fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
           overflow: 'hidden',
         }}
@@ -2428,7 +2473,7 @@ const GaspesieMap = ({
                   minHeight: 0,
                   overflow: 'hidden',
                   display: 'grid',
-                  gridTemplateColumns: (!isMobile && needsChalet && browseMode !== 'chalet') ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
+                  gridTemplateColumns: '1fr',
                   gap: '12px',
                 }}>
                   {/* GUIDE SECTION - hidden in chalet-only mode */}
@@ -2494,12 +2539,19 @@ const GaspesieMap = ({
                             return (
                               <div
                                 key={guide.guide_id}
+                                onMouseEnter={() => s3Highlight(guide.guide_id, 'guide')}
+                                onMouseLeave={s3ClearHighlight}
                                 style={{
                                   padding: '7px 8px',
-                                  backgroundColor: isGuideSelected ? 'rgba(45, 95, 76, 0.1)' : '#FFFCF7',
+                                  backgroundColor: isGuideSelected
+                                    ? 'rgba(45, 95, 76, 0.1)'
+                                    : (s3HoveredId === guide.guide_id && s3HoveredType === 'guide')
+                                    ? 'rgba(232, 123, 53, 0.08)'
+                                    : '#FFFCF7',
                                   borderRadius: '8px',
                                   border: isGuideSelected ? '1.5px solid #2D5F4C' : '1px solid #E1E7E3',
                                   opacity: isAvailable ? 1 : 0.7,
+                                  transition: 'background-color 0.15s ease',
                                 }}
                               >
                                 <div
@@ -2794,7 +2846,6 @@ const GaspesieMap = ({
                         )}
 
                         {!loadingChalets && !chaletError && chalets.length > 0 && (() => {
-                          // Helper function to check if a chalet fits the Step 1 criteria
                           const chaletFitsCriteria = (chalet) => {
                             if (chalet.nb_personnes && numberOfPeople > chalet.nb_personnes) {
                               return false;
@@ -2802,107 +2853,105 @@ const GaspesieMap = ({
                             return true;
                           };
 
-                          // Group chalets by establishment
-                          const chaletsByEstablishment = chalets.reduce((acc, chalet) => {
-                            const estId = chalet.etablishment_id || 'no-establishment';
-                            const estName = chalet.etablishment_name || t('Sans établissement', 'No establishment');
-                            
-                            if (!acc[estId]) {
-                              acc[estId] = { id: estId, name: estName, chalets: [] };
-                            }
-                            acc[estId].chalets.push({ ...chalet, fitsCriteria: chaletFitsCriteria(chalet) });
-                            return acc;
-                          }, {});
-
-                          const establishmentGroups = Object.values(chaletsByEstablishment);
-
                           return (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                              {establishmentGroups.map((establishment) => (
-                                <div 
-                                  key={establishment.id} 
-                                  style={{
-                                    backgroundColor: '#FFFCF7',
-                                    borderRadius: '8px',
-                                    border: '1px solid #E5E7EB',
-                                    overflow: 'hidden'
-                                  }}
-                                >
-                                  {/* Establishment header */}
-                                  <div 
-                                    onClick={() => toggleEstablishment(establishment.id)}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', padding: '2px' }}>
+                              {chalets.map((chalet, index) => {
+                                const cId = chalet.key || chalet.id;
+                                const isChaletHovered = s3HoveredId === cId && s3HoveredType === 'chalet';
+                                const fitsCriteria = chaletFitsCriteria(chalet);
+
+                                return (
+                                  <div
+                                    key={chalet.id || index}
+                                    onClick={() => handleSelectedChalet({ id: cId, name: chalet.Name, ...chalet })}
+                                    onMouseEnter={() => s3Highlight(cId, 'chalet')}
+                                    onMouseLeave={s3ClearHighlight}
                                     style={{
-                                      padding: '10px',
-                                      backgroundColor: 'rgba(45, 95, 76, 0.05)',
+                                      position: 'relative',
+                                      minHeight: '132px',
+                                      borderRadius: '10px',
+                                      overflow: 'hidden',
+                                      backgroundColor: selectedChalet?.id === cId
+                                        ? 'rgba(45, 95, 76, 0.15)'
+                                        : isChaletHovered
+                                        ? 'rgba(45, 95, 76, 0.18)'
+                                        : (fitsCriteria ? 'rgba(45, 95, 76, 0.05)' : 'transparent'),
+                                      opacity: fitsCriteria ? 1 : 0.6,
+                                      border: selectedChalet?.id === cId
+                                        ? '2px solid #2D5F4C'
+                                        : '1px solid rgba(31, 58, 46, 0.15)',
+                                      boxShadow: isChaletHovered
+                                        ? '0 8px 18px rgba(31, 58, 46, 0.16)'
+                                        : '0 3px 10px rgba(31, 58, 46, 0.08)',
                                       cursor: 'pointer',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '6px',
-                                      borderBottom: expandedEstablishments.has(establishment.id) ? '1px solid #E5E7EB' : 'none'
+                                      transition: 'transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease',
+                                      transform: isChaletHovered ? 'translateY(-1px)' : 'translateY(0)',
                                     }}
                                   >
-                                    <span style={{ fontSize: '10px', color: '#5A7766' }}>
-                                      {expandedEstablishments.has(establishment.id) ? '▼' : '▶'}
-                                    </span>
-                                    <span style={{ fontWeight: '600', fontSize: '12px', color: '#1F3A2E', flex: 1 }}>
-                                      {establishment.name}
-                                    </span>
-                                    <span style={{ fontSize: '11px', color: '#5A7766' }}>
-                                      ({establishment.chalets.length})
-                                    </span>
-                                  </div>
+                                    {chalet.Image ? (
+                                      <img
+                                        src={chalet.Image}
+                                        alt={chalet.Name}
+                                        style={{
+                                          width: '100%',
+                                          height: '100%',
+                                          objectFit: 'cover',
+                                          display: 'block'
+                                        }}
+                                      />
+                                    ) : (
+                                      <div style={{
+                                        width: '100%',
+                                        height: '100%',
+                                        background: 'linear-gradient(140deg, #88A89A 0%, #4A9B8E 100%)'
+                                      }} />
+                                    )}
 
-                                  {/* Chalets list */}
-                                  {expandedEstablishments.has(establishment.id) && (
-                                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                      {establishment.chalets.map((chalet, index) => (
-                                        <div 
-                                          key={chalet.id || index}
-                                          onClick={() => handleSelectedChalet({ id: chalet.key || chalet.id, name: chalet.Name, ...chalet })}
-                                          style={{
-                                            padding: '10px',
-                                            borderBottom: index < establishment.chalets.length - 1 ? '1px solid #F3F4F6' : 'none',
-                                            backgroundColor: selectedChalet?.id === (chalet.key || chalet.id) 
-                                              ? 'rgba(45, 95, 76, 0.15)' 
-                                              : (chalet.fitsCriteria ? 'rgba(45, 95, 76, 0.05)' : 'transparent'),
-                                            opacity: chalet.fitsCriteria ? 1 : 0.6,
-                                            borderLeft: selectedChalet?.id === (chalet.key || chalet.id)
-                                              ? '3px solid #2D5F4C'
-                                              : (chalet.fitsCriteria ? '3px solid #4A9B8E' : '3px solid transparent'),
-                                            cursor: 'pointer'
-                                          }}
-                                        >
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            {chalet.Image && (
-                                              <img 
-                                                src={chalet.Image} 
-                                                alt={chalet.Name}
-                                                style={{
-                                                  width: '40px',
-                                                  height: '40px',
-                                                  borderRadius: '4px',
-                                                  objectFit: 'cover'
-                                                }}
-                                              />
-                                            )}
-                                            <div style={{ flex: 1 }}>
-                                              <p style={{ margin: 0, fontWeight: '600', fontSize: '12px', color: '#1F3A2E' }}>
-                                                {chalet.Name}
-                                              </p>
-                                              <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#5A7766' }}>
-                                                {chalet.nb_personnes} {t('pers.', 'people')} {chalet.price && `• ${chalet.price}$/${t('nuit', 'night')}`}
-                                              </p>
-                                            </div>
-                                            {selectedChalet?.id === (chalet.key || chalet.id) && (
-                                              <span style={{ color: '#2D5F4C', fontWeight: 'bold' }}>✓</span>
-                                            )}
-                                          </div>
-                                        </div>
-                                      ))}
+                                    <div style={{
+                                      position: 'absolute',
+                                      inset: 0,
+                                      background: 'linear-gradient(180deg, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, 0.58) 100%)'
+                                    }} />
+
+                                    <div style={{
+                                      position: 'absolute',
+                                      left: '8px',
+                                      right: '8px',
+                                      bottom: '8px',
+                                      color: '#FFFFFF',
+                                      zIndex: 1,
+                                      textShadow: '0 2px 8px rgba(0, 0, 0, 0.5)'
+                                    }}>
+                                      <p style={{ margin: 0, fontWeight: '700', fontSize: '11px', lineHeight: 1.2 }}>
+                                        {chalet.Name}
+                                      </p>
+                                      <p style={{ margin: '2px 0 0', fontSize: '10px', opacity: 0.95 }}>
+                                        {chalet.nb_personnes} {t('pers.', 'people')} {chalet.price && `• ${chalet.price}$/${t('nuit', 'night')}`}
+                                      </p>
                                     </div>
-                                  )}
-                                </div>
-                              ))}
+
+                                    {selectedChalet?.id === cId && (
+                                      <span style={{
+                                        position: 'absolute',
+                                        top: '7px',
+                                        right: '7px',
+                                        zIndex: 2,
+                                        width: '22px',
+                                        height: '22px',
+                                        borderRadius: '999px',
+                                        backgroundColor: '#2D5F4C',
+                                        color: '#FFFCF7',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        fontSize: '13px',
+                                        fontWeight: '700',
+                                        boxShadow: '0 3px 8px rgba(0, 0, 0, 0.3)'
+                                      }}>✓</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           );
                         })()}
@@ -3608,6 +3657,33 @@ const GaspesieMap = ({
           </div>
             );
           })()
+        )}
+
+        {/* Step 3: Preview card on marker click */}
+        {step3MarkersActive && s3PreviewItem && s3PreviewPos && (
+          <div style={{
+            position: 'absolute',
+            left: Math.min(Math.max(s3PreviewPos.x - 140, 8), (mapContainerRef.current?.offsetWidth || 600) - 290),
+            top: Math.max(s3PreviewPos.y - 320, 8),
+            zIndex: 50,
+          }}>
+            <PreviewCard
+              item={s3PreviewItem}
+              type={s3PreviewType}
+              onClose={s3ClosePreview}
+              onSelect={s3PreviewSelect}
+              language={language}
+            />
+          </div>
+        )}
+
+        {/* Step 3: Map legend */}
+        {step3MarkersActive && (
+          <MapLegend
+            language={language}
+            hasChalets={chalets.length > 0}
+            hasGuides={availableGuides.length > 0}
+          />
         )}
       </div>
 
