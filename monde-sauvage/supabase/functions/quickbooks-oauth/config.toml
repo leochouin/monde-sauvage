@@ -1,0 +1,6 @@
+
+[functions.quickbooks-oauth]
+enabled = true
+verify_jwt = false
+import_map = "./import_map.json"
+entrypoint = "./functions/quickbooks-oauth/index.ts"

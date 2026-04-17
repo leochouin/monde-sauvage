@@ -69,10 +69,10 @@ Deno.serve(async (req: Request) => {
     } else if (establishmentId) {
       // ── Establishment dashboard link ──
       const { data: establishment, error: fetchError } = await supabase
-        .from("etablissement")
-        .select("id, stripe_account_id, user_id")
-        .eq("id", establishmentId)
-        .eq("user_id", user.id)
+        .from("Etablissement")
+        .select("key, stripe_account_id, owner_id")
+        .eq("key", establishmentId)
+        .eq("owner_id", user.id)
         .single();
 
       if (fetchError || !establishment) {

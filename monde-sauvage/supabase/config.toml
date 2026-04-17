@@ -4,6 +4,9 @@ verify_jwt = false
 [functions.google-calendar-oauth]
 verify_jwt = false
 
+[functions.quickbooks-oauth]
+verify_jwt = false
+
 # Stripe Connect functions — JWT verified in code via Authorization header
 [functions.stripe-vendor-onboard]
 verify_jwt = false

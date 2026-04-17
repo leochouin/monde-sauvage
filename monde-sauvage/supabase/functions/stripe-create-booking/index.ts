@@ -335,6 +335,7 @@ async function handleChaletBooking(
       booking_id: booking.id,
       chalet_id: chaletId,
       chalet_name: chalet.Name || "",
+      establishment_id: establishment.key,
       establishment_name: establishment.Name || "",
       customer_name: customerName,
       customer_email: customerEmail,

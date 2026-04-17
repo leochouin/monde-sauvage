@@ -7,6 +7,7 @@ import GuideReservationsPanel from "./guideReservationsPanel.jsx";
 import { getGuideBookings } from "../utils/guideBookingService.js";
 import { startGuideOnboarding, checkGuideOnboardingStatus, createGuideDashboardLink } from "../utils/stripeService.js";
 import useAvatarSource from "../utils/useAvatarSource.js";
+import QuickbooksTestButton from "../components/QuickbooksTestButton.jsx";
 
 // Fish types - shared constant
 const FISH_TYPES = [
@@ -786,6 +787,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                   { key: 'paiements', icon: '💳', label: 'Paiements en ligne' },
                   { key: 'calendrier', icon: '📅', label: 'Calendrier' },
                   { key: 'reservations', icon: '📋', label: 'Réservations' },
+                  { key: 'comptabilite', icon: '📒', label: 'Comptabilité' },
                   { key: 'avis', icon: '⭐', label: 'Avis' },
                 ].map(({ key, icon, label }) => (
                   <button
@@ -1496,6 +1498,74 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                     ⚠️ Définissez votre tarif horaire ci-dessus pour que les clients puissent payer en ligne
                   </div>
                 )}
+              </div>}
+
+              {/* Accounting / Comptabilité (QuickBooks) */}
+              {activeGuideSection === 'comptabilite' && <div style={{
+                padding: '20px',
+                backgroundColor: 'white',
+                borderRadius: '12px',
+                border: '1px solid #E5E7EB',
+              }}>
+                <h3 style={{ margin: '0 0 8px', fontSize: '16px', color: '#1F3A2E' }}>
+                  📒 Comptabilité
+                </h3>
+                <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#5A7766' }}>
+                  Connectez votre compte QuickBooks Online pour synchroniser vos revenus de guide.
+                </p>
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {guide?.quickbooks_connected ? (
+                    <span style={{ padding: '4px 12px', borderRadius: '12px', background: '#dcfce7', color: '#166534', fontSize: '13px', fontWeight: '500' }}>
+                      ✅ QuickBooks connecté{guide?.quickbooks_realm_id ? ` (Entreprise ${guide.quickbooks_realm_id})` : ''}
+                    </span>
+                  ) : (
+                    <span style={{ padding: '4px 12px', borderRadius: '12px', background: '#f1f5f9', color: '#64748b', fontSize: '13px' }}>
+                      Non connecté
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!guide?.id) return;
+                    const redirectTo = encodeURIComponent(globalThis.location.href);
+                    globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/quickbooks-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    backgroundColor: '#2CA01C',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  {guide?.quickbooks_connected ? '🔄 Reconnecter QuickBooks' : 'Connecter QuickBooks'}
+                </button>
+
+                {guide?.quickbooks_connected && (
+                  <div style={{ marginTop: '16px' }}>
+                    <QuickbooksTestButton />
+                  </div>
+                )}
+
+                <div style={{
+                  marginTop: '12px',
+                  padding: '10px 14px',
+                  background: '#f8fafc',
+                  borderRadius: '10px',
+                  border: '1px solid #e2e8f0',
+                  fontSize: '12px',
+                  color: '#64748b',
+                }}>
+                  ℹ️ L&apos;autorisation se fait via Intuit. Aucune synchronisation n&apos;est encore active — seule la connexion est enregistrée.
+                </div>
               </div>}
 
               {/* Statistics / Avis */}

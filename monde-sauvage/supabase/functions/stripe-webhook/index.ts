@@ -23,6 +23,115 @@ import {
   getBookingOrigin,
   shouldApplyPlatformFee,
 } from "../_shared/bookingRules.ts";
+import { createQuickbooksInvoice } from "../_shared/quickbooksUtils.ts";
+
+// ─── Helper: QuickBooks invoice sync for either entity ─────────────────────
+// Looks up the right vendor (Etablissement for chalets, Guide for guides)
+// from PI metadata, creates a QBO invoice if that vendor is connected, and
+// persists the invoice id onto the matching booking row(s). Never throws —
+// any error is logged and swallowed so the webhook keeps succeeding.
+async function syncQuickbooksInvoice(
+  supabase: ReturnType<typeof createClient>,
+  metadata: Record<string, string>,
+  amountDollars: number
+) {
+  const bookingType = (metadata?.booking_type || "chalet") as "chalet" | "guide";
+  const primaryBookingId = metadata?.booking_id;
+  if (!primaryBookingId) return;
+
+  try {
+    if (bookingType === "chalet") {
+      const establishmentId = metadata?.establishment_id;
+      if (!establishmentId) {
+        console.log("[QBO] chalet PI missing establishment_id metadata — skipping owner invoice sync");
+        return;
+      }
+
+      const { data: vendor, error: vendorErr } = await supabase
+        .from("Etablissement")
+        .select("key, quickbooks_connected, quickbooks_access_token, quickbooks_realm_id")
+        .eq("key", establishmentId)
+        .single();
+
+      if (vendorErr) {
+        console.warn(`[QBO] Etablissement lookup failed (${establishmentId}):`, vendorErr.message);
+        return;
+      }
+      if (!vendor?.quickbooks_connected) {
+        console.log(`[QBO] Etablissement ${establishmentId} not connected — skipping invoice sync`);
+        return;
+      }
+
+      const invoice = await createQuickbooksInvoice(
+        {
+          id: vendor.key,
+          quickbooks_connected: vendor.quickbooks_connected,
+          quickbooks_access_token: vendor.quickbooks_access_token,
+          quickbooks_realm_id: vendor.quickbooks_realm_id,
+        },
+        amountDollars
+      );
+      const invoiceId = String(((invoice as Record<string, unknown>)?.Invoice as Record<string, unknown>)?.Id || "");
+      console.log(`[QBO] ✅ Owner invoice synced: establishment=${establishmentId} amount=${amountDollars} invoice=${invoiceId || "?"}`);
+
+      if (invoiceId) {
+        await supabase
+          .from("bookings")
+          .update({
+            quickbooks_invoice_id: invoiceId,
+            quickbooks_invoice_synced_at: new Date().toISOString(),
+          })
+          .eq("id", primaryBookingId);
+      }
+      return;
+    }
+
+    // ── Guide flow ──
+    const qbGuideId = metadata?.guide_id;
+    const qbUserId = metadata?.user_id;
+    if (!qbGuideId && !qbUserId) {
+      console.log("[QBO] guide PI missing guide_id / user_id metadata — skipping invoice sync");
+      return;
+    }
+
+    const baseQuery = supabase
+      .from("guide")
+      .select("id, user_id, quickbooks_connected, quickbooks_access_token, quickbooks_realm_id");
+    const { data: vendor, error: vendorErr } = qbGuideId
+      ? await baseQuery.eq("id", qbGuideId).single()
+      : await baseQuery.eq("user_id", qbUserId).single();
+
+    if (vendorErr) {
+      console.warn(`[QBO] guide lookup failed (guide_id=${qbGuideId}, user_id=${qbUserId}):`, vendorErr.message);
+      return;
+    }
+    if (!vendor?.quickbooks_connected) {
+      console.log(`[QBO] guide ${vendor?.id} not connected — skipping invoice sync`);
+      return;
+    }
+
+    const invoice = await createQuickbooksInvoice(vendor, amountDollars);
+    const invoiceId = String(((invoice as Record<string, unknown>)?.Invoice as Record<string, unknown>)?.Id || "");
+    console.log(`[QBO] ✅ Guide invoice synced: guide=${vendor.id} amount=${amountDollars} invoice=${invoiceId || "?"}`);
+
+    if (invoiceId) {
+      const allBookingIdsRaw = metadata?.all_booking_ids;
+      const bookingIds = allBookingIdsRaw
+        ? allBookingIdsRaw.split(",").filter(Boolean)
+        : [primaryBookingId];
+
+      await supabase
+        .from("guide_booking")
+        .update({
+          quickbooks_invoice_id: invoiceId,
+          quickbooks_invoice_synced_at: new Date().toISOString(),
+        })
+        .in("id", bookingIds);
+    }
+  } catch (err: any) {
+    console.warn(`[QBO] invoice sync failed:`, err?.message || err);
+  }
+}
 
 // ─── Helper: fire-and-forget confirmation email ────────────────────────────
 async function fireConfirmationEmail(
@@ -126,6 +235,8 @@ Deno.serve(async (req: Request) => {
         const metadata = dataObject.metadata as Record<string, string>;
         const bookingId = metadata?.booking_id;
         const bookingType = metadata?.booking_type || "chalet";
+        const amountDollars = Number(dataObject.amount || 0) / 100;
+
         const bookingOrigin = getBookingOrigin({ booking_origin: metadata?.booking_origin, source: metadata?.source });
         const platformFeeAmount = Math.round(((Number(dataObject.application_fee_amount || 0) / 100) || 0) * 100) / 100;
         const platformFeeWaived = !shouldApplyPlatformFee({ booking_origin: bookingOrigin }) || platformFeeAmount === 0;
@@ -244,6 +355,11 @@ Deno.serve(async (req: Request) => {
             fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bookingId, "chalet");
           }
         }
+
+        // ── QuickBooks invoice sync (vendor-side) ───────────────────────
+        // Runs after booking confirmation so we can persist the invoice id
+        // back to the booking row(s). Helper swallows its own errors.
+        await syncQuickbooksInvoice(supabase, metadata, amountDollars);
         break;
       }
 

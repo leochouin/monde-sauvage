@@ -168,10 +168,14 @@ export const RIVER_PATH_TO_GUIDE_ID = {
   'river-3': 2,
   'river-4': 3,
   Bonaventure: 4,
-  'river-2': 5,
+  'river-2': 4,
   Madeleine: 6,
   'river-6': 7,
-  Matane: 8,
+  'river-7': 5,
+  'river-11': 1,
+  r: 13,
+  river: 13,
+  'ri-18': 16,
   Dartmouth: 9,
   York: 10,
   'Saint-Jean': 11,
@@ -203,24 +207,96 @@ export const RIVER_CENTERS_BY_PATH_ID = {
   'Saint-Jean': { lng: -65.0184, lat: 48.4500 },
 };
 
+// Canonical path IDs used to merge traced duplicates into one logical river.
+export const RIVER_PATH_CANONICAL_ID = {
+  'river-2': 'Bonaventure',
+  'river-3': 'river-4',
+};
+
+export function normalizeRiverPathId(pathId) {
+  if (!pathId) return pathId;
+  return RIVER_PATH_CANONICAL_ID[pathId] || pathId;
+}
+
 export function getKnownRiverPathIds() {
-  return Object.keys(RIVER_PATH_TO_GUIDE_ID);
+  const canonicalIds = [];
+  const seen = new Set();
+
+  for (const pathId of Object.keys(RIVER_PATH_TO_GUIDE_ID)) {
+    const canonicalId = normalizeRiverPathId(pathId);
+    if (!seen.has(canonicalId)) {
+      seen.add(canonicalId);
+      canonicalIds.push(canonicalId);
+    }
+  }
+
+  return canonicalIds;
 }
 
 export function getRiverGuideByPathId(pathId) {
-  const riverId = RIVER_PATH_TO_GUIDE_ID[pathId];
+  const canonicalId = normalizeRiverPathId(pathId);
+  const riverId = RIVER_PATH_TO_GUIDE_ID[canonicalId] || RIVER_PATH_TO_GUIDE_ID[pathId];
   if (!riverId) return null;
   return RIVER_GUIDE_BY_ID[riverId] || null;
 }
 
+// Revised display-name correction map from manual QA notes:
+// [current displayed name] -> [name that should be shown]
+const RIVER_NAME_CORRECTIONS = {
+  Madeleine: 'Sainte-Anne',
+  Malbaie: 'Madeleine',
+  'Grand Pabos Ouest': 'Dartmouth',
+  'Grand Pabos': 'York',
+  Dartmouth: 'Saint-Jean',
+  'Petit Pabos': 'Grande Riviere',
+  York: 'Petit Pabos',
+  'Saint-Jean': 'Grand Pabos Nord',
+  'Grande Riviere': 'Grand Pabos Ouest',
+  Cascapedia: 'Petite Cascapedia',
+  'Mont-Louis': 'Cascapedia',
+  'River 1': 'Nouvelle',
+  'River 2': 'Matapedia',
+};
+
+// Path-level overrides take priority over generic name-correction rules.
+const RIVER_PATH_NAME_OVERRIDES = {
+  r: 'Grande Riviere',
+  river: 'Grande Riviere',
+  'river-21': 'Grande Riviere',
+  'ri-18': 'Grand Pabos Ouest',
+  'river-18': 'Grand Pabos Ouest',
+};
+
+function applyRiverNameCorrection(name) {
+  if (!name) return name;
+  return RIVER_NAME_CORRECTIONS[name] || name;
+}
+
 export function formatRiverDisplayName(pathId, language = 'fr') {
   if (!pathId) return '';
-  const guide = getRiverGuideByPathId(pathId);
-
-  if (!guide) {
-    if (pathId.startsWith('river-')) return language === 'en' ? 'River' : 'Riviere';
-    return language === 'en' ? `River ${pathId}` : `Riviere ${pathId}`;
+  const canonicalId = normalizeRiverPathId(pathId);
+  const overrideName = RIVER_PATH_NAME_OVERRIDES[canonicalId] || RIVER_PATH_NAME_OVERRIDES[pathId];
+  if (overrideName) {
+    return language === 'en' ? `${overrideName} River` : `Riviere ${overrideName}`;
   }
 
-  return language === 'en' ? `${guide.name} River` : `Riviere ${guide.name}`;
+  const guide = getRiverGuideByPathId(canonicalId);
+
+  let baseName;
+  if (guide) {
+    baseName = guide.name;
+  } else if (canonicalId.startsWith('river-')) {
+    const match = canonicalId.match(/^river-(\d+)$/i);
+    baseName = match ? `River ${match[1]}` : 'River';
+  } else {
+    baseName = canonicalId;
+  }
+
+  const correctedName = applyRiverNameCorrection(baseName);
+
+  if (!correctedName) {
+    return language === 'en' ? 'River' : 'Riviere';
+  }
+
+  return language === 'en' ? `${correctedName} River` : `Riviere ${correctedName}`;
 }

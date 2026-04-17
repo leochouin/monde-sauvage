@@ -121,7 +121,7 @@ export async function checkOnboardingStatus(establishmentId) {
 /**
  * Create a temporary login link to the Stripe Express dashboard for a guide.
  * The link is single-use and opens the guide's connected account dashboard.
- * 
+ *
  * @param {string} guideId - The guide UUID
  * @returns {Promise<{url: string}>}
  */
@@ -130,6 +130,25 @@ export async function createGuideDashboardLink(guideId) {
 
   const result = await callEdgeFunction('stripe-dashboard-link', {
     body: { guideId },
+  });
+
+  console.log('✅ Dashboard link created');
+  return result;
+}
+
+/**
+ * Create a temporary login link to the Stripe Express dashboard for an
+ * establishment (Hébergement / Pourvoirie). Single-use, opens the connected
+ * account's Express dashboard.
+ *
+ * @param {string} establishmentId - The Etablissement key
+ * @returns {Promise<{url: string}>}
+ */
+export async function createEstablishmentDashboardLink(establishmentId) {
+  console.log('🔗 Creating Stripe dashboard link for establishment:', establishmentId);
+
+  const result = await callEdgeFunction('stripe-dashboard-link', {
+    body: { establishmentId },
   });
 
   console.log('✅ Dashboard link created');

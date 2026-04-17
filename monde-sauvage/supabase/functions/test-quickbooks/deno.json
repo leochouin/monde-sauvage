@@ -1,0 +1,6 @@
+{
+  "importMap": "../quickbooks-oauth/import_map.json",
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --import-map=../quickbooks-oauth/import_map.json index.ts"
+  }
+}

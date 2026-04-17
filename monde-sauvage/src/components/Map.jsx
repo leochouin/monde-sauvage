@@ -7,6 +7,71 @@ import { buildRiverGeoJSON } from '../utils/riverPaths.js';
 
 let mapboxAssetsPromise = null;
 
+const escapeHtml = (value = '') => String(value)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const normalizeWebsiteUrl = (website) => {
+  if (!website) return '';
+
+  const rawValue = String(website).trim();
+  if (!rawValue) return '';
+
+  try {
+    return new URL(rawValue).toString();
+  } catch {
+    try {
+      return new URL(`https://${rawValue}`).toString();
+    } catch {
+      return '';
+    }
+  }
+};
+
+const buildBusinessPopupHtml = (properties = {}) => {
+  const safeName = escapeHtml(properties.name || 'Business');
+  const websiteUrl = normalizeWebsiteUrl(properties.website);
+  const safeWebsiteUrl = escapeHtml(websiteUrl);
+
+  const rawDescription = String(properties.description || '').trim();
+  const isLongDescription = rawDescription.length > 170;
+  const trimmedDescription = isLongDescription
+    ? `${rawDescription.slice(0, 167).trimEnd()}...`
+    : rawDescription;
+  const safeDescription = escapeHtml(trimmedDescription || 'Explore this partner business.');
+
+  const websiteHost = websiteUrl
+    ? escapeHtml(new URL(websiteUrl).hostname.replace(/^www\./i, ''))
+    : '';
+  const encodedWebsiteUrl = encodeURIComponent(websiteUrl);
+  const previewImageUrl = websiteUrl
+    ? `https://s.wordpress.com/mshots/v1/${encodedWebsiteUrl}?w=1200`
+    : '';
+  const backupPreviewImageUrl = websiteUrl
+    ? `https://image.thum.io/get/width/1000/crop/700/noanimate/${websiteUrl}`
+    : '';
+  const safeBackupPreviewImageUrl = escapeHtml(backupPreviewImageUrl);
+
+  return `
+    <article class="business-popup">
+      <header class="business-popup-header">
+        <h3 class="business-popup-title">${safeName}</h3>
+        ${websiteHost ? `<span class="business-popup-domain">${websiteHost}</span>` : ''}
+      </header>
+      <p class="business-popup-description">${safeDescription}</p>
+      ${websiteUrl ? `
+        <a class="business-popup-preview" href="${safeWebsiteUrl}" target="_blank" rel="noopener noreferrer" aria-label="Open ${safeName} website in a new tab">
+          ${previewImageUrl ? `<img src="${previewImageUrl}" alt="Homepage for ${safeName}" loading="lazy" onerror="if (!this.dataset.retry) { this.dataset.retry = '1'; this.src = '${safeBackupPreviewImageUrl}'; return; } this.parentElement.classList.add('business-popup-preview-fallback'); this.remove();" />` : ''}
+        </a>
+        <a class="business-popup-cta" href="${safeWebsiteUrl}" target="_blank" rel="noopener noreferrer">Visit website</a>
+      ` : '<div class="business-popup-no-site">Website coming soon</div>'}
+    </article>
+  `;
+};
+
 const loadMapboxAssets = () => {
   if (typeof globalThis === 'undefined') {
     return Promise.reject(new Error('Window is not available.'));
@@ -215,6 +280,28 @@ const GaspesieMap = ({
   const [showStep3Filters, setShowStep3Filters] = useState(false);
   const sheetTouchStartY = useRef(0);
 
+  // Enable map gestures only while pointer is over the map container so
+  // trackpad zoom/pan feels immediate without hijacking page scroll elsewhere.
+  const setMapHoverInteractions = useCallback((isEnabled) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (isMobile) {
+      if (map.dragPan) map.dragPan.enable();
+      if (map.touchZoomRotate) map.touchZoomRotate.enable();
+      return;
+    }
+
+    if (isEnabled) {
+      if (map.scrollZoom) map.scrollZoom.enable();
+      if (map.dragPan) map.dragPan.enable();
+      return;
+    }
+
+    if (map.scrollZoom) map.scrollZoom.disable();
+    if (map.dragPan) map.dragPan.disable();
+  }, [isMobile]);
+
   // Auto-expand/collapse mobile sheet with booking flow
   useEffect(() => {
     if (!isMobile) return;
@@ -366,6 +453,20 @@ const GaspesieMap = ({
       return () => globalThis.removeEventListener('resize', handleResize);
     }
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (isMobile) {
+      if (map.dragPan) map.dragPan.enable();
+      if (map.touchZoomRotate) map.touchZoomRotate.enable();
+      return;
+    }
+
+    if (map.scrollZoom) map.scrollZoom.disable();
+    if (map.dragPan) map.dragPan.disable();
+  }, [isMobile]);
 
   const initializeMapRuntime = useCallback(() => {
     let cancelled = false;
@@ -533,6 +634,8 @@ const GaspesieMap = ({
     if (!map) return;
 
     const handleClick = (e) => {
+      if (globalThis.__MS_PICKING_LOCATION__ === true) return;
+
       // ✅ only runs if in step 1 (destination selection)
       if (bookingStep !== 1) return;
 
@@ -821,7 +924,8 @@ const GaspesieMap = ({
     mapRef.current = map;
 
     map.addControl(new mapboxgl.NavigationControl());
-    map.scrollZoom.disable();
+  map.scrollZoom.disable();
+    if (!isMobile) map.dragPan.disable();
 
     map.on('load', () => {
       console.log('Map loaded successfully!');
@@ -830,7 +934,10 @@ const GaspesieMap = ({
       // Add vector source for businesses
       map.addSource('businesses', {
         type: 'vector',
-        url: 'mapbox://leochouinard.cmfiagsm01tfl1qo364rq7ye3-71qfa'
+        url: 'mapbox://leochouinard.cmfiagsm01tfl1qo364rq7ye3-71qfa',
+        promoteId: {
+          Monde_sauvage: 'name'
+        }
       });
 
       businessLogos.forEach((logo) => {
@@ -874,6 +981,7 @@ const GaspesieMap = ({
           'circle-color': '#FFFFFF',
           'circle-translate': [0, -50],
           'circle-opacity': 1,
+          'circle-stroke-width': 0
         }
       });
 
@@ -891,6 +999,58 @@ const GaspesieMap = ({
           'text-field': '',
           'text-size': 0,
           'text-offset': [0, 0] 
+        }
+      });
+
+      const noBusinessFilter = ['==', ['get', 'name'], '__none__'];
+
+      map.addLayer({
+        id: 'business-pin-hover',
+        type: 'symbol',
+        source: 'businesses',
+        'source-layer': 'Monde_sauvage',
+        filter: noBusinessFilter,
+        layout: {
+          'icon-image': 'pin',
+          'icon-size': 0.18,
+          'icon-allow-overlap': true,
+          'icon-anchor': 'bottom'
+        }
+      });
+
+      map.addLayer({
+        id: 'business-hover',
+        type: 'circle',
+        source: 'businesses',
+        'source-layer': 'Monde_sauvage',
+        filter: noBusinessFilter,
+        paint: {
+          'circle-radius': 28,
+          'circle-color': '#FFFFFF',
+          'circle-translate': [0, -60],
+          'circle-opacity': 1,
+          'circle-stroke-color': '#ef4444',
+          'circle-stroke-width': 2,
+          'circle-stroke-opacity': 0.95,
+          'circle-blur': 0.05
+        }
+      });
+
+      map.addLayer({
+        id: 'business-icons-hover',
+        type: 'symbol',
+        source: 'businesses',
+        'source-layer': 'Monde_sauvage',
+        filter: noBusinessFilter,
+        layout: {
+          'icon-image': ['get', 'name'],
+          'icon-size': 0.096,
+          'icon-allow-overlap': true,
+          'icon-offset': [0, -37*10],
+          'icon-anchor': 'bottom',
+          'text-field': '',
+          'text-size': 0,
+          'text-offset': [0, 0]
         }
       });
 
@@ -922,39 +1082,98 @@ const GaspesieMap = ({
         
       
       
-      // Business icon click handler
-      map.on('click', 'business-icons', (e) => {
+      const openBusinessPopup = (e) => {
+        if (!e.features?.length) return;
+
         const feature = e.features[0];
         const properties = feature.properties;
 
-        new mapboxgl.Popup({ offset: 25 })
+        new mapboxgl.Popup({
+          offset: 25,
+          className: 'business-mapbox-popup',
+          maxWidth: '340px',
+          closeOnMove: false
+        })
           .setLngLat(e.lngLat)
-          .setHTML(`
-            <div style="padding: 15px; font-family: 'Inter', sans-serif;">
-              <h3 style="font-size: 1.25rem; font-weight: 600; color: #333; margin: 0 0 10px 0;">
-                ${properties.name}
-              </h3>
-              <p style="font-size: 0.95rem; color: #555; margin-bottom: 15px;">
-                ${properties.description || 'No description available'}
-              </p>
-              ${properties.website ? `
-                <a href="${properties.website}" target="_blank" style="
-                  text-decoration: none; background: #4f46e5; color: white;
-                  padding: 8px 16px; border-radius: 6px; font-weight: 500;
-                  display: inline-block;">Visit Website</a>
-              ` : ''}
-            </div>
-          `)
+          .setHTML(buildBusinessPopupHtml(properties))
           .addTo(map);
+      };
+
+      map.on('click', (e) => {
+        if (globalThis.__MS_PICKING_LOCATION__ === true) {
+          globalThis.dispatchEvent(new CustomEvent('ms:map-location-picked', {
+            detail: {
+              latitude: e.lngLat?.lat,
+              longitude: e.lngLat?.lng
+            }
+          }));
+          globalThis.__MS_PICKING_LOCATION__ = false;
+          return;
+        }
+
+        const hits = map.queryRenderedFeatures(e.point, {
+          layers: ['business-pin-hover', 'business-pin']
+        });
+
+        if (!hits.length) return;
+
+        openBusinessPopup({
+          lngLat: e.lngLat,
+          features: [hits[0]]
+        });
       });
 
-      map.on('mouseenter', 'business-icons', () => {
-        map.getCanvas().style.cursor = 'pointer';
-      });
+      let hoveredBusinessName = null;
 
-      map.on('mouseleave', 'business-icons', () => {
+      const applyBusinessHoverFilter = (name) => {
+        const hoverFilter = name ? ['==', ['get', 'name'], name] : noBusinessFilter;
+
+        map.setFilter('business-pin-hover', hoverFilter);
+        map.setFilter('business-hover', hoverFilter);
+        map.setFilter('business-icons-hover', hoverFilter);
+
+        if (name) {
+          const baseFilter = ['!=', ['get', 'name'], name];
+          map.setFilter('business-pin', baseFilter);
+          map.setFilter('business', baseFilter);
+          map.setFilter('business-icons', baseFilter);
+          return;
+        }
+
+        map.setFilter('business-pin', null);
+        map.setFilter('business', null);
+        map.setFilter('business-icons', null);
+      };
+
+      const clearBusinessHoverState = () => {
+        hoveredBusinessName = null;
+        applyBusinessHoverFilter(null);
         map.getCanvas().style.cursor = '';
+      };
+
+      map.on('mousemove', (e) => {
+        const hits = map.queryRenderedFeatures(e.point, {
+          layers: ['business-pin-hover', 'business-pin']
+        });
+
+        const hoveredFeature = hits[0];
+        const nextName = hoveredFeature?.properties?.name || null;
+
+        if (nextName) {
+          map.getCanvas().style.cursor = 'pointer';
+          if (nextName !== hoveredBusinessName) {
+            hoveredBusinessName = nextName;
+            applyBusinessHoverFilter(nextName);
+          }
+          return;
+        }
+
+        if (hoveredBusinessName !== null) {
+          clearBusinessHoverState();
+        }
       });
+
+      map.on('mouseout', clearBusinessHoverState);
 
       // Add river paths as native Mapbox GeoJSON layers
       map.addSource('rivers', {
@@ -967,18 +1186,20 @@ const GaspesieMap = ({
         id: 'rivers-hit',
         type: 'line',
         source: 'rivers',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
         paint: {
           'line-color': 'transparent',
           'line-width': 14,
-          'line-cap': 'round',
-          'line-join': 'round',
         },
       });
 
       // Glow stack: outer aura → inner glow → core stroke
-      const HOVER_BLUE = '#ff0800';   // brighter blue for hover
-      const SELECT_BLUE = '#f34821';  // vivid blue for selected
-      const GLOW_OUTER  = '#f66764';  // bright outer aura
+      const HOVER_BLUE = '#2F7E75';   // muted teal for hover
+      const SELECT_BLUE = '#1F5E56';  // deeper teal for selected
+      const GLOW_OUTER  = '#78B8A9';  // soft seafoam outer aura
 
       const emptyFilter = ['==', ['get', 'id'], ''];
 
@@ -987,13 +1208,15 @@ const GaspesieMap = ({
         id: 'rivers-glow-outer',
         type: 'line',
         source: 'rivers',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
         paint: {
           'line-color': GLOW_OUTER,
           'line-width': 24,
           'line-blur': 34,
           'line-opacity': 0.4,
-          'line-cap': 'round',
-          'line-join': 'round',
         },
         filter: emptyFilter,
       });
@@ -1003,13 +1226,15 @@ const GaspesieMap = ({
         id: 'rivers-glow-inner',
         type: 'line',
         source: 'rivers',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
         paint: {
           'line-color': HOVER_BLUE,
           'line-width': 14,
           'line-blur': 7,
           'line-opacity': 0.5,
-          'line-cap': 'round',
-          'line-join': 'round',
         },
         filter: emptyFilter,
       });
@@ -1019,12 +1244,14 @@ const GaspesieMap = ({
         id: 'rivers-highlight',
         type: 'line',
         source: 'rivers',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
         paint: {
           'line-color': HOVER_BLUE,
           'line-width': 4.5,
           'line-opacity': 0.95,
-          'line-cap': 'round',
-          'line-join': 'round',
         },
         filter: emptyFilter,
       });
@@ -1043,7 +1270,7 @@ const GaspesieMap = ({
         const filter = id ? ['==', ['get', 'id'], id] : ['==', ['get', 'id'], ''];
         glowLayers.forEach(layer => map.setFilter(layer, filter));
         if (color) {
-          map.setPaintProperty('rivers-glow-outer', 'line-color', color === SELECT_BLUE ? '#64B5F6' : GLOW_OUTER);
+          map.setPaintProperty('rivers-glow-outer', 'line-color', color === SELECT_BLUE ? '#9ED3C6' : GLOW_OUTER);
           map.setPaintProperty('rivers-glow-inner', 'line-color', color);
           map.setPaintProperty('rivers-highlight', 'line-color', color);
         }
@@ -3317,7 +3544,10 @@ const GaspesieMap = ({
         minWidth: 0,
         height: '100%',
         overflow: 'hidden',
-      }}>
+      }}
+      onMouseEnter={() => setMapHoverInteractions(true)}
+      onMouseLeave={() => setMapHoverInteractions(false)}
+      >
         <div
           ref={mapContainerRef}
           style={{ position: 'absolute', inset: 0 }}

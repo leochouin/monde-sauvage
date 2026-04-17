@@ -260,6 +260,140 @@
   gap: 12px;
 }
 
+.business-mapbox-popup .mapboxgl-popup-content {
+  padding: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 16px 40px rgba(17, 24, 39, 0.22);
+}
+
+.business-mapbox-popup .mapboxgl-popup-close-button {
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.97);
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: manipulation;
+  z-index: 2;
+}
+
+.business-mapbox-popup .mapboxgl-popup-close-button:hover {
+  background: #ffffff;
+  border-color: rgba(100, 116, 139, 0.45);
+}
+
+.business-popup {
+  width: min(320px, 82vw);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
+  color: #0f172a;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif;
+}
+
+.business-popup-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-right: 34px;
+}
+
+.business-popup-title {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.business-popup-domain {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #64748b;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.business-popup-description {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: #334155;
+}
+
+.business-popup-preview {
+  position: relative;
+  display: block;
+  min-height: 132px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(241, 245, 249, 1),
+    rgba(241, 245, 249, 1) 12px,
+    rgba(226, 232, 240, 0.8) 12px,
+    rgba(226, 232, 240, 0.8) 24px
+  );
+  text-decoration: none;
+}
+
+.business-popup-preview img {
+  width: 100%;
+  height: 132px;
+  object-fit: cover;
+  display: block;
+}
+
+.business-popup-preview.business-popup-preview-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.business-popup-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  padding: 8px 14px;
+  border-radius: 9px;
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 0.88rem;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 140ms ease, filter 140ms ease;
+}
+
+.business-popup-cta:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+}
+
+.business-popup-no-site {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #475569;
+  background: rgba(148, 163, 184, 0.15);
+}
+
 
 
 .modal-subtitle {
@@ -496,6 +630,27 @@
   transform: translateX(-3px);
 }
 
+.etablissement-close-button {
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: #111827;
+  cursor: pointer;
+  font-size: 22px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  transition: color 0.2s ease;
+}
+
+.etablissement-close-button:hover {
+  color: #374151;
+}
+
 .guide-profile-title {
   font-size: 24px;
   font-weight: 700;
@@ -572,6 +727,106 @@
   grid-template-columns: 1fr 1fr; /* equal halves: calendar and info */
   gap: 24px;
   min-height: calc(100vh - 120px); /* ensure the content fills viewport minus header */
+}
+
+.etablissement-section-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.etablissement-section-tab {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+
+.etablissement-section-tab:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.etablissement-section-tab.active {
+  background: #ecfdf5;
+  color: #047857;
+  box-shadow: inset 0 0 0 1px #a7f3d0;
+}
+
+.etablissement-chalet-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.etablissement-chalet-filter {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.etablissement-chalet-filter.active {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+
+.etablissement-chalet-rail {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  scroll-snap-type: x proximity;
+}
+
+.etablissement-chalet-card {
+  flex: 0 0 280px;
+  max-width: 280px;
+  min-height: 260px;
+  padding: 12px;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  position: relative;
+  scroll-snap-align: start;
+}
+
+.etablissement-chalet-image {
+  width: 100%;
+  height: 110px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.etablissement-chalet-category-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #e2e8f0;
+  color: #334155;
+  white-space: nowrap;
 }
 
 /* Sections */
@@ -666,6 +921,28 @@
 /* Events: Allow custom styling from eventStyleGetter (removed background/color overrides) */
 .rbc-event { 
   box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important; 
+}
+
+@media (max-width: 768px) {
+  .etablissement-section-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .etablissement-section-tab {
+    justify-content: center;
+    padding: 10px;
+  }
+
+  .etablissement-chalet-card {
+    flex-basis: 240px;
+    max-width: 240px;
+    min-height: 240px;
+  }
+
+  .etablissement-chalet-image {
+    height: 95px;
+  }
 }
 
 

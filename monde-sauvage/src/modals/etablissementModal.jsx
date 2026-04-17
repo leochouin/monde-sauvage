@@ -1,7 +1,309 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import supabase from '../utils/supabase.js';
 import ChaletHoraireModal from './chaletHoraireModal.jsx';
 import StripeOnboarding from './stripeOnboarding.jsx';
+import { isInGaspesieBounds, toCoordinateInputValue, searchAddressesInGaspesie } from '../utils/locationService.js';
+import {
+    DndContext,
+    DragOverlay,
+    PointerSensor,
+    closestCenter,
+    useSensor,
+    useSensors
+} from '@dnd-kit/core';
+import {
+    SortableContext,
+    arrayMove,
+    rectSortingStrategy,
+    useSortable
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+
+const PREDEFINED_AMENITIES = [
+    {
+        id: 'river_view',
+        label: 'Vue sur la riviere',
+        icon: '🌊',
+        keywords: ['vue sur la riviere', 'river view', 'riviere']
+    },
+    {
+        id: 'fire_pit',
+        label: 'Foyer exterieur',
+        icon: '🔥',
+        keywords: ['foyer', 'fire pit', 'feu exterieur']
+    },
+    {
+        id: 'hot_tub',
+        label: 'Spa',
+        icon: '♨️',
+        keywords: ['spa', 'hot tub', 'jacuzzi']
+    },
+    {
+        id: 'fireplace',
+        label: 'Foyer interieur',
+        icon: '🪵',
+        keywords: ['foyer interieur', 'fireplace', 'poele']
+    },
+    {
+        id: 'wifi',
+        label: 'Wifi rapide',
+        icon: '📶',
+        keywords: ['wifi', 'wi-fi', 'internet']
+    },
+    {
+        id: 'bbq',
+        label: 'BBQ',
+        icon: '🍖',
+        keywords: ['bbq', 'barbecue', 'grill']
+    },
+    {
+        id: 'kayaks',
+        label: 'Kayaks',
+        icon: '🛶',
+        keywords: ['kayak', 'canoe', 'canot']
+    },
+    {
+        id: 'dock',
+        label: 'Acces au quai',
+        icon: '⚓',
+        keywords: ['quai', 'dock', 'acces au lac']
+    },
+    {
+        id: 'pet_friendly',
+        label: 'Animaux acceptes',
+        icon: '🐾',
+        keywords: ['animaux', 'pet friendly', 'chiens']
+    },
+    {
+        id: 'parking',
+        label: 'Stationnement',
+        icon: '🚗',
+        keywords: ['stationnement', 'parking']
+    }
+];
+
+const CHALET_WIZARD_STEPS = [
+    { key: 'type', label: 'Type de propriete' },
+    { key: 'location', label: 'Localisation' },
+    { key: 'basic', label: 'Infos de base' },
+    { key: 'amenities', label: 'Commodites' },
+    { key: 'photos', label: 'Photos' },
+    { key: 'pricing', label: 'Tarification' },
+    { key: 'review', label: 'Verification' }
+];
+
+const ChaletWizardStepPanel = ({ title, subtitle, children }) => (
+    <div className="chalet-wizard-step-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div>
+            <h3 style={{ fontSize: '1.22rem', color: '#1e293b', margin: 0 }}>{title}</h3>
+            {subtitle && (
+                <p style={{ margin: '8px 0 0', color: '#64748b', fontSize: '0.92rem' }}>{subtitle}</p>
+            )}
+        </div>
+        {children}
+    </div>
+);
+
+const AmenityIcon = ({ amenityId, size = 18 }) => {
+    const common = {
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: '1.7',
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': true
+    };
+
+    if (amenityId === 'river_view') {
+        return (
+            <svg {...common}>
+                <path d="M2 15c2 0 2-2 4-2s2 2 4 2 2-2 4-2 2 2 4 2 2-2 4-2" />
+                <path d="M2 19c2 0 2-2 4-2s2 2 4 2 2-2 4-2 2 2 4 2 2-2 4-2" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'fire_pit') {
+        return (
+            <svg {...common}>
+                <path d="M8 21h8" />
+                <path d="M6 17h12" />
+                <path d="M12 4c3 2.2 3.3 5.4 1.7 7-1.1 1.1-3.2 1.3-4.5 0-.8-.8-.9-2-.2-3.1" />
+                <path d="M10.5 14c.7 1 2.3 1.1 3.2.2" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'hot_tub') {
+        return (
+            <svg {...common}>
+                <path d="M4 14h16" />
+                <path d="M5 14v3a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3v-3" />
+                <path d="M8 5c0 1-.8 1.3-.8 2.3" />
+                <path d="M12 4c0 1-.8 1.3-.8 2.3" />
+                <path d="M16 5c0 1-.8 1.3-.8 2.3" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'fireplace') {
+        return (
+            <svg {...common}>
+                <path d="M5 21V8l7-5 7 5v13" />
+                <path d="M8 21v-6h8v6" />
+                <path d="M12 10c1.4 1.1 1.5 2.8.7 3.6-.6.6-1.7.7-2.4.1" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'wifi') {
+        return (
+            <svg {...common}>
+                <path d="M2.5 8.8a14 14 0 0 1 19 0" />
+                <path d="M5.6 12a9.5 9.5 0 0 1 12.8 0" />
+                <path d="M8.8 15.2a5.3 5.3 0 0 1 6.4 0" />
+                <circle cx="12" cy="18.5" r="1" fill="currentColor" stroke="none" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'bbq') {
+        return (
+            <svg {...common}>
+                <circle cx="12" cy="11" r="4" />
+                <path d="M8 15h8" />
+                <path d="M9 15l-1.5 5" />
+                <path d="M15 15l1.5 5" />
+                <path d="M6 9h12" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'kayaks') {
+        return (
+            <svg {...common}>
+                <path d="M3 14h18" />
+                <path d="M5 14c1.8 2 4 3 7 3s5.2-1 7-3" />
+                <path d="M10 8l2 6 2-6" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'dock') {
+        return (
+            <svg {...common}>
+                <path d="M6 4v10" />
+                <path d="M12 4v10" />
+                <path d="M18 4v10" />
+                <path d="M4 14h16" />
+                <path d="M2 19c2 0 2-2 4-2s2 2 4 2 2-2 4-2 2 2 4 2 2-2 4-2" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'pet_friendly') {
+        return (
+            <svg {...common}>
+                <circle cx="8" cy="8" r="1.6" />
+                <circle cx="12" cy="6.5" r="1.6" />
+                <circle cx="16" cy="8" r="1.6" />
+                <path d="M12 20c-2.6 0-5-1.7-5-4 0-1.9 1.3-3.2 2.9-3.2 1 0 1.8.6 2.1 1.2.3-.6 1.1-1.2 2.1-1.2 1.6 0 2.9 1.3 2.9 3.2 0 2.3-2.4 4-5 4Z" />
+            </svg>
+        );
+    }
+
+    if (amenityId === 'parking') {
+        return (
+            <svg {...common}>
+                <rect x="4" y="3" width="16" height="18" rx="2" />
+                <path d="M9 17V7h4a3 3 0 0 1 0 6H9" />
+            </svg>
+        );
+    }
+
+    return (
+        <svg {...common}>
+            <circle cx="12" cy="12" r="9" />
+        </svg>
+    );
+};
+
+const UploadIcon = ({ size = 30 }) => (
+    <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+    >
+        <path d="M12 15V5" />
+        <path d="m8.5 8.5 3.5-3.5 3.5 3.5" />
+        <path d="M4 15.5v2A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5v-2" />
+    </svg>
+);
+
+const SortablePhotoCard = ({ id, children }) => {
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging
+    } = useSortable({ id });
+
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition: transition || 'transform 180ms ease',
+        touchAction: 'none',
+        cursor: isDragging ? 'grabbing' : 'grab',
+        zIndex: isDragging ? 30 : 1,
+        opacity: isDragging ? 0.88 : 1,
+        boxShadow: isDragging
+            ? '0 14px 28px rgba(15, 23, 42, 0.22)'
+            : '0 1px 3px rgba(15, 23, 42, 0.12)'
+    };
+
+    return (
+        <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+            {children}
+        </div>
+    );
+};
+
+const normalizeAmenityText = (value = '') => value.toLowerCase();
+
+const inferSelectedAmenitiesFromDescription = (description = '') => {
+    const normalized = normalizeAmenityText(description);
+    return PREDEFINED_AMENITIES
+        .filter((amenity) => amenity.keywords.some((keyword) => normalized.includes(keyword)))
+        .map((amenity) => amenity.id);
+};
+
+const buildAmenitiesDescription = (selectedAmenityIds, manualDescription) => {
+    const selectedLabels = PREDEFINED_AMENITIES
+        .filter((amenity) => selectedAmenityIds.includes(amenity.id))
+        .map((amenity) => amenity.label);
+
+    const cleanManualDescription = manualDescription.trim();
+
+    if (selectedLabels.length > 0 && cleanManualDescription) {
+        return `Commodites: ${selectedLabels.join(', ')}.\n\n${cleanManualDescription}`;
+    }
+
+    if (selectedLabels.length > 0) {
+        return `Commodites: ${selectedLabels.join(', ')}`;
+    }
+
+    return cleanManualDescription;
+};
 
 const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     const [establishments, setEstablishments] = useState([]);
@@ -24,10 +326,30 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
         longitude: '',
         Image: null
     });
+    const [locationAddress, setLocationAddress] = useState('');
+    const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+    const [locationSuggestions, setLocationSuggestions] = useState([]);
+    const [isPickingLocationOnMap, setIsPickingLocationOnMap] = useState(false);
+    const [locationLookupError, setLocationLookupError] = useState(null);
+    const [locationLookupSuccess, setLocationLookupSuccess] = useState(null);
     const [imageFiles, setImageFiles] = useState([]);
     const [existingImages, setExistingImages] = useState([]);
     const [uploadingImages, setUploadingImages] = useState(false);
-    const [draggedImageIndex, setDraggedImageIndex] = useState(null);
+    const [draggingImageId, setDraggingImageId] = useState(null);
+    const [imageOrder, setImageOrder] = useState([]);
+    const [selectedAmenities, setSelectedAmenities] = useState([]);
+    const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+    const fileInputRef = useRef(null);
+    const [isCompactChaletForm, setIsCompactChaletForm] = useState(false);
+    const [chaletWizardStep, setChaletWizardStep] = useState(0);
+    const [chaletStepErrors, setChaletStepErrors] = useState({});
+    const dragSensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: {
+                distance: 6
+            }
+        })
+    );
 
     // Chalet horaire modal states
     const [isHoraireModalOpen, setIsHoraireModalOpen] = useState(false);
@@ -37,6 +359,10 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
     const [googleConnectionError, setGoogleConnectionError] = useState(null);
     const [googleConnectionSuccess, setGoogleConnectionSuccess] = useState(false);
+    const [showGoogleConnectModal, setShowGoogleConnectModal] = useState(false);
+    const [pendingEstablishmentSelect, setPendingEstablishmentSelect] = useState(null);
+    const [pendingSection, setPendingSection] = useState(null);
+    const [chaletCreationStep, setChaletCreationStep] = useState(null);
 
     // Establishment form states
     const [isCreatingEstablishment, setIsCreatingEstablishment] = useState(false);
@@ -49,18 +375,34 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     });
     const [savingEstablishment, setSavingEstablishment] = useState(false);
     const [establishmentError, setEstablishmentError] = useState(null);
+    const [activeEstablishmentSection, setActiveEstablishmentSection] = useState('overview');
+    const [selectedChaletCategory, setSelectedChaletCategory] = useState('all');
+
+    const establishmentSections = [
+        { key: 'overview', label: 'Aperçu', icon: '📋' },
+        { key: 'chalets', label: 'Chalets', icon: '🏠' },
+        { key: 'calendar', label: 'Calendrier', icon: '📅' },
+        { key: 'payments', label: 'Paiements', icon: '💳' }
+    ];
 
     useEffect(() => {
         if (isEtablissementOpen) {
+            setSelectedEstablishment(null);
+            setActiveEstablishmentSection('overview');
             fetchEstablishment();
-            
+
             // Check if we're returning from Google OAuth
             const urlParams = new URLSearchParams(globalThis.location.search);
             if (urlParams.get('google_connected') === 'true') {
                 setGoogleConnectionSuccess(true);
+                // Restore the establishment and section we were on before OAuth
+                const returnEstablishment = urlParams.get('establishment');
+                const returnSection = urlParams.get('section');
+                if (returnEstablishment) setPendingEstablishmentSelect(returnEstablishment);
+                if (returnSection) setPendingSection(returnSection);
                 // Clean up URL without reloading
                 globalThis.history.replaceState({}, globalThis.document.title, globalThis.location.pathname);
-                
+
                 // Auto-dismiss success message after 5 seconds
                 setTimeout(() => {
                     setGoogleConnectionSuccess(false);
@@ -69,6 +411,23 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
         }
     }, [isEtablissementOpen]);
 
+    // Auto-select establishment and section when returning from Google OAuth
+    useEffect(() => {
+        if (pendingEstablishmentSelect && establishments.length > 0) {
+            const estab = establishments.find(
+                (e) => String(e.key || e.id) === String(pendingEstablishmentSelect)
+            );
+            if (estab) {
+                setSelectedEstablishment(estab);
+                if (pendingSection) {
+                    setActiveEstablishmentSection(pendingSection);
+                }
+                setPendingEstablishmentSelect(null);
+                setPendingSection(null);
+            }
+        }
+    }, [establishments, pendingEstablishmentSelect]);
+
     useEffect(() => {
         if (selectedEstablishment) {
             // Use 'key' if it exists, otherwise fall back to 'id'
@@ -76,6 +435,43 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             fetchChalets(establishmentKey);
         }
     }, [selectedEstablishment]);
+
+    useEffect(() => {
+        if (selectedEstablishment) {
+            setActiveEstablishmentSection('overview');
+            setSelectedChaletCategory('all');
+        }
+    }, [selectedEstablishment?.key, selectedEstablishment?.id]);
+
+    useEffect(() => {
+        const syncChaletFormViewport = () => {
+            setIsCompactChaletForm((globalThis.innerWidth || 0) < 1024);
+        };
+
+        syncChaletFormViewport();
+        globalThis.addEventListener('resize', syncChaletFormViewport);
+        return () => globalThis.removeEventListener('resize', syncChaletFormViewport);
+    }, []);
+
+    const inferChaletCategory = (chalet) => {
+        const text = `${chalet?.Name || ''} ${chalet?.Description || ''}`.toLowerCase();
+
+        if (text.includes('loft')) return 'Loft';
+        if (text.includes('tent') || text.includes('tente')) return 'Tente';
+        if (text.includes('cabane')) return 'Cabane';
+        if (text.includes('dome') || text.includes('dôme')) return 'Dôme';
+        if (text.includes('suite')) return 'Suite';
+        return 'Chalet';
+    };
+
+    const chaletCategories = [
+        'all',
+        ...Array.from(new Set(chalets.map(inferChaletCategory)))
+    ];
+
+    const filteredChalets = selectedChaletCategory === 'all'
+        ? chalets
+        : chalets.filter((chalet) => inferChaletCategory(chalet) === selectedChaletCategory);
 
     const fetchEstablishment = async () => {
         try {
@@ -129,10 +525,10 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             }
 
             if (!data || data.length === 0) {
+                setEstablishments([]);
                 setError("Aucun établissement trouvé pour cet utilisateur");
             } else {
                 setEstablishments(data);
-                setSelectedEstablishment(data[0]); // Select the first establishment by default
             }
         } catch (err) {
             console.error('Error fetching establishment:', err);
@@ -230,8 +626,17 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             longitude: '',
             Image: null
         });
+        setLocationAddress('');
+        setLocationSuggestions([]);
+        setLocationLookupError(null);
+        setLocationLookupSuccess(null);
         setImageFiles([]);
         setExistingImages([]);
+        setImageOrder([]);
+        setSelectedAmenities([]);
+        setIsDraggingFiles(false);
+        setChaletWizardStep(0);
+        setChaletStepErrors({});
         setEditingChalet(null);
         setIsCreatingChalet(true);
     };
@@ -258,7 +663,14 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             longitude: longitude,
             Image: chalet.Image || null
         });
+        setLocationAddress('');
+        setLocationSuggestions([]);
+        setLocationLookupError(null);
+        setLocationLookupSuccess(null);
         setImageFiles([]);
+        setImageOrder([]);
+        setSelectedAmenities(inferSelectedAmenitiesFromDescription(chalet.Description || ''));
+        setIsDraggingFiles(false);
         
         // Fetch existing images from chalet_images table
         try {
@@ -271,21 +683,28 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             if (error) {
                 console.error('Error fetching chalet images:', error);
                 setExistingImages([]);
+                setImageOrder([]);
             } else {
                 setExistingImages(images || []);
+                setImageOrder((images || []).map((img) => `existing-${img.id}`));
             }
         } catch (err) {
             console.error('Error fetching chalet images:', err);
             setExistingImages([]);
+            setImageOrder([]);
         }
         
         setEditingChalet(chalet);
+        setChaletWizardStep(0);
+        setChaletStepErrors({});
         setIsCreatingChalet(true);
     };
 
     const handleCloseForm = () => {
         setIsCreatingChalet(false);
         setEditingChalet(null);
+        setIsPickingLocationOnMap(false);
+        globalThis.__MS_PICKING_LOCATION__ = false;
         setChaletForm({
             Name: '',
             Description: '',
@@ -295,8 +714,17 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             longitude: '',
             Image: null
         });
+        setLocationAddress('');
+        setLocationSuggestions([]);
+        setLocationLookupError(null);
+        setLocationLookupSuccess(null);
         setImageFiles([]);
         setExistingImages([]);
+        setImageOrder([]);
+        setSelectedAmenities([]);
+        setIsDraggingFiles(false);
+        setChaletWizardStep(0);
+        setChaletStepErrors({});
     };
 
     const handleOpenHoraireModal = (chalet) => {
@@ -324,10 +752,12 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             );
             oauthUrl.searchParams.set('establishmentId', establishmentKey);
             
-            // Add parameter to indicate we should reopen the modal
-            const redirectUrl = new URL(globalThis.location.href);
+            // Build redirect URL so we return to this establishment's calendar section
+            const redirectUrl = new URL(globalThis.location.origin + globalThis.location.pathname);
             redirectUrl.searchParams.set('openEstablishment', 'true');
             redirectUrl.searchParams.set('google_connected', 'true');
+            redirectUrl.searchParams.set('establishment', establishmentKey);
+            redirectUrl.searchParams.set('section', 'calendar');
             oauthUrl.searchParams.set('redirect_to', redirectUrl.toString());
 
             // Redirect to Google OAuth
@@ -337,6 +767,60 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             setGoogleConnectionError(err.message || 'Erreur lors de la connexion à Google Calendar');
             setIsConnectingGoogle(false);
         }
+    };
+
+    const isGoogleCalendarConnectionError = (statusCode, errorData) => {
+        if (statusCode === 401 || errorData?.requiresAuth) return true;
+
+        const errorText = `${errorData?.error || ''} ${errorData?.message || ''}`.toLowerCase();
+        return errorText.includes('google') && (
+            errorText.includes('auth')
+            || errorText.includes('connect')
+            || errorText.includes('reconnect')
+            || errorText.includes('token')
+            || errorText.includes('expired')
+        );
+    };
+
+    const promptGoogleCalendarConnectionForChaletCreation = () => {
+        setShowGoogleConnectModal(true);
+    };
+
+    const createGoogleCalendarForChalet = async ({ chaletId, chaletName }) => {
+        const session = (await supabase.auth.getSession()).data.session;
+        const accessToken = session?.access_token;
+
+        const response = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-chalet-calendar`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+                },
+                body: JSON.stringify({
+                    chalet_id: chaletId,
+                    chalet_name: chaletName
+                })
+            }
+        );
+
+        let payload = {};
+        try {
+            payload = await response.json();
+        } catch {
+            payload = {};
+        }
+
+        if (!response.ok) {
+            if (isGoogleCalendarConnectionError(response.status, payload)) {
+                throw new Error('GOOGLE_CALENDAR_CONNECTION_REQUIRED');
+            }
+
+            throw new Error(payload.error || payload.message || 'Erreur lors de la creation de l\'agenda Google Calendar du chalet.');
+        }
+
+        return payload;
     };
 
     const handleDisconnectGoogleCalendar = async () => {
@@ -388,15 +872,145 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
         }));
     };
 
-    const handleImageChange = (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length > 0) {
-            setImageFiles(prev => [...prev, ...files]);
+    const applyResolvedCoordinates = ({ latitude, longitude }) => {
+        setChaletForm(prev => ({
+            ...prev,
+            latitude: toCoordinateInputValue(latitude),
+            longitude: toCoordinateInputValue(longitude)
+        }));
+    };
+
+    const handleSelectAddressSuggestion = (suggestion) => {
+        applyResolvedCoordinates(suggestion);
+        setLocationAddress(suggestion.displayName || '');
+        setLocationSuggestions([]);
+        setLocationLookupError(null);
+        setLocationLookupSuccess(suggestion.displayName || 'Adresse localisee en Gaspesie.');
+    };
+
+    const handleStartMapLocationPick = () => {
+        setLocationLookupError(null);
+        setLocationLookupSuccess('Cliquez sur la carte pour choisir l\'emplacement exact.');
+        setIsPickingLocationOnMap(true);
+        globalThis.__MS_PICKING_LOCATION__ = true;
+    };
+
+    const handleCancelMapLocationPick = () => {
+        setIsPickingLocationOnMap(false);
+        globalThis.__MS_PICKING_LOCATION__ = false;
+    };
+
+    useEffect(() => {
+        if (!isCreatingChalet || chaletWizardStep !== 1) return;
+
+        const query = locationAddress.trim();
+        if (query.length < 3) {
+            setLocationSuggestions([]);
+            setIsSearchingLocation(false);
+            return;
+        }
+
+        const timeoutId = setTimeout(async () => {
+            try {
+                setIsSearchingLocation(true);
+                setLocationLookupError(null);
+                const suggestions = await searchAddressesInGaspesie(query, 6);
+                setLocationSuggestions(suggestions);
+            } catch (err) {
+                setLocationSuggestions([]);
+                setLocationLookupError(err.message || 'Impossible de rechercher cette adresse.');
+            } finally {
+                setIsSearchingLocation(false);
+            }
+        }, 300);
+
+        return () => clearTimeout(timeoutId);
+    }, [locationAddress, isCreatingChalet, chaletWizardStep]);
+
+    useEffect(() => {
+        const handleMapLocationPicked = (event) => {
+            const latitude = event?.detail?.latitude;
+            const longitude = event?.detail?.longitude;
+
+            if (!isInGaspesieBounds(latitude, longitude)) {
+                setLocationLookupError('Le point selectionne est hors de la region cible (Gaspesie).');
+                setLocationLookupSuccess(null);
+                setLocationSuggestions([]);
+                setIsPickingLocationOnMap(false);
+                globalThis.__MS_PICKING_LOCATION__ = false;
+                return;
+            }
+
+            applyResolvedCoordinates({ latitude, longitude });
+            setLocationLookupError(null);
+            setLocationLookupSuccess('Point de carte selectionne avec succes.');
+            setLocationSuggestions([]);
+            setIsPickingLocationOnMap(false);
+            globalThis.__MS_PICKING_LOCATION__ = false;
+        };
+
+        globalThis.addEventListener('ms:map-location-picked', handleMapLocationPicked);
+
+        return () => {
+            globalThis.removeEventListener('ms:map-location-picked', handleMapLocationPicked);
+            globalThis.__MS_PICKING_LOCATION__ = false;
+        };
+    }, []);
+
+    const addImageFiles = (files) => {
+        const imageOnlyFiles = files.filter((file) => file.type?.startsWith('image/'));
+        if (imageOnlyFiles.length > 0) {
+            const mapped = imageOnlyFiles.map((file) => ({
+                id: `new-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                file
+            }));
+
+            setImageFiles((prev) => [...prev, ...mapped]);
+            setImageOrder((prev) => [...prev, ...mapped.map((item) => item.id)]);
         }
     };
 
-    const handleRemoveNewImage = (index) => {
-        setImageFiles(prev => prev.filter((_, i) => i !== index));
+    const handleImageChange = (e) => {
+        const files = Array.from(e.target.files || []);
+        addImageFiles(files);
+
+        if (e.target) {
+            e.target.value = '';
+        }
+    };
+
+    const handleFileDragEnter = (e) => {
+        e.preventDefault();
+        setIsDraggingFiles(true);
+    };
+
+    const handleFileDragOver = (e) => {
+        e.preventDefault();
+        setIsDraggingFiles(true);
+    };
+
+    const handleFileDragLeave = (e) => {
+        e.preventDefault();
+        setIsDraggingFiles(false);
+    };
+
+    const handleFileDrop = (e) => {
+        e.preventDefault();
+        setIsDraggingFiles(false);
+        addImageFiles(Array.from(e.dataTransfer.files || []));
+    };
+
+    const handleToggleAmenity = (amenityId) => {
+        setSelectedAmenities((prev) => (
+            prev.includes(amenityId)
+                ? prev.filter((id) => id !== amenityId)
+                : [...prev, amenityId]
+        ));
+    };
+
+    const handleRemoveNewImage = (imageId) => {
+        setImageFiles((prev) => prev.filter((item) => item.id !== imageId));
+        setImageOrder((prev) => prev.filter((id) => id !== imageId));
     };
 
     const handleRemoveExistingImage = async (imageId) => {
@@ -408,46 +1022,74 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             
             if (error) throw error;
             
-            setExistingImages(prev => prev.filter(img => img.id !== imageId));
+            setExistingImages((prev) => prev.filter((img) => img.id !== imageId));
+            setImageOrder((prev) => prev.filter((id) => id !== `existing-${imageId}`));
         } catch (error) {
             console.error('Error removing image:', error);
             alert('Erreur lors de la suppression de l\'image');
         }
     };
 
-    const handleDragStart = (index, isExisting) => {
-        setDraggedImageIndex({ index, isExisting });
+    const existingImageItems = existingImages.map((img) => ({
+        id: `existing-${img.id}`,
+        kind: 'existing',
+        image: img
+    }));
+
+    const newImageItems = imageFiles.map((item) => ({
+        id: item.id,
+        kind: 'new',
+        file: item.file
+    }));
+
+    const imageItemMap = new Map([...existingImageItems, ...newImageItems].map((item) => [item.id, item]));
+
+    const orderedImageItems = imageOrder
+        .map((id) => imageItemMap.get(id))
+        .filter(Boolean);
+
+    useEffect(() => {
+        const validIds = new Set([...existingImageItems, ...newImageItems].map((item) => item.id));
+        setImageOrder((prev) => {
+            const filtered = prev.filter((id) => validIds.has(id));
+            const missing = [...validIds].filter((id) => !filtered.includes(id));
+            return [...filtered, ...missing];
+        });
+    }, [existingImages, imageFiles]);
+
+    const previewUrlMap = useMemo(() => {
+        const map = {};
+        imageFiles.forEach((item) => {
+            map[item.id] = URL.createObjectURL(item.file);
+        });
+        return map;
+    }, [imageFiles]);
+
+    useEffect(() => {
+        return () => {
+            Object.values(previewUrlMap).forEach((url) => URL.revokeObjectURL(url));
+        };
+    }, [previewUrlMap]);
+
+    const handlePhotoDragStart = (event) => {
+        setDraggingImageId(event.active?.id || null);
     };
 
-    const handleDragOver = (e) => {
-        e.preventDefault();
+    const handlePhotoDragEnd = (event) => {
+        const { active, over } = event;
+        setDraggingImageId(null);
+
+        if (!active?.id || !over?.id || active.id === over.id) return;
+
+        setImageOrder((prev) => {
+            const oldIndex = prev.indexOf(active.id);
+            const newIndex = prev.indexOf(over.id);
+            if (oldIndex === -1 || newIndex === -1) return prev;
+            return arrayMove(prev, oldIndex, newIndex);
+        });
     };
 
-    const handleDrop = (targetIndex, isTargetExisting) => {
-        if (!draggedImageIndex) return;
-        
-        const { index: sourceIndex, isExisting: isSourceExisting } = draggedImageIndex;
-        
-        // Only allow reordering within the same category (existing or new)
-        if (isSourceExisting !== isTargetExisting) {
-            setDraggedImageIndex(null);
-            return;
-        }
-        
-        if (isSourceExisting) {
-            const newOrder = [...existingImages];
-            const [removed] = newOrder.splice(sourceIndex, 1);
-            newOrder.splice(targetIndex, 0, removed);
-            setExistingImages(newOrder);
-        } else {
-            const newOrder = [...imageFiles];
-            const [removed] = newOrder.splice(sourceIndex, 1);
-            newOrder.splice(targetIndex, 0, removed);
-            setImageFiles(newOrder);
-        }
-        
-        setDraggedImageIndex(null);
-    };
+    const activeImage = draggingImageId ? imageItemMap.get(draggingImageId) : null;
 
     const uploadImage = async (file) => {
         try {
@@ -477,9 +1119,13 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     const uploadMultipleImages = async (files) => {
         setUploadingImages(true);
         try {
-            const uploadPromises = files.map(file => uploadImage(file));
-            const urls = await Promise.all(uploadPromises);
-            return urls;
+            const uploaded = await Promise.all(
+                files.map(async (imageItem) => {
+                    const url = await uploadImage(imageItem.file);
+                    return { id: imageItem.id, url };
+                })
+            );
+            return uploaded;
         } catch (error) {
             console.error('Error uploading images:', error);
             throw error;
@@ -488,32 +1134,132 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
         }
     };
 
+    const getActivePropertyType = () => inferChaletCategory({
+        Name: chaletForm.Name,
+        Description: chaletForm.Description
+    });
+
+    const hasAnyChaletImage = () => (
+        existingImages.length > 0
+        || imageFiles.length > 0
+        || Boolean(chaletForm.Image)
+    );
+
+    const getChaletStepValidation = (stepIndex) => {
+        const errors = {};
+
+        if (stepIndex === 0) {
+            if (!chaletForm.Name.trim()) {
+                errors.Name = 'Le nom du chalet est requis pour continuer.';
+            }
+        }
+
+        if (stepIndex === 1) {
+            if (!chaletForm.latitude || !chaletForm.longitude) {
+                errors.location = 'Selectionnez une localisation (coordonnees GPS) pour continuer.';
+            }
+        }
+
+        if (stepIndex === 2) {
+            const capacity = parseInt(chaletForm.nb_personnes, 10);
+            if (!chaletForm.nb_personnes || Number.isNaN(capacity) || capacity < 1) {
+                errors.nb_personnes = 'La capacite doit etre au moins de 1 personne.';
+            }
+        }
+
+        if (stepIndex === 3) {
+            if (selectedAmenities.length === 0 && !chaletForm.Description.trim()) {
+                errors.Description = 'Selectionnez au moins une commodite ou ajoutez une description.';
+            }
+        }
+
+        if (stepIndex === 4) {
+            if (!hasAnyChaletImage()) {
+                errors.images = 'Ajoutez au moins une photo pour continuer.';
+            }
+        }
+
+        if (stepIndex === 5) {
+            const price = parseFloat(chaletForm.price_per_night);
+            if (!chaletForm.price_per_night || Number.isNaN(price) || price < 0) {
+                errors.price_per_night = 'Ajoutez un prix valide par nuit.';
+            }
+        }
+
+        return {
+            isValid: Object.keys(errors).length === 0,
+            errors
+        };
+    };
+
+    const handleWizardNext = () => {
+        const validation = getChaletStepValidation(chaletWizardStep);
+        if (!validation.isValid) {
+            setChaletStepErrors(prev => ({ ...prev, ...validation.errors }));
+            return;
+        }
+
+        setChaletStepErrors({});
+        setChaletWizardStep(prev => Math.min(prev + 1, CHALET_WIZARD_STEPS.length - 1));
+    };
+
+    const handleWizardBack = () => {
+        setChaletStepErrors({});
+        setChaletWizardStep(prev => Math.max(prev - 1, 0));
+    };
+
+    const wizardValidation = getChaletStepValidation(chaletWizardStep);
+    const generatedAmenitiesDescription = buildAmenitiesDescription(selectedAmenities, chaletForm.Description);
+    const wizardProgress = ((chaletWizardStep + 1) / CHALET_WIZARD_STEPS.length) * 100;
+
     const handleSubmitChalet = async (e) => {
-        e.preventDefault();
+        if (e?.preventDefault) {
+            e.preventDefault();
+        }
         
         try {
             setLoadingChalets(true);
             setChaletError(null);
+            setChaletCreationStep(null);
 
-            // Upload new images if there are any
-            let newImageUrls = [];
-            if (imageFiles.length > 0) {
-                newImageUrls = await uploadMultipleImages(imageFiles);
+            const orderedItems = orderedImageItems.length > 0
+                ? orderedImageItems
+                : [...existingImageItems, ...newImageItems];
+
+            // New chalets require an active Google Calendar connection because
+            // the chalet agenda is now created automatically at creation time.
+            if (!editingChalet && !selectedEstablishment?.google_calendar_id) {
+                setChaletError('Connexion Google Calendar requise. La creation du chalet est en attente tant que le calendrier Google n\'est pas connecte.');
+                setLoadingChalets(false);
+                setChaletCreationStep(null);
+                promptGoogleCalendarConnectionForChaletCreation();
+                return;
             }
+
+            // Upload new images if there are any, preserving on-screen order
+            let newImageUploads = [];
+            const orderedNewImages = orderedItems.filter((item) => item.kind === 'new');
+            if (orderedNewImages.length > 0) {
+                setChaletCreationStep('Telechargement des photos...');
+                newImageUploads = await uploadMultipleImages(orderedNewImages);
+            }
+
+            const newImageUrlById = new Map(newImageUploads.map((item) => [item.id, item.url]));
 
             const establishmentKey = selectedEstablishment.key || selectedEstablishment.id;
-            
+
             // Keep the first existing or new image as the main Image field (for backward compatibility)
             let mainImageUrl = chaletForm.Image;
-            if (existingImages.length > 0) {
-                mainImageUrl = existingImages[0].image_url;
-            } else if (newImageUrls.length > 0) {
-                mainImageUrl = newImageUrls[0];
+            const firstImage = orderedItems[0];
+            if (firstImage?.kind === 'existing') {
+                mainImageUrl = firstImage.image.image_url;
+            } else if (firstImage?.kind === 'new') {
+                mainImageUrl = newImageUrlById.get(firstImage.id) || chaletForm.Image;
             }
-            
+
             const chaletData = {
                 Name: chaletForm.Name,
-                Description: chaletForm.Description,
+                Description: buildAmenitiesDescription(selectedAmenities, chaletForm.Description),
                 nb_personnes: chaletForm.nb_personnes ? parseInt(chaletForm.nb_personnes) : null,
                 price_per_night: chaletForm.price_per_night ? parseFloat(chaletForm.price_per_night) : null,
                 etablishment_id: establishmentKey,
@@ -524,7 +1270,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             if (chaletForm.latitude && chaletForm.longitude) {
                 const lat = parseFloat(chaletForm.latitude);
                 const lon = parseFloat(chaletForm.longitude);
-                
+
                 if (!isNaN(lat) && !isNaN(lon)) {
                     // Create a GeoJSON Point object that PostGIS can understand
                     // Format: POINT(longitude latitude)
@@ -534,6 +1280,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
             let chaletKey;
             if (editingChalet) {
+                setChaletCreationStep('Mise a jour du chalet...');
                 // Update existing chalet
                 const { error: updateError } = await supabase
                     .from('chalets')
@@ -542,17 +1289,22 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                 if (updateError) throw updateError;
                 chaletKey = editingChalet.key;
-                
-                // Update display order for existing images
-                for (let i = 0; i < existingImages.length; i++) {
+
+                // Update display order for existing images based on current visual order
+                const orderedExisting = orderedItems
+                    .map((item, index) => ({ item, index }))
+                    .filter(({ item }) => item.kind === 'existing');
+
+                for (const { item, index } of orderedExisting) {
                     const { error: orderError } = await supabase
                         .from('chalet_images')
-                        .update({ display_order: i })
-                        .eq('id', existingImages[i].id);
-                    
+                        .update({ display_order: index })
+                        .eq('id', item.image.id);
+
                     if (orderError) console.error('Error updating image order:', orderError);
                 }
             } else {
+                setChaletCreationStep('Creation du chalet...');
                 // Create new chalet
                 const { data: newChalet, error: insertError } = await supabase
                     .from('chalets')
@@ -561,16 +1313,38 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                 if (insertError) throw insertError;
                 chaletKey = newChalet[0].key;
+
+                // Automatically create the chalet Google Calendar agenda.
+                setChaletCreationStep('Creation de l\'agenda Google Calendar... (peut prendre quelques secondes)');
+                try {
+                    await createGoogleCalendarForChalet({
+                        chaletId: chaletKey,
+                        chaletName: chaletForm.Name
+                    });
+                } catch (calendarErr) {
+                    // Keep DB consistent: remove chalet if agenda creation failed.
+                    await supabase.from('chalets').delete().eq('key', chaletKey);
+
+                    if (calendarErr.message === 'GOOGLE_CALENDAR_CONNECTION_REQUIRED') {
+                        promptGoogleCalendarConnectionForChaletCreation();
+                        throw new Error('Google Calendar n\'est pas connecte ou a expire. La creation du chalet est en attente jusqu\'a la connexion et la creation de l\'agenda.');
+                    }
+
+                    throw calendarErr;
+                }
             }
             
             // Insert new images into chalet_images table
-            if (newImageUrls.length > 0) {
-                const startOrder = existingImages.length;
-                const imageRecords = newImageUrls.map((url, index) => ({
-                    chalet_id: chaletKey,
-                    image_url: url,
-                    display_order: startOrder + index
-                }));
+            if (newImageUploads.length > 0) {
+                const imageRecords = orderedItems
+                    .map((item, index) => ({ item, index }))
+                    .filter(({ item }) => item.kind === 'new')
+                    .map(({ item, index }) => ({
+                        chalet_id: chaletKey,
+                        image_url: newImageUrlById.get(item.id),
+                        display_order: index
+                    }))
+                    .filter((record) => Boolean(record.image_url));
                 
                 const { error: imageError } = await supabase
                     .from('chalet_images')
@@ -589,6 +1363,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             setChaletError(`Erreur lors de la sauvegarde: ${err.message || 'Erreur inconnue'}`);
         } finally {
             setLoadingChalets(false);
+            setChaletCreationStep(null);
         }
     };
 
@@ -768,14 +1543,70 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
     if (!isEtablissementOpen) return null;
 
+    if (isPickingLocationOnMap) {
+        return (
+            <div
+                style={{
+                    position: 'fixed',
+                    inset: 0,
+                    zIndex: 2500,
+                    pointerEvents: 'none'
+                }}
+            >
+                <div
+                    style={{
+                        pointerEvents: 'auto',
+                        maxWidth: '680px',
+                        margin: '20px auto 0',
+                        background: 'rgba(15, 23, 42, 0.95)',
+                        color: '#ffffff',
+                        borderRadius: '12px',
+                        padding: '16px 18px',
+                        boxShadow: '0 10px 25px rgba(0, 0, 0, 0.35)'
+                    }}
+                >
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>
+                        Selection de position active
+                    </p>
+                    <p style={{ margin: '8px 0 0', fontSize: '0.92rem', opacity: 0.92 }}>
+                        Cliquez sur la carte interactive pour choisir la position precise du chalet.
+                    </p>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+                        <button
+                            type="button"
+                            onClick={handleCancelMapLocationPick}
+                            style={{
+                                padding: '8px 12px',
+                                borderRadius: '6px',
+                                border: '1px solid rgba(255, 255, 255, 0.35)',
+                                background: 'transparent',
+                                color: '#ffffff',
+                                cursor: 'pointer',
+                                fontWeight: 600
+                            }}
+                        >
+                            Annuler
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="guide-profile-fullscreen">
             {/* Header */}
             <div className="guide-profile-header">
                 <div style={{ display: "flex", alignItems: "center", gap: 16, justifyContent: "space-between", width: "100%" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                        <button type="button" className="guide-back-button" onClick={onClose}>
-                            ← Retour
+                        <button
+                            type="button"
+                            className="etablissement-close-button"
+                            onClick={onClose}
+                            aria-label="Fermer la fenêtre établissements"
+                            title="Fermer"
+                        >
+                            X
                         </button>
                         <div>
                             <h1 className="guide-profile-title" style={{ marginBottom: '4px' }}>Mes Établissements</h1>
@@ -811,7 +1642,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             {/* Main Content */}
             <div className="guide-profile-content">
                 {/* Loading State */}
-                {loading && (
+                {loading && establishments.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '60px', color: '#64748b' }}>
                         <div style={{ fontSize: '2rem', marginBottom: '16px' }}>⏳</div>
                         <p style={{ fontSize: '1.1rem' }}>Chargement de vos établissements...</p>
@@ -874,10 +1705,13 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                 )}
 
                 {/* Display Establishments List */}
-                {!loading && !error && establishments.length > 0 && !selectedEstablishment && (
+                {!error && establishments.length > 0 && !selectedEstablishment && (
                     <div style={{ padding: '20px' }}>
                         <h2 style={{ fontSize: '1.3rem', color: '#334155', marginBottom: '8px' }}>Vos lieux de réservation</h2>
-                        <p style={{ color: '#64748b', marginBottom: '24px' }}>Sélectionnez un établissement pour le gérer</p>
+                        <p style={{ color: '#64748b', marginBottom: '24px' }}>
+                            Sélectionnez un établissement pour le gérer
+                            {loading ? ' • Mise à jour en arrière-plan...' : ''}
+                        </p>
                         
                         <div style={{ display: 'grid', gap: '16px' }}>
                             {establishments.map((est) => (
@@ -966,7 +1800,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                 )}
 
                 {/* Display Selected Establishment Data */}
-                {!loading && !error && selectedEstablishment && (
+                {!error && selectedEstablishment && (
                     <>
                         {/* Back to list button */}
                         <div style={{ padding: '20px', paddingBottom: '0' }}>
@@ -992,223 +1826,277 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                             </button>
                         </div>
 
-                        {/* Left Column - Establishment Information */}
-                        <div className="guide-profile-left">
-                            {/* Establishment Info */}
-                            <div className="guide-section guide-card">
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '8px', flexWrap: 'wrap' }}>
-                                    <h2 className="guide-section-title" style={{ marginBottom: 0 }}>📋 Informations du lieu</h2>
-                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleOpenEditEstablishment(selectedEstablishment)}
-                                            style={{
-                                                padding: '6px 14px',
-                                                backgroundColor: '#dbeafe',
-                                                color: '#1e40af',
-                                                border: '1px solid #93c5fd',
-                                                borderRadius: '6px',
-                                                cursor: 'pointer',
-                                                fontSize: '0.85rem',
-                                                fontWeight: '500'
-                                            }}
-                                        >
-                                            ✏️ Modifier
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleDeleteEstablishment(selectedEstablishment.key || selectedEstablishment.id)}
-                                            style={{
-                                                padding: '6px 14px',
-                                                backgroundColor: '#fee2e2',
-                                                color: '#dc2626',
-                                                border: '1px solid #fecaca',
-                                                borderRadius: '6px',
-                                                cursor: 'pointer',
-                                                fontSize: '0.85rem',
-                                                fontWeight: '500'
-                                            }}
-                                        >
-                                            🗑️ Supprimer
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className="guide-section-content">
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                        <div>
-                                            <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Nom du lieu</label>
-                                            <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                {selectedEstablishment.Name || selectedEstablishment.name || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                            </p>
-                                        </div>
-                                        
-                                        <div>
-                                            <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Description / Adresse</label>
-                                            <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                {selectedEstablishment.Description || selectedEstablishment.adresse || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                            </p>
-                                        </div>
-                                        
-                                        <div>
-                                            <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Téléphone</label>
-                                            <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                {selectedEstablishment.telephone || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                            </p>
-                                        </div>
-                                        
-                                        <div>
-                                            <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Courriel</label>
-                                            <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                {selectedEstablishment.email || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
+                        <div style={{ padding: '20px', paddingTop: '14px', paddingBottom: 0 }}>
+                            <div className="etablissement-section-tabs" role="tablist" aria-label="Sections établissement">
+                                {establishmentSections.map((section) => (
+                                    <button
+                                        key={section.key}
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={activeEstablishmentSection === section.key}
+                                        onClick={() => setActiveEstablishmentSection(section.key)}
+                                        className={`etablissement-section-tab ${activeEstablishmentSection === section.key ? 'active' : ''}`}
+                                    >
+                                        <span>{section.icon}</span>
+                                        <span>{section.label}</span>
+                                    </button>
+                                ))}
                             </div>
+                        </div>
 
-                            {/* Stripe Payments Section */}
-                            <div className="guide-section guide-card">
-                                <StripeOnboarding
-                                    establishment={selectedEstablishment}
-                                    onStatusUpdate={(status) => {
-                                        // Update the local state with the new Stripe status
-                                        setSelectedEstablishment(prev => ({
-                                            ...prev,
-                                            stripe_charges_enabled: status.chargesEnabled,
-                                            stripe_payouts_enabled: status.payoutsEnabled,
-                                            stripe_onboarding_complete: status.onboardingComplete,
-                                        }));
-                                    }}
-                                />
-                            </div>
-
-                            {/* Google Calendar Connection */}
-                            <div className="guide-section guide-card">
-                                <h2 className="guide-section-title">📅 Calendrier de réservations</h2>
-                                <p style={{ color: '#64748b', fontSize: '0.95rem', marginBottom: '16px', marginTop: '-8px' }}>
-                                    Synchronisez vos réservations avec Google Calendar
-                                </p>
-                                <div className="guide-section-content">
-                                    {googleConnectionSuccess && (
-                                        <div style={{
-                                            padding: '12px',
-                                            backgroundColor: '#d1fae5',
-                                            color: '#065f46',
-                                            borderRadius: '6px',
-                                            marginBottom: '16px',
-                                            fontSize: '0.9rem',
-                                            border: '1px solid #10b981',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '8px'
-                                        }}>
-                                            <span>✅</span>
-                                            <span>Google Calendar connecté avec succès!</span>
-                                        </div>
-                                    )}
-                                    {selectedEstablishment.google_calendar_id ? (
-                                        <div>
-                                            <div style={{
-                                                padding: '16px',
-                                                backgroundColor: '#f0fdf4',
-                                                borderRadius: '8px',
-                                                marginBottom: '16px',
-                                                border: '1px solid #86efac'
-                                            }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                                                    <span style={{ fontSize: '1.2rem' }}>✅</span>
-                                                    <span style={{ color: '#059669', fontWeight: '600' }}>
-                                                        Calendrier connecté
-                                                    </span>
-                                                </div>
-                                                <p style={{ color: '#64748b', fontSize: '0.95rem', marginLeft: '28px' }}>
-                                                    Vos chalets peuvent synchroniser leurs réservations automatiquement.
-                                                </p>
-                                            </div>
+                        <div style={{ gridColumn: '1 / -1', padding: '20px', paddingTop: '16px' }}>
+                            {activeEstablishmentSection === 'overview' && (
+                                <div className="guide-section guide-card" style={{
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '12px',
+                                    backgroundColor: 'white',
+                                    padding: '20px'
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '8px', flexWrap: 'wrap' }}>
+                                        <h2 className="guide-section-title" style={{ marginBottom: 0, padding: 0 }}>📋 Informations du lieu</h2>
+                                        <div style={{ display: 'flex', gap: '8px' }}>
                                             <button
                                                 type="button"
-                                                onClick={handleDisconnectGoogleCalendar}
-                                                disabled={isConnectingGoogle}
+                                                onClick={() => handleOpenEditEstablishment(selectedEstablishment)}
                                                 style={{
-                                                    padding: '10px 20px',
-                                                    backgroundColor: '#ef4444',
-                                                    color: 'white',
-                                                    border: 'none',
+                                                    padding: '6px 14px',
+                                                    backgroundColor: '#dbeafe',
+                                                    color: '#1e40af',
+                                                    border: '1px solid #93c5fd',
                                                     borderRadius: '6px',
-                                                    cursor: isConnectingGoogle ? 'not-allowed' : 'pointer',
-                                                    fontWeight: '500',
-                                                    fontSize: '0.9rem',
-                                                    opacity: isConnectingGoogle ? 0.6 : 1
+                                                    cursor: 'pointer',
+                                                    fontSize: '0.85rem',
+                                                    fontWeight: '500'
                                                 }}
                                             >
-                                                {isConnectingGoogle ? 'Déconnexion...' : 'Déconnecter le calendrier'}
+                                                ✏️ Modifier
                                             </button>
-                                        </div>
-                                    ) : (
-                                        <div>
-                                            <div style={{
-                                                padding: '16px',
-                                                backgroundColor: '#fef3c7',
-                                                borderRadius: '8px',
-                                                marginBottom: '16px',
-                                                border: '1px solid #fbbf24'
-                                            }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                                                    <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-                                                    <span style={{ color: '#92400e', fontWeight: '600' }}>
-                                                        Calendrier non connecté
-                                                    </span>
-                                                </div>
-                                                <p style={{ color: '#92400e', fontSize: '0.95rem', marginLeft: '28px' }}>
-                                                    Connectez Google Calendar pour gérer automatiquement les réservations de vos chalets.
-                                                </p>
-                                            </div>
-                                            
-                                            {googleConnectionError && (
-                                                <div style={{
-                                                    padding: '12px',
+                                            <button
+                                                type="button"
+                                                onClick={() => handleDeleteEstablishment(selectedEstablishment.key || selectedEstablishment.id)}
+                                                style={{
+                                                    padding: '6px 14px',
                                                     backgroundColor: '#fee2e2',
-                                                    color: '#991b1b',
+                                                    color: '#dc2626',
+                                                    border: '1px solid #fecaca',
                                                     borderRadius: '6px',
-                                                    marginBottom: '16px',
-                                                    fontSize: '0.9rem'
-                                                }}>
-                                                    {googleConnectionError}
-                                                </div>
-                                            )}
-
-                                            <button
-                                                type="button"
-                                                onClick={handleConnectGoogleCalendar}
-                                                disabled={isConnectingGoogle}
-                                                style={{
-                                                    padding: '10px 20px',
-                                                    backgroundColor: '#3b82f6',
-                                                    color: 'white',
-                                                    border: 'none',
-                                                    borderRadius: '6px',
-                                                    cursor: isConnectingGoogle ? 'not-allowed' : 'pointer',
-                                                    fontWeight: '500',
-                                                    fontSize: '0.9rem',
-                                                    opacity: isConnectingGoogle ? 0.6 : 1,
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '8px'
+                                                    cursor: 'pointer',
+                                                    fontSize: '0.85rem',
+                                                    fontWeight: '500'
                                                 }}
                                             >
-                                                <span>📅</span>
-                                                <span>{isConnectingGoogle ? 'Connexion...' : 'Connecter mon calendrier'}</span>
+                                                🗑️ Supprimer
                                             </button>
                                         </div>
-                                    )}
-                                </div>
-                            </div>
+                                    </div>
+                                    <div className="guide-section-content" style={{ padding: 0 }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+                                            <div>
+                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Nom du lieu</label>
+                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
+                                                    {selectedEstablishment.Name || selectedEstablishment.name || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
+                                                </p>
+                                            </div>
 
-                            {/* Chalets Management */}
-                            <div className="guide-section guide-card">
+                                            <div>
+                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Téléphone</label>
+                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
+                                                    {selectedEstablishment.telephone || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
+                                                </p>
+                                            </div>
+
+                                            <div style={{ gridColumn: '1 / -1' }}>
+                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Description / Adresse</label>
+                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
+                                                    {selectedEstablishment.Description || selectedEstablishment.adresse || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
+                                                </p>
+                                            </div>
+
+                                            <div>
+                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Courriel</label>
+                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
+                                                    {selectedEstablishment.email || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
+                                                </p>
+                                            </div>
+
+                                            <div>
+                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Statut calendrier</label>
+                                                <p style={{ color: selectedEstablishment.google_calendar_id ? '#059669' : '#92400e', marginTop: '6px', fontSize: '1.05rem', fontWeight: '600' }}>
+                                                    {selectedEstablishment.google_calendar_id ? 'Connecté' : 'Non connecté'}
+                                                </p>
+                                            </div>
+
+                                            <div>
+                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Nombre de chalets</label>
+                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
+                                                    {chalets.length}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeEstablishmentSection === 'payments' && (
+                                <div className="guide-section guide-card" style={{
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '12px',
+                                    backgroundColor: 'white',
+                                    padding: '20px'
+                                }}>
+                                    <StripeOnboarding
+                                        establishment={selectedEstablishment}
+                                        onStatusUpdate={(status) => {
+                                            // Update the local state with the new Stripe status
+                                            setSelectedEstablishment(prev => ({
+                                                ...prev,
+                                                stripe_charges_enabled: status.chargesEnabled,
+                                                stripe_payouts_enabled: status.payoutsEnabled,
+                                                stripe_onboarding_complete: status.onboardingComplete,
+                                            }));
+                                        }}
+                                    />
+                                </div>
+                            )}
+
+                            {activeEstablishmentSection === 'calendar' && (
+                                <div className="guide-section guide-card" style={{
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '12px',
+                                    backgroundColor: 'white',
+                                    padding: '20px'
+                                }}>
+                                    <h2 className="guide-section-title" style={{ padding: 0 }}>📅 Calendrier de réservations</h2>
+                                    <p style={{ color: '#64748b', fontSize: '0.95rem', marginBottom: '16px', marginTop: '8px' }}>
+                                        Synchronisez vos réservations avec Google Calendar
+                                    </p>
+                                    <div className="guide-section-content" style={{ padding: 0 }}>
+                                        {googleConnectionSuccess && (
+                                            <div style={{
+                                                padding: '12px',
+                                                backgroundColor: '#d1fae5',
+                                                color: '#065f46',
+                                                borderRadius: '6px',
+                                                marginBottom: '16px',
+                                                fontSize: '0.9rem',
+                                                border: '1px solid #10b981',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px'
+                                            }}>
+                                                <span>✅</span>
+                                                <span>Google Calendar connecté avec succès!</span>
+                                            </div>
+                                        )}
+                                        {selectedEstablishment.google_calendar_id ? (
+                                            <div>
+                                                <div style={{
+                                                    padding: '16px',
+                                                    backgroundColor: '#f0fdf4',
+                                                    borderRadius: '8px',
+                                                    marginBottom: '16px',
+                                                    border: '1px solid #86efac'
+                                                }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                                        <span style={{ fontSize: '1.2rem' }}>✅</span>
+                                                        <span style={{ color: '#059669', fontWeight: '600' }}>
+                                                            Calendrier connecté
+                                                        </span>
+                                                    </div>
+                                                    <p style={{ color: '#64748b', fontSize: '0.95rem', marginLeft: '28px' }}>
+                                                        Vos chalets peuvent synchroniser leurs réservations automatiquement.
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleDisconnectGoogleCalendar}
+                                                    disabled={isConnectingGoogle}
+                                                    style={{
+                                                        padding: '10px 20px',
+                                                        backgroundColor: '#ef4444',
+                                                        color: 'white',
+                                                        border: 'none',
+                                                        borderRadius: '6px',
+                                                        cursor: isConnectingGoogle ? 'not-allowed' : 'pointer',
+                                                        fontWeight: '500',
+                                                        fontSize: '0.9rem',
+                                                        opacity: isConnectingGoogle ? 0.6 : 1
+                                                    }}
+                                                >
+                                                    {isConnectingGoogle ? 'Déconnexion...' : 'Déconnecter le calendrier'}
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <div style={{
+                                                    padding: '16px',
+                                                    backgroundColor: '#fef3c7',
+                                                    borderRadius: '8px',
+                                                    marginBottom: '16px',
+                                                    border: '1px solid #fbbf24'
+                                                }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                                        <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+                                                        <span style={{ color: '#92400e', fontWeight: '600' }}>
+                                                            Calendrier non connecté
+                                                        </span>
+                                                    </div>
+                                                    <p style={{ color: '#92400e', fontSize: '0.95rem', marginLeft: '28px' }}>
+                                                        Connectez Google Calendar pour gérer automatiquement les réservations de vos chalets.
+                                                    </p>
+                                                </div>
+
+                                                {googleConnectionError && (
+                                                    <div style={{
+                                                        padding: '12px',
+                                                        backgroundColor: '#fee2e2',
+                                                        color: '#991b1b',
+                                                        borderRadius: '6px',
+                                                        marginBottom: '16px',
+                                                        fontSize: '0.9rem'
+                                                    }}>
+                                                        {googleConnectionError}
+                                                    </div>
+                                                )}
+
+                                                <button
+                                                    type="button"
+                                                    onClick={handleConnectGoogleCalendar}
+                                                    disabled={isConnectingGoogle}
+                                                    style={{
+                                                        padding: '10px 20px',
+                                                        backgroundColor: '#3b82f6',
+                                                        color: 'white',
+                                                        border: 'none',
+                                                        borderRadius: '6px',
+                                                        cursor: isConnectingGoogle ? 'not-allowed' : 'pointer',
+                                                        fontWeight: '500',
+                                                        fontSize: '0.9rem',
+                                                        opacity: isConnectingGoogle ? 0.6 : 1,
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '8px'
+                                                    }}
+                                                >
+                                                    <span>📅</span>
+                                                    <span>{isConnectingGoogle ? 'Connexion...' : 'Connecter mon calendrier'}</span>
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeEstablishmentSection === 'chalets' && (
+                                <div className="guide-section guide-card" style={{
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '12px',
+                                    backgroundColor: 'white',
+                                    padding: '20px'
+                                }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '16px' }}>
                                     <div>
-                                        <h2 className="guide-section-title" style={{ marginBottom: '6px' }}>🏠 Vos chalets</h2>
+                                        <h2 className="guide-section-title" style={{ marginBottom: '6px', padding: 0 }}>🏠 Vos chalets</h2>
                                         <p style={{ color: '#64748b', fontSize: '0.95rem', margin: 0 }}>
                                             Les unités de location disponibles pour vos clients
                                         </p>
@@ -1231,7 +2119,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                         + Ajouter un chalet
                                     </button>
                                 </div>
-                                <div className="guide-section-content">
+                                <div className="guide-section-content" style={{ padding: 0, marginTop: '16px' }}>
                                     {loadingChalets && (
                                         <div style={{ textAlign: 'center', padding: '20px' }}>
                                             <p style={{ color: '#64748b', fontSize: '0.95rem' }}>⏳ Chargement...</p>
@@ -1260,129 +2148,151 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                                     {!loadingChalets && !chaletError && chalets.length > 0 && (
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                            {chalets.map((chalet, index) => (
-                                                <div 
-                                                    key={chalet.id || chalet.key || `chalet-${index}`}
-                                                    style={{
-                                                        padding: '16px',
-                                                        backgroundColor: '#f8fafc',
-                                                        borderRadius: '8px',
-                                                        border: '1px solid #e2e8f0',
-                                                        position: 'relative'
-                                                    }}
-                                                >
-                                                    {chalet.Image && (
-                                                        <img 
-                                                            src={chalet.Image} 
-                                                            alt={chalet.Name}
-                                                            style={{
-                                                                width: '100%',
-                                                                height: '150px',
-                                                                objectFit: 'cover',
-                                                                borderRadius: '6px',
-                                                                marginBottom: '12px'
-                                                            }}
-                                                        />
-                                                    )}
-                                                    <h3 style={{ 
-                                                        fontSize: '1.1rem', 
-                                                        fontWeight: 'bold', 
-                                                        color: '#334155',
-                                                        marginBottom: '8px'
-                                                    }}>
-                                                        {chalet.Name || `Chalet ${chalet.id}`}
-                                                    </h3>
-                                                    
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
-                                                        {chalet.nb_personnes && (
-                                                            <p style={{ color: '#64748b', fontSize: '0.9rem' }}>
-                                                                <strong>Capacité:</strong> {chalet.nb_personnes} personnes
-                                                            </p>
-                                                        )}
-                                                        {chalet.price_per_night && (
-                                                            <p style={{ color: '#64748b', fontSize: '0.9rem' }}>
-                                                                <strong>Prix par nuit:</strong> {chalet.price_per_night}$
-                                                            </p>
-                                                        )}
-                                                        {chalet.Description && (
-                                                            <p style={{ color: '#64748b', fontSize: '0.9rem' }}>
-                                                                <strong>Description:</strong> {chalet.Description}
-                                                            </p>
-                                                        )}
-                                                    </div>
-
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleOpenEditChalet(chalet)}
-                                                            style={{
-                                                                padding: '6px 12px',
-                                                                backgroundColor: '#3b82f6',
-                                                                color: 'white',
-                                                                border: 'none',
-                                                                borderRadius: '4px',
-                                                                cursor: 'pointer',
-                                                                fontSize: '0.85rem'
-                                                            }}
-                                                        >
-                                                            Modifier
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleDeleteChalet(chalet.key)}
-                                                            style={{
-                                                                padding: '6px 12px',
-                                                                backgroundColor: '#ef4444',
-                                                                color: 'white',
-                                                                border: 'none',
-                                                                borderRadius: '4px',
-                                                                cursor: 'pointer',
-                                                                fontSize: '0.85rem'
-                                                            }}
-                                                        >
-                                                            Supprimer
-                                                        </button>
-                                                        <button
+                                            <div className="etablissement-chalet-filters">
+                                                {chaletCategories.map((category) => (
+                                                    <button
+                                                        key={category}
                                                         type="button"
-                                                        onClick={() => handleOpenHoraireModal(chalet)}
-                                                        style={{
-                                                            padding: '6px 12px',
-                                                            backgroundColor: '#10b981',
-                                                            color: 'white',
-                                                            border: 'none',
-                                                            borderRadius: '4px',
-                                                            cursor: 'pointer',
-                                                            fontSize: '0.85rem'
-                                                        }}
-                                                        >Gérer l'agenda</button>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                            
-                                            <p style={{ 
-                                                color: '#059669', 
-                                                fontSize: '0.9rem', 
-                                                marginTop: '8px',
+                                                        onClick={() => setSelectedChaletCategory(category)}
+                                                        className={`etablissement-chalet-filter ${selectedChaletCategory === category ? 'active' : ''}`}
+                                                    >
+                                                        {category === 'all' ? 'Tous' : category}
+                                                    </button>
+                                                ))}
+                                            </div>
+
+                                            <div className="etablissement-chalet-rail">
+                                                {filteredChalets.map((chalet, index) => {
+                                                    const category = inferChaletCategory(chalet);
+                                                    return (
+                                                        <div
+                                                            key={chalet.id || chalet.key || `chalet-${index}`}
+                                                            className="etablissement-chalet-card"
+                                                        >
+                                                            {chalet.Image && (
+                                                                <img
+                                                                    src={chalet.Image}
+                                                                    alt={chalet.Name}
+                                                                    className="etablissement-chalet-image"
+                                                                />
+                                                            )}
+
+                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '8px' }}>
+                                                                <h3 style={{
+                                                                    fontSize: '1rem',
+                                                                    fontWeight: '700',
+                                                                    color: '#334155',
+                                                                    marginBottom: '8px',
+                                                                    marginTop: 0,
+                                                                    lineHeight: 1.2
+                                                                }}>
+                                                                    {chalet.Name || `Chalet ${chalet.id}`}
+                                                                </h3>
+                                                                <span className="etablissement-chalet-category-chip">{category}</span>
+                                                            </div>
+
+                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '10px' }}>
+                                                                {chalet.nb_personnes && (
+                                                                    <p style={{ color: '#64748b', fontSize: '0.82rem', margin: 0 }}>
+                                                                        <strong>Capacité:</strong> {chalet.nb_personnes} pers.
+                                                                    </p>
+                                                                )}
+                                                                {chalet.price_per_night && (
+                                                                    <p style={{ color: '#64748b', fontSize: '0.82rem', margin: 0 }}>
+                                                                        <strong>Prix:</strong> {chalet.price_per_night}$ / nuit
+                                                                    </p>
+                                                                )}
+                                                                {chalet.Description && (
+                                                                    <p
+                                                                        style={{
+                                                                            color: '#64748b',
+                                                                            fontSize: '0.82rem',
+                                                                            margin: 0,
+                                                                            display: '-webkit-box',
+                                                                            WebkitLineClamp: 2,
+                                                                            WebkitBoxOrient: 'vertical',
+                                                                            overflow: 'hidden'
+                                                                        }}
+                                                                    >
+                                                                        {chalet.Description}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+
+                                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleOpenEditChalet(chalet)}
+                                                                    style={{
+                                                                        padding: '6px 10px',
+                                                                        backgroundColor: '#3b82f6',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: '4px',
+                                                                        cursor: 'pointer',
+                                                                        fontSize: '0.78rem',
+                                                                        fontWeight: '600'
+                                                                    }}
+                                                                >
+                                                                    Modifier
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleDeleteChalet(chalet.key)}
+                                                                    style={{
+                                                                        padding: '6px 10px',
+                                                                        backgroundColor: '#ef4444',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: '4px',
+                                                                        cursor: 'pointer',
+                                                                        fontSize: '0.78rem',
+                                                                        fontWeight: '600'
+                                                                    }}
+                                                                >
+                                                                    Supprimer
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleOpenHoraireModal(chalet)}
+                                                                    style={{
+                                                                        padding: '6px 10px',
+                                                                        backgroundColor: '#10b981',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: '4px',
+                                                                        cursor: 'pointer',
+                                                                        fontSize: '0.78rem',
+                                                                        fontWeight: '600'
+                                                                    }}
+                                                                >
+                                                                    Agenda
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+
+                                            {filteredChalets.length === 0 && (
+                                                <p style={{ color: '#64748b', fontSize: '0.9rem', margin: 0 }}>
+                                                    Aucun chalet dans la catégorie "{selectedChaletCategory}".
+                                                </p>
+                                            )}
+
+                                            <p style={{
+                                                color: '#059669',
+                                                fontSize: '0.9rem',
+                                                marginTop: '4px',
                                                 fontWeight: 'bold'
                                             }}>
-                                                Total: {chalets.length} chalet{chalets.length > 1 ? 's' : ''}
+                                                Affichage: {filteredChalets.length} / {chalets.length}
                                             </p>
                                         </div>
                                     )}
                                 </div>
                             </div>
-                        </div>
-
-                        {/* Right Column - Additional Info */}
-                        <div className="guide-profile-right">
-                            <div className="guide-section guide-card">
-                                <h2 className="guide-section-title">Statistiques</h2>
-                                <div className="guide-section-content">
-                                    <p style={{ color: '#64748b', fontSize: '0.95rem' }}>
-                                        Statistiques et aperçu de vos réservations.
-                                    </p>
-                                </div>
-                            </div>
+                            )}
                         </div>
                     </>
                 )}
@@ -1396,423 +2306,789 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    zIndex: 1000
+                    backgroundColor: '#f3f4f6',
+                    zIndex: 1000,
+                    overflow: 'hidden'
                 }}>
                     <div style={{
-                        backgroundColor: 'white',
-                        borderRadius: '12px',
-                        padding: '24px',
-                        maxWidth: '600px',
-                        width: '90%',
-                        maxHeight: '90vh',
-                        overflowY: 'auto'
+                        height: '100vh',
+                        width: '100vw',
+                        display: 'grid',
+                        gridTemplateColumns: isCompactChaletForm ? '1fr' : '320px minmax(0, 1fr)',
+                        backgroundColor: '#ffffff'
                     }}>
-                        <h2 style={{ 
-                            fontSize: '1.5rem', 
-                            fontWeight: 'bold', 
-                            color: '#334155',
-                            marginBottom: '20px'
+                        <aside style={{
+                            background: '#f9fafb',
+                            borderRight: isCompactChaletForm ? 'none' : '1px solid #e5e7eb',
+                            borderBottom: isCompactChaletForm ? '1px solid #e5e7eb' : 'none',
+                            padding: isCompactChaletForm ? '16px 18px' : '24px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '16px'
                         }}>
-                            {editingChalet ? 'Modifier le Chalet' : 'Ajouter un Nouveau Chalet'}
-                        </h2>
-
-                        <form onSubmit={handleSubmitChalet}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                {/* Name */}
+                            <div style={{ display: 'flex', alignItems: 'start', justifyContent: 'space-between', gap: '10px' }}>
                                 <div>
-                                    <label style={{ 
-                                        display: 'block',
-                                        fontWeight: '600',
-                                        color: '#334155',
-                                        marginBottom: '6px'
-                                    }}>
-                                        Nom du Chalet *
-                                    </label>
-                                    <input
-                                        type="text"
-                                        name="Name"
-                                        value={chaletForm.Name}
-                                        onChange={handleFormChange}
-                                        required
-                                        style={{
-                                            width: '100%',
-                                            padding: '10px',
-                                            borderRadius: '6px',
-                                            border: '1px solid #cbd5e1',
-                                            fontSize: '1rem'
-                                        }}
-                                    />
+                                    <p style={{ margin: 0, fontSize: '0.78rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                                        Configuration
+                                    </p>
+                                    <h2 style={{ margin: '8px 0 0', fontSize: '1.28rem', color: '#111827', lineHeight: 1.2 }}>
+                                        {editingChalet ? 'Modifier le chalet' : 'Nouvelle propriete'}
+                                    </h2>
                                 </div>
+                                <button
+                                    type="button"
+                                    onClick={handleCloseForm}
+                                    aria-label="Fermer la creation du chalet"
+                                    style={{
+                                        border: 'none',
+                                        background: 'transparent',
+                                        color: '#111827',
+                                        width: '26px',
+                                        height: '26px',
+                                        cursor: 'pointer',
+                                        fontWeight: 700,
+                                        lineHeight: 1,
+                                        fontSize: '1.5rem',
+                                        padding: 0
+                                    }}
+                                >
+                                    ×
+                                </button>
+                            </div>
 
-                                {/* Description */}
-                                <div>
-                                    <label style={{ 
-                                        display: 'block',
-                                        fontWeight: '600',
-                                        color: '#334155',
-                                        marginBottom: '6px'
-                                    }}>
-                                        Description
-                                    </label>
-                                    <textarea
-                                        name="Description"
-                                        value={chaletForm.Description}
-                                        onChange={handleFormChange}
-                                        rows="4"
-                                        style={{
-                                            width: '100%',
-                                            padding: '10px',
-                                            borderRadius: '6px',
-                                            border: '1px solid #cbd5e1',
-                                            fontSize: '1rem',
-                                            resize: 'vertical'
-                                        }}
-                                    />
-                                </div>
-
-                                {/* Number of people */}
-                                <div>
-                                    <label style={{ 
-                                        display: 'block',
-                                        fontWeight: '600',
-                                        color: '#334155',
-                                        marginBottom: '6px'
-                                    }}>
-                                        Nombre de personnes
-                                    </label>
-                                    <input
-                                        type="number"
-                                        name="nb_personnes"
-                                        value={chaletForm.nb_personnes}
-                                        onChange={handleFormChange}
-                                        min="1"
-                                        style={{
-                                            width: '100%',
-                                            padding: '10px',
-                                            borderRadius: '6px',
-                                            border: '1px solid #cbd5e1',
-                                            fontSize: '1rem'
-                                        }}
-                                    />
-                                </div>
-
-                                {/* Price per night */}
-                                <div>
-                                    <label style={{ 
-                                        display: 'block',
-                                        fontWeight: '600',
-                                        color: '#334155',
-                                        marginBottom: '6px'
-                                    }}>
-                                        Prix par nuit ($)
-                                    </label>
-                                    <input
-                                        type="number"
-                                        name="price_per_night"
-                                        value={chaletForm.price_per_night}
-                                        onChange={handleFormChange}
-                                        min="0"
-                                        step="0.01"
-                                        style={{
-                                            width: '100%',
-                                            padding: '10px',
-                                            borderRadius: '6px',
-                                            border: '1px solid #cbd5e1',
-                                            fontSize: '1rem'
-                                        }}
-                                    />
-                                </div>
-
-                                {/* Location - Latitude and Longitude */}
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                                    <div>
-                                        <label style={{ 
-                                            display: 'block',
-                                            fontWeight: '600',
-                                            color: '#334155',
-                                            marginBottom: '6px'
-                                        }}>
-                                            Latitude
-                                        </label>
-                                        <input
-                                            type="number"
-                                            name="latitude"
-                                            value={chaletForm.latitude}
-                                            onChange={handleFormChange}
-                                            step="any"
-                                            placeholder="ex: 48.4"
-                                            style={{
-                                                width: '100%',
-                                                padding: '10px',
-                                                borderRadius: '6px',
-                                                border: '1px solid #cbd5e1',
-                                                fontSize: '1rem'
-                                            }}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label style={{ 
-                                            display: 'block',
-                                            fontWeight: '600',
-                                            color: '#334155',
-                                            marginBottom: '6px'
-                                        }}>
-                                            Longitude
-                                        </label>
-                                        <input
-                                            type="number"
-                                            name="longitude"
-                                            value={chaletForm.longitude}
-                                            onChange={handleFormChange}
-                                            step="any"
-                                            placeholder="ex: -71.2"
-                                            style={{
-                                                width: '100%',
-                                                padding: '10px',
-                                                borderRadius: '6px',
-                                                border: '1px solid #cbd5e1',
-                                                fontSize: '1rem'
-                                            }}
-                                        />
-                                    </div>
-                                </div>
-                                <p style={{ 
-                                    fontSize: '0.85rem', 
-                                    color: '#64748b',
-                                    marginTop: '-8px' 
-                                }}>
-                                    Les coordonnées GPS permettent de localiser le chalet sur la carte
+                            <div>
+                                <p style={{ margin: 0, color: '#4b5563', fontSize: '0.9rem' }}>
+                                    Etape {chaletWizardStep + 1} / {CHALET_WIZARD_STEPS.length}
                                 </p>
+                                <p style={{ margin: '3px 0 0', color: '#111827', fontWeight: 700, fontSize: '0.95rem' }}>
+                                    {CHALET_WIZARD_STEPS[chaletWizardStep].label}
+                                </p>
+                            </div>
 
-                                {/* Image upload */}
-                                <div>
-                                    <label style={{ 
-                                        display: 'block',
-                                        fontWeight: '600',
-                                        color: '#334155',
-                                        marginBottom: '6px'
-                                    }}>
-                                        Images (Glissez-déposez pour réorganiser)
-                                    </label>
-                                    
-                                    {/* Existing images */}
-                                    {existingImages.length > 0 && (
-                                        <div style={{ 
-                                            display: 'grid', 
-                                            gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', 
-                                            gap: '10px',
-                                            marginBottom: '10px'
-                                        }}>
-                                            {existingImages.map((img, index) => (
-                                                <div 
-                                                    key={img.id}
-                                                    draggable
-                                                    onDragStart={() => handleDragStart(index, true)}
-                                                    onDragOver={handleDragOver}
-                                                    onDrop={() => handleDrop(index, true)}
-                                                    style={{
-                                                        position: 'relative',
-                                                        cursor: 'move',
-                                                        border: '2px solid #e2e8f0',
-                                                        borderRadius: '8px',
-                                                        overflow: 'hidden'
-                                                    }}
-                                                >
-                                                    <img 
-                                                        src={img.image_url} 
-                                                        alt={`Image ${index + 1}`}
-                                                        style={{
-                                                            width: '100%',
-                                                            height: '120px',
-                                                            objectFit: 'cover'
-                                                        }}
-                                                    />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleRemoveExistingImage(img.id)}
-                                                        style={{
-                                                            position: 'absolute',
-                                                            top: '4px',
-                                                            right: '4px',
-                                                            backgroundColor: 'rgba(239, 68, 68, 0.9)',
-                                                            color: 'white',
-                                                            border: 'none',
-                                                            borderRadius: '50%',
-                                                            width: '24px',
-                                                            height: '24px',
-                                                            cursor: 'pointer',
-                                                            fontSize: '14px',
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center'
-                                                        }}
-                                                    >
-                                                        ×
-                                                    </button>
-                                                    <div style={{
-                                                        position: 'absolute',
-                                                        bottom: '4px',
-                                                        left: '4px',
-                                                        backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                                                        color: 'white',
-                                                        padding: '2px 6px',
-                                                        borderRadius: '4px',
-                                                        fontSize: '12px'
-                                                    }}>
-                                                        #{index + 1}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                    
-                                    {/* New images preview */}
-                                    {imageFiles.length > 0 && (
-                                        <div style={{ 
-                                            display: 'grid', 
-                                            gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', 
-                                            gap: '10px',
-                                            marginBottom: '10px'
-                                        }}>
-                                            {imageFiles.map((file, index) => (
-                                                <div 
-                                                    key={index}
-                                                    draggable
-                                                    onDragStart={() => handleDragStart(index, false)}
-                                                    onDragOver={handleDragOver}
-                                                    onDrop={() => handleDrop(index, false)}
-                                                    style={{
-                                                        position: 'relative',
-                                                        cursor: 'move',
-                                                        border: '2px dashed #10b981',
-                                                        borderRadius: '8px',
-                                                        overflow: 'hidden'
-                                                    }}
-                                                >
-                                                    <img 
-                                                        src={URL.createObjectURL(file)} 
-                                                        alt={`New ${index + 1}`}
-                                                        style={{
-                                                            width: '100%',
-                                                            height: '120px',
-                                                            objectFit: 'cover'
-                                                        }}
-                                                    />
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleRemoveNewImage(index)}
-                                                        style={{
-                                                            position: 'absolute',
-                                                            top: '4px',
-                                                            right: '4px',
-                                                            backgroundColor: 'rgba(239, 68, 68, 0.9)',
-                                                            color: 'white',
-                                                            border: 'none',
-                                                            borderRadius: '50%',
-                                                            width: '24px',
-                                                            height: '24px',
-                                                            cursor: 'pointer',
-                                                            fontSize: '14px',
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center'
-                                                        }}
-                                                    >
-                                                        ×
-                                                    </button>
-                                                    <div style={{
-                                                        position: 'absolute',
-                                                        bottom: '4px',
-                                                        left: '4px',
-                                                        backgroundColor: 'rgba(16, 185, 129, 0.9)',
-                                                        color: 'white',
-                                                        padding: '2px 6px',
-                                                        borderRadius: '4px',
-                                                        fontSize: '12px'
-                                                    }}>
-                                                        Nouveau #{existingImages.length + index + 1}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                    
-                                    <input
-                                        type="file"
-                                        accept="image/*"
-                                        multiple
-                                        onChange={handleImageChange}
-                                        style={{
-                                            width: '100%',
-                                            padding: '10px',
-                                            borderRadius: '6px',
-                                            border: '1px solid #cbd5e1',
-                                            fontSize: '0.95rem'
+                            <div style={{ height: '6px', background: '#e5e7eb', borderRadius: '999px', overflow: 'hidden' }}>
+                                <div
+                                    style={{
+                                        width: `${wizardProgress}%`,
+                                        height: '100%',
+                                        background: '#111827',
+                                        transition: 'width 220ms ease'
+                                    }}
+                                />
+                            </div>
+
+                            <div style={{
+                                display: 'grid',
+                                gap: '6px',
+                                maxHeight: isCompactChaletForm ? '160px' : 'none',
+                                overflowY: isCompactChaletForm ? 'auto' : 'visible'
+                            }}>
+                                {CHALET_WIZARD_STEPS.map((step, index) => (
+                                    <button
+                                        key={step.key}
+                                        type="button"
+                                        onClick={() => {
+                                            if (index <= chaletWizardStep) {
+                                                setChaletWizardStep(index);
+                                                setChaletStepErrors({});
+                                            }
                                         }}
-                                    />
-                                    <p style={{ 
-                                        fontSize: '0.85rem', 
-                                        color: '#64748b',
-                                        marginTop: '4px' 
-                                    }}>
-                                        Vous pouvez sélectionner plusieurs images à la fois. La première image sera l'image principale.
+                                        disabled={index > chaletWizardStep}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '9px',
+                                            width: '100%',
+                                            border: 'none',
+                                            borderRadius: '8px',
+                                            padding: '7px 8px',
+                                            background: index === chaletWizardStep ? '#111827' : 'transparent',
+                                            color: index === chaletWizardStep ? '#ffffff' : index <= chaletWizardStep ? '#111827' : '#9ca3af',
+                                            cursor: index <= chaletWizardStep ? 'pointer' : 'not-allowed',
+                                            textAlign: 'left'
+                                        }}
+                                    >
+                                        <span style={{
+                                            width: '20px',
+                                            height: '20px',
+                                            borderRadius: '999px',
+                                            border: index === chaletWizardStep ? '1px solid #ffffff' : '1px solid #d1d5db',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            fontSize: '0.74rem',
+                                            fontWeight: 700,
+                                            flexShrink: 0
+                                        }}>
+                                            {index + 1}
+                                        </span>
+                                        <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>{step.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+
+                            {!isCompactChaletForm && (
+                                <div style={{
+                                    marginTop: 'auto',
+                                    border: '1px solid #e5e7eb',
+                                    borderRadius: '10px',
+                                    padding: '12px',
+                                    background: '#ffffff'
+                                }}>
+                                    <p style={{ margin: 0, color: '#6b7280', fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>
+                                        Resume rapide
+                                    </p>
+                                    <p style={{ margin: '8px 0 0', color: '#111827', fontWeight: 700, fontSize: '0.9rem' }}>
+                                        {chaletForm.Name || 'Nom a definir'}
+                                    </p>
+                                    <p style={{ margin: '4px 0 0', color: '#4b5563', fontSize: '0.82rem' }}>
+                                        {chaletForm.nb_personnes || '-'} pers. • {chaletForm.price_per_night || '-'} $/nuit
                                     </p>
                                 </div>
+                            )}
+                        </aside>
 
-                                {/* Error message */}
+                        <div style={{
+                            minHeight: 0,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            background: '#ffffff'
+                        }}>
+                        <form onSubmit={handleSubmitChalet} style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            minHeight: 0,
+                            flex: 1
+                        }}>
+                            <div style={{
+                                padding: isCompactChaletForm ? '18px' : '28px',
+                                overflowY: 'auto',
+                                minHeight: 0,
+                                flex: 1
+                            }}>
+                            <div key={chaletWizardStep} className="chalet-wizard-step-panel" style={{ transition: 'all 200ms ease' }}>
+                                {chaletWizardStep === 0 && (
+                                    <ChaletWizardStepPanel
+                                        title="Type de propriete"
+                                        subtitle="Donnez un nom clair a la propriete. Le type est determine automatiquement a partir du nom/description existants."
+                                    >
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                                                Nom du Chalet *
+                                            </label>
+                                            <input
+                                                type="text"
+                                                name="Name"
+                                                value={chaletForm.Name}
+                                                onChange={handleFormChange}
+                                                placeholder="Ex: Chalet du Lac"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px',
+                                                    borderRadius: '6px',
+                                                    border: wizardValidation.errors.Name ? '1px solid #dc2626' : '1px solid #cbd5e1',
+                                                    fontSize: '1rem'
+                                                }}
+                                            />
+                                            {wizardValidation.errors.Name && (
+                                                <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: '0.9rem' }}>{wizardValidation.errors.Name}</p>
+                                            )}
+                                        </div>
+                                        <div style={{
+                                            border: '1px solid #d1fae5',
+                                            background: '#f0fdf4',
+                                            borderRadius: '10px',
+                                            padding: '12px'
+                                        }}>
+                                            <p style={{ margin: 0, color: '#065f46', fontSize: '0.9rem', fontWeight: 600 }}>
+                                                Type detecte: {getActivePropertyType()}
+                                            </p>
+                                        </div>
+                                    </ChaletWizardStepPanel>
+                                )}
+
+                                {chaletWizardStep === 1 && (
+                                    <ChaletWizardStepPanel
+                                        title="Localisation"
+                                        subtitle="Tapez votre adresse pour voir des suggestions instantanees, puis selectionnez le resultat."
+                                    >
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                                                Adresse du chalet
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={locationAddress}
+                                                onChange={(e) => {
+                                                    setLocationAddress(e.target.value);
+                                                    setLocationLookupSuccess(null);
+                                                }}
+                                                placeholder="ex: 235 rue Bacon, QC"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px',
+                                                    borderRadius: '6px',
+                                                    border: '1px solid #cbd5e1',
+                                                    fontSize: '1rem',
+                                                    color: '#111827',
+                                                    boxSizing: 'border-box'
+                                                }}
+                                            />
+
+                                            {isSearchingLocation && (
+                                                <p style={{ marginTop: '8px', marginBottom: 0, color: '#475569', fontSize: '0.9rem' }}>
+                                                    Recherche d'adresses...
+                                                </p>
+                                            )}
+
+                                            {!isSearchingLocation && locationAddress.trim().length >= 3 && locationSuggestions.length > 0 && (
+                                                <div style={{
+                                                    marginTop: '10px',
+                                                    border: '1px solid #cbd5e1',
+                                                    borderRadius: '8px',
+                                                    overflow: 'hidden',
+                                                    maxHeight: '220px',
+                                                    overflowY: 'auto'
+                                                }}>
+                                                    {locationSuggestions.map((suggestion, index) => (
+                                                        <button
+                                                            key={`${suggestion.latitude}-${suggestion.longitude}-${index}`}
+                                                            type="button"
+                                                            onClick={() => handleSelectAddressSuggestion(suggestion)}
+                                                            style={{
+                                                                width: '100%',
+                                                                textAlign: 'left',
+                                                                padding: '10px 12px',
+                                                                border: 'none',
+                                                                borderBottom: index === locationSuggestions.length - 1 ? 'none' : '1px solid #e2e8f0',
+                                                                background: '#ffffff',
+                                                                color: '#111827',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.92rem',
+                                                                lineHeight: 1.35
+                                                            }}
+                                                        >
+                                                            {suggestion.displayName}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {!isSearchingLocation && locationAddress.trim().length >= 3 && locationSuggestions.length === 0 && !locationLookupError && (
+                                                <p style={{ marginTop: '8px', marginBottom: 0, color: '#64748b', fontSize: '0.9rem' }}>
+                                                    Aucune suggestion trouvee pour cette saisie.
+                                                </p>
+                                            )}
+
+                                            <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleStartMapLocationPick}
+                                                    style={{
+                                                        padding: '9px 14px',
+                                                        borderRadius: '6px',
+                                                        border: '1px solid #1d4ed8',
+                                                        background: '#dbeafe',
+                                                        color: '#1e3a8a',
+                                                        fontWeight: '600',
+                                                        cursor: 'pointer'
+                                                    }}
+                                                >
+                                                    Choisir sur la carte
+                                                </button>
+                                            </div>
+                                            {locationLookupError && (
+                                                <p style={{ marginTop: '8px', marginBottom: 0, color: '#b91c1c', fontSize: '0.9rem' }}>
+                                                    {locationLookupError}
+                                                </p>
+                                            )}
+                                            {locationLookupSuccess && (
+                                                <p style={{ marginTop: '8px', marginBottom: 0, color: '#0f766e', fontSize: '0.9rem' }}>
+                                                    {locationLookupSuccess}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
+                                            <div>
+                                                <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>Latitude</label>
+                                                <input
+                                                    type="text"
+                                                    name="latitude"
+                                                    value={chaletForm.latitude}
+                                                    readOnly
+                                                    placeholder="Detectee automatiquement"
+                                                    style={{
+                                                        width: '100%',
+                                                        padding: '10px',
+                                                        borderRadius: '6px',
+                                                        border: wizardValidation.errors.location ? '1px solid #dc2626' : '1px solid #cbd5e1',
+                                                        fontSize: '1rem',
+                                                        background: '#f1f5f9',
+                                                        color: '#111827',
+                                                        fontWeight: 600,
+                                                        boxSizing: 'border-box',
+                                                        minWidth: 0
+                                                    }}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>Longitude</label>
+                                                <input
+                                                    type="text"
+                                                    name="longitude"
+                                                    value={chaletForm.longitude}
+                                                    readOnly
+                                                    placeholder="Detectee automatiquement"
+                                                    style={{
+                                                        width: '100%',
+                                                        padding: '10px',
+                                                        borderRadius: '6px',
+                                                        border: wizardValidation.errors.location ? '1px solid #dc2626' : '1px solid #cbd5e1',
+                                                        fontSize: '1rem',
+                                                        background: '#f1f5f9',
+                                                        color: '#111827',
+                                                        fontWeight: 600,
+                                                        boxSizing: 'border-box',
+                                                        minWidth: 0
+                                                    }}
+                                                />
+                                            </div>
+                                        </div>
+                                        {wizardValidation.errors.location && (
+                                            <p style={{ margin: '2px 0 0', color: '#b91c1c', fontSize: '0.9rem' }}>{wizardValidation.errors.location}</p>
+                                        )}
+                                    </ChaletWizardStepPanel>
+                                )}
+
+                                {chaletWizardStep === 2 && (
+                                    <ChaletWizardStepPanel
+                                        title="Infos de base"
+                                        subtitle="Capacite de votre propriete (equivalent section guests/rooms/beds avec les champs disponibles)."
+                                    >
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                                                Nombre de personnes *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                name="nb_personnes"
+                                                value={chaletForm.nb_personnes}
+                                                onChange={handleFormChange}
+                                                min="1"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px',
+                                                    borderRadius: '6px',
+                                                    border: wizardValidation.errors.nb_personnes ? '1px solid #dc2626' : '1px solid #cbd5e1',
+                                                    fontSize: '1rem'
+                                                }}
+                                            />
+                                            {wizardValidation.errors.nb_personnes && (
+                                                <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: '0.9rem' }}>{wizardValidation.errors.nb_personnes}</p>
+                                            )}
+                                        </div>
+                                    </ChaletWizardStepPanel>
+                                )}
+
+                                {chaletWizardStep === 3 && (
+                                    <ChaletWizardStepPanel
+                                        title="Commodites"
+                                        subtitle="Selectionnez des commodites predefinies, puis ajoutez une description complementaire si necessaire."
+                                    >
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '8px' }}>
+                                                Commodites predefinies
+                                            </label>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+                                                {PREDEFINED_AMENITIES.map((amenity) => {
+                                                    const isSelected = selectedAmenities.includes(amenity.id);
+                                                    return (
+                                                        <button
+                                                            key={amenity.id}
+                                                            type="button"
+                                                            onClick={() => handleToggleAmenity(amenity.id)}
+                                                            style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: '8px',
+                                                                borderRadius: '12px',
+                                                                border: isSelected ? '1px solid #111827' : '1px solid #d1d5db',
+                                                                background: isSelected ? '#111827' : '#ffffff',
+                                                                color: isSelected ? '#ffffff' : '#111827',
+                                                                padding: '10px 12px',
+                                                                fontWeight: 600,
+                                                                cursor: 'pointer',
+                                                                textAlign: 'left',
+                                                                transition: 'all 180ms ease'
+                                                            }}
+                                                        >
+                                                            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                                <AmenityIcon amenityId={amenity.id} size={18} />
+                                                            </span>
+                                                            <span style={{ fontSize: '0.9rem', lineHeight: 1.2 }}>{amenity.label}</span>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                                                Description complementaire
+                                            </label>
+                                            <textarea
+                                                name="Description"
+                                                value={chaletForm.Description}
+                                                onChange={handleFormChange}
+                                                rows="5"
+                                                placeholder="Ex: Ambiance chaleureuse, terrasse orientee plein sud, ideal pour familles..."
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px',
+                                                    borderRadius: '6px',
+                                                    border: wizardValidation.errors.Description ? '1px solid #dc2626' : '1px solid #cbd5e1',
+                                                    fontSize: '1rem',
+                                                    resize: 'vertical'
+                                                }}
+                                            />
+                                            {wizardValidation.errors.Description && (
+                                                <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: '0.9rem' }}>{wizardValidation.errors.Description}</p>
+                                            )}
+                                        </div>
+
+                                        {(selectedAmenities.length > 0 || chaletForm.Description.trim()) && (
+                                            <div style={{
+                                                borderRadius: '10px',
+                                                border: '1px solid #bae6fd',
+                                                background: '#f0f9ff',
+                                                padding: '12px'
+                                            }}>
+                                                <p style={{ margin: '0 0 8px', color: '#0c4a6e', fontWeight: 700, fontSize: '0.88rem' }}>
+                                                    Apercu du texte final
+                                                </p>
+                                                <p style={{ margin: 0, color: '#334155', fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>
+                                                    {generatedAmenitiesDescription}
+                                                </p>
+                                            </div>
+                                        )}
+                                    </ChaletWizardStepPanel>
+                                )}
+
+                                {chaletWizardStep === 4 && (
+                                    <ChaletWizardStepPanel
+                                        title="Photos"
+                                        subtitle="Glissez vos photos ici ou cliquez pour importer. Vous pouvez ensuite les reordonner."
+                                    >
+                                        {orderedImageItems.length > 0 && (
+                                            <DndContext
+                                                sensors={dragSensors}
+                                                collisionDetection={closestCenter}
+                                                onDragStart={handlePhotoDragStart}
+                                                onDragEnd={handlePhotoDragEnd}
+                                                onDragCancel={() => setDraggingImageId(null)}
+                                            >
+                                                <SortableContext items={imageOrder} strategy={rectSortingStrategy}>
+                                                    <div
+                                                        style={{
+                                                            display: 'grid',
+                                                            gridTemplateColumns: 'repeat(auto-fill, minmax(min(120px, 100%), 1fr))',
+                                                            gap: '10px',
+                                                            width: '100%',
+                                                            maxWidth: '100%',
+                                                            boxSizing: 'border-box'
+                                                        }}
+                                                    >
+                                                        {orderedImageItems.map((item, index) => {
+                                                            const imageSrc = item.kind === 'existing'
+                                                                ? item.image.image_url
+                                                                : previewUrlMap[item.id];
+
+                                                            return (
+                                                                <SortablePhotoCard key={item.id} id={item.id}>
+                                                                    <div style={{ position: 'relative', border: '2px solid #111827', borderRadius: '8px', overflow: 'hidden', background: '#fff' }}>
+                                                                        <img
+                                                                            src={imageSrc}
+                                                                            alt={`Image ${index + 1}`}
+                                                                            style={{ width: '100%', height: '120px', objectFit: 'cover', display: 'block' }}
+                                                                        />
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                if (item.kind === 'existing') {
+                                                                                    handleRemoveExistingImage(item.image.id);
+                                                                                } else {
+                                                                                    handleRemoveNewImage(item.id);
+                                                                                }
+                                                                            }}
+                                                                            aria-label={`Supprimer l'image ${index + 1}`}
+                                                                            style={{
+                                                                                position: 'absolute',
+                                                                                top: '6px',
+                                                                                right: '6px',
+                                                                                background: 'transparent',
+                                                                                color: '#111827',
+                                                                                border: 'none',
+                                                                                width: '22px',
+                                                                                height: '22px',
+                                                                                cursor: 'pointer',
+                                                                                fontSize: '1.1rem',
+                                                                                fontWeight: 700,
+                                                                                lineHeight: 1,
+                                                                                padding: 0
+                                                                            }}
+                                                                        >
+                                                                            ×
+                                                                        </button>
+                                                                    </div>
+                                                                </SortablePhotoCard>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </SortableContext>
+
+                                                <DragOverlay>
+                                                    {activeImage && (
+                                                        <div style={{ width: 140, border: '2px solid #111827', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 18px 32px rgba(15, 23, 42, 0.3)' }}>
+                                                            <img
+                                                                src={activeImage.kind === 'existing' ? activeImage.image.image_url : previewUrlMap[activeImage.id]}
+                                                                alt="Apercu image glissee"
+                                                                style={{ width: '100%', height: '120px', objectFit: 'cover', display: 'block' }}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                </DragOverlay>
+                                            </DndContext>
+                                        )}
+
+                                        <div
+                                            onClick={() => fileInputRef.current?.click()}
+                                            onDragEnter={handleFileDragEnter}
+                                            onDragOver={handleFileDragOver}
+                                            onDragLeave={handleFileDragLeave}
+                                            onDrop={handleFileDrop}
+                                            style={{
+                                                width: '100%',
+                                                maxWidth: '100%',
+                                                minWidth: 0,
+                                                boxSizing: 'border-box',
+                                                borderRadius: '16px',
+                                                border: wizardValidation.errors.images
+                                                    ? '2px dashed #dc2626'
+                                                    : isDraggingFiles
+                                                        ? '2px dashed #111827'
+                                                        : '2px dashed #9ca3af',
+                                                background: isDraggingFiles ? '#f3f4f6' : '#f9fafb',
+                                                padding: '26px 18px',
+                                                cursor: 'pointer',
+                                                textAlign: 'center',
+                                                transition: 'all 180ms ease'
+                                            }}
+                                        >
+                                            <div style={{ color: '#111827', marginBottom: '8px', display: 'inline-flex' }}>
+                                                <UploadIcon size={32} />
+                                            </div>
+                                            <p style={{ margin: 0, color: '#111827', fontSize: '0.95rem', fontWeight: 700 }}>
+                                                {isDraggingFiles ? 'Deposez vos images ici' : 'Glissez-deposez vos images'}
+                                            </p>
+                                            <p style={{ margin: '6px 0 0', color: '#4b5563', fontSize: '0.88rem' }}>
+                                                ou cliquez pour selectionner des fichiers
+                                            </p>
+                                            <p style={{ margin: '10px 0 0', color: '#9ca3af', fontSize: '0.8rem' }}>
+                                                PNG, JPG, WEBP
+                                            </p>
+                                            <input
+                                                ref={fileInputRef}
+                                                type="file"
+                                                accept="image/*"
+                                                multiple
+                                                onChange={handleImageChange}
+                                                style={{ display: 'none' }}
+                                            />
+                                        </div>
+                                        {wizardValidation.errors.images && (
+                                            <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: '0.9rem' }}>{wizardValidation.errors.images}</p>
+                                        )}
+                                    </ChaletWizardStepPanel>
+                                )}
+
+                                {chaletWizardStep === 5 && (
+                                    <ChaletWizardStepPanel
+                                        title="Tarification"
+                                        subtitle="Definissez le prix de base par nuit."
+                                    >
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                                                Prix par nuit ($) *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                name="price_per_night"
+                                                value={chaletForm.price_per_night}
+                                                onChange={handleFormChange}
+                                                min="0"
+                                                step="0.01"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px',
+                                                    borderRadius: '6px',
+                                                    border: wizardValidation.errors.price_per_night ? '1px solid #dc2626' : '1px solid #cbd5e1',
+                                                    fontSize: '1rem'
+                                                }}
+                                            />
+                                            {wizardValidation.errors.price_per_night && (
+                                                <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: '0.9rem' }}>{wizardValidation.errors.price_per_night}</p>
+                                            )}
+                                        </div>
+                                    </ChaletWizardStepPanel>
+                                )}
+
+                                {chaletWizardStep === 6 && (
+                                    <ChaletWizardStepPanel
+                                        title="Verification finale"
+                                        subtitle="Revisez toutes les sections avant enregistrement."
+                                    >
+                                        <div style={{ display: 'grid', gap: '10px' }}>
+                                            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <strong>1. Type de propriete</strong>
+                                                    <button type="button" onClick={() => setChaletWizardStep(0)} style={{ border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', fontWeight: 600 }}>Modifier</button>
+                                                </div>
+                                                <p style={{ margin: '8px 0 0', color: '#475569' }}>{chaletForm.Name || 'Non renseigne'} • {getActivePropertyType()}</p>
+                                            </div>
+
+                                            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <strong>2. Localisation</strong>
+                                                    <button type="button" onClick={() => setChaletWizardStep(1)} style={{ border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', fontWeight: 600 }}>Modifier</button>
+                                                </div>
+                                                <p style={{ margin: '8px 0 0', color: '#475569' }}>Lat: {chaletForm.latitude || '-'} • Lon: {chaletForm.longitude || '-'}</p>
+                                            </div>
+
+                                            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <strong>3. Infos de base</strong>
+                                                    <button type="button" onClick={() => setChaletWizardStep(2)} style={{ border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', fontWeight: 600 }}>Modifier</button>
+                                                </div>
+                                                <p style={{ margin: '8px 0 0', color: '#475569' }}>Capacite: {chaletForm.nb_personnes || '-'} personnes</p>
+                                            </div>
+
+                                            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <strong>4. Commodites</strong>
+                                                    <button type="button" onClick={() => setChaletWizardStep(3)} style={{ border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', fontWeight: 600 }}>Modifier</button>
+                                                </div>
+                                                <p style={{ margin: '8px 0 0', color: '#475569', whiteSpace: 'pre-wrap' }}>{generatedAmenitiesDescription || 'Non renseigne'}</p>
+                                            </div>
+
+                                            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <strong>5. Photos</strong>
+                                                    <button type="button" onClick={() => setChaletWizardStep(4)} style={{ border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', fontWeight: 600 }}>Modifier</button>
+                                                </div>
+                                                <p style={{ margin: '8px 0 0', color: '#475569' }}>{existingImages.length + imageFiles.length + (chaletForm.Image ? 1 : 0)} image(s)</p>
+                                            </div>
+
+                                            <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <strong>6. Tarification</strong>
+                                                    <button type="button" onClick={() => setChaletWizardStep(5)} style={{ border: 'none', background: 'transparent', color: '#0f766e', cursor: 'pointer', fontWeight: 600 }}>Modifier</button>
+                                                </div>
+                                                <p style={{ margin: '8px 0 0', color: '#475569' }}>{chaletForm.price_per_night || '-'} $ / nuit</p>
+                                            </div>
+                                        </div>
+                                    </ChaletWizardStepPanel>
+                                )}
+
                                 {chaletError && (
-                                    <p style={{ color: '#ef4444', fontSize: '0.9rem' }}>
-                                        {chaletError}
+                                    <p style={{ color: '#ef4444', fontSize: '0.9rem', marginTop: '14px' }}>{chaletError}</p>
+                                )}
+                                {Object.keys(chaletStepErrors).length > 0 && (
+                                    <p style={{ color: '#b91c1c', fontSize: '0.86rem', marginTop: '8px' }}>
+                                        Certains champs requis sont manquants pour cette etape.
                                     </p>
                                 )}
 
-                                {/* Buttons */}
-                                <div style={{ 
-                                    display: 'flex', 
-                                    gap: '12px', 
-                                    marginTop: '8px',
-                                    justifyContent: 'flex-end' 
-                                }}>
-                                    <button
-                                        type="button"
-                                        onClick={handleCloseForm}
-                                        disabled={uploadingImages || loadingChalets}
-                                        style={{
-                                            padding: '10px 20px',
-                                            backgroundColor: '#f1f5f9',
-                                            color: '#334155',
-                                            border: 'none',
-                                            borderRadius: '6px',
-                                            cursor: uploadingImages || loadingChalets ? 'not-allowed' : 'pointer',
-                                            fontWeight: '500',
-                                            opacity: uploadingImages || loadingChalets ? 0.6 : 1
-                                        }}
-                                    >
-                                        Annuler
-                                    </button>
-                                    <button
-                                        type="submit"
-                                        disabled={uploadingImages || loadingChalets}
-                                        style={{
-                                            padding: '10px 20px',
-                                            backgroundColor: '#059669',
-                                            color: 'white',
-                                            border: 'none',
-                                            borderRadius: '6px',
-                                            cursor: uploadingImages || loadingChalets ? 'not-allowed' : 'pointer',
-                                            fontWeight: '500',
-                                            opacity: uploadingImages || loadingChalets ? 0.6 : 1
-                                        }}
-                                    >
-                                        {uploadingImages ? 'Téléchargement...' : loadingChalets ? 'Enregistrement...' : 'Enregistrer'}
-                                    </button>
+                                <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'space-between' }}>
+                                    <div style={{ display: 'flex', gap: '10px' }}>
+                                        <button
+                                            type="button"
+                                            onClick={handleCloseForm}
+                                            disabled={uploadingImages || loadingChalets}
+                                            style={{
+                                                padding: '10px 18px',
+                                                backgroundColor: '#f1f5f9',
+                                                color: '#334155',
+                                                border: 'none',
+                                                borderRadius: '6px',
+                                                cursor: uploadingImages || loadingChalets ? 'not-allowed' : 'pointer',
+                                                fontWeight: '600',
+                                                opacity: uploadingImages || loadingChalets ? 0.6 : 1
+                                            }}
+                                        >
+                                            Annuler
+                                        </button>
+                                        {chaletWizardStep > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={handleWizardBack}
+                                                disabled={uploadingImages || loadingChalets}
+                                                style={{
+                                                    padding: '10px 18px',
+                                                    backgroundColor: '#e2e8f0',
+                                                    color: '#334155',
+                                                    border: 'none',
+                                                    borderRadius: '6px',
+                                                    cursor: uploadingImages || loadingChalets ? 'not-allowed' : 'pointer',
+                                                    fontWeight: '600',
+                                                    opacity: uploadingImages || loadingChalets ? 0.6 : 1
+                                                }}
+                                            >
+                                                Retour
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {chaletWizardStep < CHALET_WIZARD_STEPS.length - 1 ? (
+                                        <button
+                                            type="button"
+                                            onClick={handleWizardNext}
+                                            disabled={!wizardValidation.isValid || uploadingImages || loadingChalets}
+                                            style={{
+                                                padding: '10px 20px',
+                                                backgroundColor: '#059669',
+                                                color: 'white',
+                                                border: 'none',
+                                                borderRadius: '6px',
+                                                cursor: (!wizardValidation.isValid || uploadingImages || loadingChalets) ? 'not-allowed' : 'pointer',
+                                                fontWeight: '600',
+                                                opacity: (!wizardValidation.isValid || uploadingImages || loadingChalets) ? 0.6 : 1
+                                            }}
+                                        >
+                                            Suivant
+                                        </button>
+                                    ) : (
+                                        <button
+                                            type="submit"
+                                            disabled={uploadingImages || loadingChalets}
+                                            style={{
+                                                padding: '10px 20px',
+                                                backgroundColor: '#059669',
+                                                color: 'white',
+                                                border: 'none',
+                                                borderRadius: '6px',
+                                                cursor: uploadingImages || loadingChalets ? 'not-allowed' : 'pointer',
+                                                fontWeight: '600',
+                                                opacity: uploadingImages || loadingChalets ? 0.6 : 1
+                                            }}
+                                        >
+                                            {uploadingImages ? 'Telechargement des photos...' : loadingChalets ? (chaletCreationStep || 'Enregistrement...') : 'Enregistrer et creer l\'agenda'}
+                                        </button>
+                                    )}
                                 </div>
                             </div>
+                            </div>
                         </form>
+                        </div>
                     </div>
                 </div>
             )}
@@ -2053,6 +3329,108 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                 </div>
             )}
             
+            {/* Google Calendar Connection Required Modal */}
+            {showGoogleConnectModal && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        backgroundColor: 'rgba(0,0,0,0.55)',
+                        zIndex: 9999,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '16px'
+                    }}
+                    onClick={() => setShowGoogleConnectModal(false)}
+                >
+                    <div
+                        style={{
+                            background: '#fff',
+                            borderRadius: '16px',
+                            padding: '32px',
+                            maxWidth: '440px',
+                            width: '100%',
+                            boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '20px'
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <div style={{
+                                width: '44px',
+                                height: '44px',
+                                borderRadius: '12px',
+                                background: '#fef3c7',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '22px',
+                                flexShrink: 0
+                            }}>📅</div>
+                            <div>
+                                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1e293b' }}>
+                                    Google Calendar requis
+                                </h3>
+                                <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: '#64748b' }}>
+                                    Connexion necessaire pour creer un chalet
+                                </p>
+                            </div>
+                        </div>
+                        <p style={{ margin: 0, color: '#374151', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                            Google Calendar doit etre connecte avant de creer un chalet. Un agenda sera automatiquement cree pour gerer les reservations.
+                        </p>
+                        <p style={{ margin: 0, color: '#6b7280', fontSize: '0.88rem', lineHeight: 1.5, background: '#f8fafc', borderRadius: '8px', padding: '10px 14px', border: '1px solid #e2e8f0' }}>
+                            La creation du chalet reprendra automatiquement une fois Google Calendar connecte et l'agenda cree.
+                        </p>
+                        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                            <button
+                                type="button"
+                                onClick={() => setShowGoogleConnectModal(false)}
+                                style={{
+                                    padding: '10px 20px',
+                                    borderRadius: '8px',
+                                    border: '1px solid #e2e8f0',
+                                    background: '#fff',
+                                    color: '#374151',
+                                    fontWeight: 600,
+                                    fontSize: '0.9rem',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                Annuler
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowGoogleConnectModal(false);
+                                    setActiveEstablishmentSection('calendar');
+                                    handleConnectGoogleCalendar();
+                                }}
+                                style={{
+                                    padding: '10px 20px',
+                                    borderRadius: '8px',
+                                    border: 'none',
+                                    background: '#059669',
+                                    color: '#fff',
+                                    fontWeight: 600,
+                                    fontSize: '0.9rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px'
+                                }}
+                            >
+                                <span>📅</span>
+                                <span>Connecter Google Calendar</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Chalet Horaire Modal */}
             <ChaletHoraireModal
                 isOpen={isHoraireModalOpen}
