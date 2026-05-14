@@ -56,7 +56,7 @@ export async function checkGoogleCalendarConnection(guideId) {
     // First check the stored connection status (fast, no API call)
     const { data: guide, error } = await supabase
         .from('guide')
-        .select('id, email, name, google_refresh_token, availability_calendar_id, calendar_connection_status, calendar_disconnected_at, calendar_disconnect_reason')
+        .select('id, email, name, availability_calendar_id, calendar_connection_status, calendar_disconnected_at, calendar_disconnect_reason')
         .eq('id', guideId)
         .single();
 
@@ -69,18 +69,9 @@ export async function checkGoogleCalendarConnection(guideId) {
         };
     }
 
-    if (!guide.google_refresh_token) {
-        return {
-            connected: false,
-            error: 'No Google Calendar connection',
-            needsAuth: true,
-            connection_status: guide.calendar_connection_status || 'never_connected',
-            guide: { id: guide.id, email: guide.email, name: guide.name }
-        };
-    }
+    const calStatus = guide.calendar_connection_status || 'never_connected';
 
-    // If calendar is known-disconnected, don't even try to refresh — surface immediately
-    if (guide.calendar_connection_status === 'disconnected') {
+    if (calStatus === 'disconnected') {
         return {
             connected: false,
             error: 'Calendar disconnected — please reconnect Google Calendar',
@@ -88,6 +79,16 @@ export async function checkGoogleCalendarConnection(guideId) {
             connection_status: 'disconnected',
             disconnected_at: guide.calendar_disconnected_at,
             disconnect_reason: guide.calendar_disconnect_reason,
+            guide: { id: guide.id, email: guide.email, name: guide.name }
+        };
+    }
+
+    if (calStatus !== 'connected' && calStatus !== 'pending_reauth') {
+        return {
+            connected: false,
+            error: 'No Google Calendar connection',
+            needsAuth: true,
+            connection_status: calStatus,
             guide: { id: guide.id, email: guide.email, name: guide.name }
         };
     }

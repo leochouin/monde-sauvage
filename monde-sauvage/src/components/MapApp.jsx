@@ -343,7 +343,6 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 let query = supabase
                     .from('guide')
                     .select('*')
-                    .not('google_refresh_token', 'is', null)
                     .eq('calendar_connection_status', 'connected');
                 
                 if (fishType) {

@@ -778,7 +778,7 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
             </a>
           </div>
 
-          {guide && !guide.google_refresh_token && (
+          {guide && guide.calendar_connection_status !== 'connected' && (
             <button
               type="button"
               onClick={() => {

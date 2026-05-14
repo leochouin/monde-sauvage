@@ -995,7 +995,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                     <p style={dashboardTextStyle}><strong>Réservations en attente:</strong> {dashboardStats.loading ? '...' : dashboardStats.pendingReservations}</p>
                     <p style={dashboardTextStyle}>
                       <strong>Google Calendar:</strong>{' '}
-                      {guide?.calendar_connection_status === 'disconnected' ? 'Déconnecté' : (guide?.google_refresh_token ? 'Connecté' : 'Non connecté')}
+                      {guide?.calendar_connection_status === 'disconnected' ? 'Déconnecté' : (guide?.calendar_connection_status === 'connected' ? 'Connecté' : 'Non connecté')}
                     </p>
                   </div>
                 </div>
@@ -1876,7 +1876,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                       gap: '8px',
                       zIndex: 1000,
                     }}>
-                      {(!guide?.google_refresh_token || guide?.calendar_connection_status === 'disconnected') && (
+                      {guide?.calendar_connection_status !== 'connected' && (
                         <button
                           type="button"
                           onClick={() => {

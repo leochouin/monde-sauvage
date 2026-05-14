@@ -283,7 +283,7 @@ function App() {
         setGuide(fetchedGuide);
 
         // Token validation runs in background and should not block render.
-        if (fetchedGuide && fetchedGuide.google_refresh_token) {
+        if (fetchedGuide && fetchedGuide.calendar_connection_status === 'connected') {
           checkGoogleTokenValidity(fetchedGuide.id);
         }
       } catch (_err) {
