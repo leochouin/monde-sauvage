@@ -96,7 +96,10 @@ async function runAudit() {
     await page.locator('#email').fill(AUTH_EMAIL);
     await page.locator('#password').fill(AUTH_PASSWORD);
 
-    const submitClicked = await tryClick(page, page.getByRole('button', { name: /log in/i }).first());
+    const submitClicked = await tryClick(
+      page,
+      page.locator('.login-modal-container .login-submit-btn').first()
+    );
     if (!submitClicked) {
       summary.errors.push('Could not submit login form.');
       throw new Error('login_submit_failed');

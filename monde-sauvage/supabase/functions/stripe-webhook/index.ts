@@ -15,6 +15,7 @@
 import { createClient } from "@supabase/supabase-js";
 import {
   verifyWebhookSignature,
+  stripeRequest,
   corsHeaders,
   errorResponse,
   jsonResponse,
@@ -24,6 +25,194 @@ import {
   shouldApplyPlatformFee,
 } from "../_shared/bookingRules.ts";
 import { createQuickbooksInvoice } from "../_shared/quickbooksUtils.ts";
+
+// ─── Helper: handle a combined (guide + chalet) PaymentIntent success ──────
+// In combined mode the PI is created on the platform with no transfer_data.
+// On success we manually create up to two Transfer objects, one per vendor,
+// linking them via source_transaction so each transfer is funded by this PI.
+// The remainder (the application fee) stays on the platform balance.
+async function handleCombinedPaymentSuccess(
+  supabase: ReturnType<typeof createClient>,
+  paymentIntent: Record<string, unknown>,
+  metadata: Record<string, string>,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+) {
+  const paymentIntentId = paymentIntent.id as string;
+  const guideBookingIdsRaw = metadata?.guide_booking_ids || "";
+  const guideBookingIds = guideBookingIdsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+  const chaletBookingId = metadata?.chalet_booking_id || "";
+  const guideStripeAccount = metadata?.guide_stripe_account || "";
+  const chaletStripeAccount = metadata?.chalet_stripe_account || "";
+  const guideAmountCents = Number(metadata?.guide_amount_cents || 0);
+  const chaletAmountCents = Number(metadata?.chalet_amount_cents || 0);
+
+  // Resolve the source charge to fund the transfers (required for Connect transfers
+  // when the PI was charged on the platform account).
+  let sourceTransaction = (paymentIntent.latest_charge as string | undefined) || "";
+  if (!sourceTransaction) {
+    try {
+      const fresh = await stripeRequest("GET", `/payment_intents/${paymentIntentId}`);
+      sourceTransaction = (fresh.latest_charge as string | undefined) || "";
+    } catch (err) {
+      console.warn("[COMBINED] Could not resolve latest_charge:", err);
+    }
+  }
+
+  // Confirm guide bookings
+  if (guideBookingIds.length > 0) {
+    for (const bId of guideBookingIds) {
+      const { data: updated, error } = await supabase
+        .from("guide_booking")
+        .update({
+          status: "confirmed",
+          payment_status: "paid",
+          is_paid: true,
+          stripe_payment_intent_id: paymentIntentId,
+        })
+        .eq("id", bId)
+        .select("id, status, guide_id, start_time, end_time, customer_name, customer_email, trip_type, notes, google_event_id")
+        .single();
+
+      if (error) {
+        console.error(`[COMBINED] Failed to confirm guide booking ${bId}:`, JSON.stringify(error));
+        continue;
+      }
+      console.log(`[COMBINED] ✅ Guide booking ${bId} confirmed`);
+
+      // Calendar sync (fire-and-forget)
+      if (updated && !updated.google_event_id) {
+        try {
+          await fetch(`${supabaseUrl}/functions/v1/create-guide-booking-event`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              booking_id: updated.id,
+              guide_id: updated.guide_id,
+              start_time: updated.start_time,
+              end_time: updated.end_time,
+              customer_name: updated.customer_name,
+              customer_email: updated.customer_email,
+              trip_type: updated.trip_type,
+              notes: updated.notes,
+            }),
+          });
+        } catch (calErr) {
+          console.warn(`[COMBINED] Calendar sync failed for ${bId}:`, calErr);
+        }
+      }
+
+      // Confirmation email
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/send-booking-confirmation`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ bookingId: bId, bookingType: "guide" }),
+        });
+      } catch (mailErr) {
+        console.warn(`[COMBINED] Email send failed for guide booking ${bId}:`, mailErr);
+      }
+    }
+  }
+
+  // Confirm chalet booking
+  if (chaletBookingId) {
+    const { error } = await supabase
+      .from("bookings")
+      .update({
+        status: "confirmed",
+        payment_status: "paid",
+        stripe_payment_intent_id: paymentIntentId,
+      })
+      .eq("id", chaletBookingId);
+
+    if (error) {
+      console.error(`[COMBINED] Failed to confirm chalet booking ${chaletBookingId}:`, JSON.stringify(error));
+    } else {
+      console.log(`[COMBINED] ✅ Chalet booking ${chaletBookingId} confirmed`);
+      await supabase
+        .from("booking_inventory_allocation")
+        .update({
+          status: "confirmed",
+          payment_status: "paid",
+          stripe_payment_intent_id: paymentIntentId,
+        })
+        .eq("chalet_booking_id", chaletBookingId)
+        .in("status", ["pending", "pending_payment"]);
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/send-booking-confirmation`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ bookingId: chaletBookingId, bookingType: "chalet" }),
+        });
+      } catch (mailErr) {
+        console.warn(`[COMBINED] Email send failed for chalet booking ${chaletBookingId}:`, mailErr);
+      }
+    }
+  }
+
+  // ── Vendor transfers ────────────────────────────────────────────────────
+  // Each transfer is funded by source_transaction (the charge on the PI).
+  // Stripe's idempotency on transfers is per request, so we skip any vendor
+  // that's already been transferred (defensive: webhook may replay).
+  if (guideStripeAccount && guideAmountCents > 0) {
+    try {
+      await stripeRequest("POST", "/transfers", {
+        amount: String(guideAmountCents),
+        currency: "cad",
+        destination: guideStripeAccount,
+        ...(sourceTransaction ? { source_transaction: sourceTransaction } : {}),
+        metadata: {
+          payment_intent: paymentIntentId,
+          booking_type: "combined-guide-leg",
+          guide_booking_ids: guideBookingIds.join(","),
+        },
+        description: `Monde Sauvage — paiement guide pour PI ${paymentIntentId}`,
+      });
+      console.log(`[COMBINED] ✅ Transferred ${guideAmountCents}¢ to guide account ${guideStripeAccount}`);
+    } catch (err) {
+      console.error(`[COMBINED] ❌ Guide transfer failed:`, err);
+      // Mark bookings so ops can investigate without breaking the webhook.
+      if (guideBookingIds.length > 0) {
+        await supabase
+          .from("guide_booking")
+          .update({
+            calendar_sync_failed: false,
+            notes: `Paiement reçu, transfert guide en attente — PI ${paymentIntentId}`,
+          })
+          .in("id", guideBookingIds);
+      }
+    }
+  }
+
+  if (chaletStripeAccount && chaletAmountCents > 0) {
+    try {
+      await stripeRequest("POST", "/transfers", {
+        amount: String(chaletAmountCents),
+        currency: "cad",
+        destination: chaletStripeAccount,
+        ...(sourceTransaction ? { source_transaction: sourceTransaction } : {}),
+        metadata: {
+          payment_intent: paymentIntentId,
+          booking_type: "combined-chalet-leg",
+          chalet_booking_id: chaletBookingId,
+        },
+        description: `Monde Sauvage — paiement chalet pour PI ${paymentIntentId}`,
+      });
+      console.log(`[COMBINED] ✅ Transferred ${chaletAmountCents}¢ to establishment account ${chaletStripeAccount}`);
+    } catch (err) {
+      console.error(`[COMBINED] ❌ Chalet transfer failed:`, err);
+      if (chaletBookingId) {
+        await supabase
+          .from("bookings")
+          .update({
+            notes: `Paiement reçu, transfert établissement en attente — PI ${paymentIntentId}`,
+          })
+          .eq("id", chaletBookingId);
+      }
+    }
+  }
+}
 
 // ─── Helper: QuickBooks invoice sync for either entity ─────────────────────
 // Looks up the right vendor (Etablissement for chalets, Guide for guides)
@@ -243,6 +432,20 @@ Deno.serve(async (req: Request) => {
 
         console.log(`💰 payment_intent.succeeded: PI=${paymentIntentId}, type=${bookingType}, booking=${bookingId}`);
 
+        if (bookingType === "combined") {
+          await handleCombinedPaymentSuccess(
+            supabase,
+            dataObject,
+            metadata,
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+          );
+          // QuickBooks sync is intentionally skipped here — the combined flow
+          // splits across two vendors and the QBO helper assumes a single
+          // vendor per PI. Vendor invoicing can be hooked separately later.
+          break;
+        }
+
         if (!bookingId) {
           console.warn("⚠️ payment_intent.succeeded missing booking_id in metadata — skipping DB update");
           break;
@@ -351,6 +554,29 @@ Deno.serve(async (req: Request) => {
           } else {
             console.log(`✅ Chalet booking ${bookingId} → status=${updated.status}, payment_status=${updated.payment_status}`);
 
+            // Confirm linked equipment allocations (addons inventaire)
+            const { error: biaErr, data: biaUpdated } = await supabase
+              .from("booking_inventory_allocation")
+              .update({
+                status: "confirmed",
+                payment_status: "paid",
+                stripe_payment_intent_id: paymentIntentId,
+              })
+              .eq("chalet_booking_id", bookingId)
+              .in("status", ["pending", "pending_payment"])
+              .select("id");
+
+            if (biaErr) {
+              console.warn(
+                `⚠️ booking_inventory_allocation confirm failed for chalet booking ${bookingId}:`,
+                JSON.stringify(biaErr),
+              );
+            } else if (biaUpdated && biaUpdated.length > 0) {
+              console.log(
+                `✅ Confirmed ${biaUpdated.length} equipment allocation row(s) for booking ${bookingId}`,
+              );
+            }
+
             // Send confirmation email (fire-and-forget)
             fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bookingId, "chalet");
           }
@@ -374,6 +600,43 @@ Deno.serve(async (req: Request) => {
         const failureMessage = (dataObject.last_payment_error as Record<string, unknown>)?.message as string;
 
         console.log(`❌ payment_intent.payment_failed: PI=${paymentIntentId}, booking=${bookingId}, reason=${failureMessage}`);
+
+        if (bookingType === "combined") {
+          const guideBookingIds = (metadata?.guide_booking_ids || "").split(",").map((s) => s.trim()).filter(Boolean);
+          const chaletBookingId = metadata?.chalet_booking_id || "";
+          if (guideBookingIds.length > 0) {
+            await supabase
+              .from("guide_booking")
+              .update({
+                status: "cancelled",
+                payment_status: "failed",
+                is_paid: false,
+                notes: `Payment failed: ${failureMessage || "Unknown error"}`,
+              })
+              .in("id", guideBookingIds);
+          }
+          if (chaletBookingId) {
+            await supabase
+              .from("bookings")
+              .update({
+                status: "cancelled",
+                payment_status: "failed",
+                notes: `Payment failed: ${failureMessage || "Unknown error"}`,
+              })
+              .eq("id", chaletBookingId);
+
+            await supabase
+              .from("booking_inventory_allocation")
+              .update({
+                status: "cancelled",
+                payment_status: "failed",
+              })
+              .eq("chalet_booking_id", chaletBookingId)
+              .in("status", ["pending", "pending_payment", "blocked"]);
+          }
+          console.log(`[COMBINED] ❌ Marked combined bookings as failed`);
+          break;
+        }
 
         if (bookingId) {
           if (bookingType === "guide") {
@@ -405,6 +668,15 @@ Deno.serve(async (req: Request) => {
                 notes: `Payment failed: ${failureMessage || "Unknown error"}`,
               })
               .eq("id", bookingId);
+
+            await supabase
+              .from("booking_inventory_allocation")
+              .update({
+                status: "cancelled",
+                payment_status: "failed",
+              })
+              .eq("chalet_booking_id", bookingId)
+              .in("status", ["pending", "pending_payment", "blocked"]);
 
             console.log(`❌ Booking ${bookingId} marked as failed`);
           }
@@ -500,6 +772,16 @@ Deno.serve(async (req: Request) => {
               console.error(`❌ Failed to confirm chalet booking ${sessionBookingId} via checkout:`, JSON.stringify(error));
             } else {
               console.log(`✅ Chalet booking ${sessionBookingId} confirmed via checkout → status=${updated.status}`);
+
+              await supabase
+                .from("booking_inventory_allocation")
+                .update({
+                  status: "confirmed",
+                  payment_status: "paid",
+                  stripe_payment_intent_id: piId || "",
+                })
+                .eq("chalet_booking_id", sessionBookingId)
+                .in("status", ["pending", "pending_payment"]);
 
               // Send confirmation email (fire-and-forget)
               fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, sessionBookingId, "chalet");

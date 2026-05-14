@@ -8,8 +8,8 @@
 
 .date-picker-controls {
     display: flex;
-    justify-content: space-between;
-    margin-bottom: 20px;
+    gap: 8px;
+    flex-shrink: 0;
 }
 
 .date-picker-nav {
@@ -57,7 +57,7 @@
 }
 
 .date-range-picker.single-month .date-picker-controls {
-    margin-bottom: 12px;
+    gap: 6px;
 }
 
 .date-range-picker.single-month .date-picker-day-names {
@@ -86,6 +86,10 @@
 }
 
 .date-picker-month-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     margin-bottom: 16px;
 }
 
@@ -93,7 +97,8 @@
     font-size: 1rem;
     font-weight: 600;
     color: #1e293b;
-    text-align: center;
+    text-align: left;
+    margin: 0;
 }
 
 .date-picker-day-names {

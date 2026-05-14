@@ -15,6 +15,7 @@ import {
   isGuideUser,
   unfollowGuide,
 } from '../utils/socialFeedService.js';
+import { MOCK_SOCIAL_POSTS } from '../data/mockSocialPosts.js';
 import './SocialFeedPage.css';
 
 const emptyComments = {};
@@ -384,6 +385,12 @@ export default function SocialFeedPage({
   const followingEmpty = activeTab === 'following' && !isLoadingPosts && posts.length === 0 && !feedError;
   const followingNeedsAuth = activeTab === 'following' && !currentUserId && !isLoadingPosts && posts.length === 0 && !feedError;
 
+  // When the live feed is empty (no posts yet on global feed), surface seed
+  // posts so the section feels alive. Mocks are clearly tagged and rendered
+  // with disabled interactions further down.
+  const showMockFallback = activeTab === 'feed' && !isLoadingPosts && posts.length === 0 && !feedError;
+  const displayPosts = showMockFallback ? MOCK_SOCIAL_POSTS : posts;
+
   return (
     <div className="social-feed-page">
       <header className="social-page-header">
@@ -534,12 +541,32 @@ export default function SocialFeedPage({
               <p>{t('Explorez le fil general pour decouvrir des guides et commencer a suivre ceux qui vous inspirent.', 'Browse the main feed to discover and follow guides that inspire you.')}</p>
               <button type="button" onClick={() => setActiveTab('feed')}>{t('Decouvrir des guides', 'Discover guides')}</button>
             </div>
-          ) : posts.length === 0 ? (
+          ) : displayPosts.length === 0 ? (
             <div className="social-state">{t('Aucune publication pour le moment.', 'No posts yet.')}</div>
           ) : (
-            posts.map((post) => {
+            <>
+              {showMockFallback && (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    marginBottom: '12px',
+                    borderRadius: 10,
+                    background: 'rgba(33, 69, 55, 0.08)',
+                    color: '#214537',
+                    fontSize: 13,
+                    fontWeight: 500,
+                  }}
+                >
+                  {t(
+                    'Aperçu du fil — exemples de publications de guides. Les vraies publications apparaîtront ici dès qu\'elles seront créées.',
+                    'Feed preview — example posts from guides. Real posts will show here as they are created.'
+                  )}
+                </div>
+              )}
+              {displayPosts.map((post) => {
               const comments = commentsByPost[post.id] || [];
               const commentsOpen = Boolean(openCommentsByPost[post.id]);
+              const isMock = Boolean(post.isMock);
 
               return (
                 <article key={post.id} className="social-post-card">
@@ -547,8 +574,8 @@ export default function SocialFeedPage({
                     <button
                       type="button"
                       className="social-post-author"
-                      onClick={() => openGuideProfile(post.author.userId)}
-                      disabled={!post.author.hasGuideProfile}
+                      onClick={() => !isMock && openGuideProfile(post.author.userId)}
+                      disabled={isMock || !post.author.hasGuideProfile}
                     >
                       <AvatarImage
                         src={post.author.avatarSrc}
@@ -564,7 +591,7 @@ export default function SocialFeedPage({
                       </span>
                     </button>
 
-                    {currentUserId && post.author.userId !== currentUserId && post.author.hasGuideProfile && (
+                    {!isMock && currentUserId && post.author.userId !== currentUserId && post.author.hasGuideProfile && (
                       <button
                         type="button"
                         className={post.isFollowingAuthor ? 'social-follow-btn following' : 'social-follow-btn'}
@@ -590,17 +617,19 @@ export default function SocialFeedPage({
 
                   <div className="social-post-footer">
                     <span>{post.commentCount} {t('commentaire(s)', 'comment(s)')}</span>
-                    <button type="button" onClick={() => handleToggleComments(post.id)}>
-                      {commentsOpen ? t('Masquer les commentaires', 'Hide comments') : t('Commenter', 'Comment')}
-                    </button>
-                    {post.author.hasGuideProfile && (
+                    {!isMock && (
+                      <button type="button" onClick={() => handleToggleComments(post.id)}>
+                        {commentsOpen ? t('Masquer les commentaires', 'Hide comments') : t('Commenter', 'Comment')}
+                      </button>
+                    )}
+                    {!isMock && post.author.hasGuideProfile && (
                       <button type="button" onClick={() => openGuideProfile(post.author.userId)}>
                         {t('Voir le profil guide', 'View guide profile')}
                       </button>
                     )}
                   </div>
 
-                  {commentsOpen && (
+                  {!isMock && commentsOpen && (
                     <div className="social-comments-block">
                       {loadingCommentsByPost[post.id] ? (
                         <p className="social-state">{t('Chargement des commentaires...', 'Loading comments...')}</p>
@@ -663,7 +692,8 @@ export default function SocialFeedPage({
                   )}
                 </article>
               );
-            })
+            })}
+            </>
           )}
           </div>
         </section>

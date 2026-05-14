@@ -13,7 +13,7 @@
  *   title — display title (e.g. chalet name or guide name)
  */
 import { useState, useEffect, useRef } from 'react';
-import { createBookingWithPayment, createGuideBookingWithPayment, confirmBookingPayment, formatPrice } from '../utils/stripeService.js';
+import { createBookingWithPayment, createGuideBookingWithPayment, createCombinedBookingWithPayment, confirmBookingPayment, formatPrice } from '../utils/stripeService.js';
 import './checkoutModal.css';
 
 const STRIPE_PK = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
@@ -73,6 +73,15 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
         if (!bookingPromiseRef.current) {
           if (bookingData._resumeResult) {
             bookingPromiseRef.current = Promise.resolve(bookingData._resumeResult);
+          } else if (bookingType === 'combined') {
+            bookingPromiseRef.current = createCombinedBookingWithPayment({
+                customerName: bookingData.customerName,
+                customerEmail: bookingData.customerEmail,
+                customerPhone: bookingData.customerPhone,
+                notes: bookingData.notes,
+                guide: bookingData.guide,
+                chalet: bookingData.chalet,
+              });
           } else if (bookingType === 'guide') {
             bookingPromiseRef.current = createGuideBookingWithPayment({
                 guideId: bookingData.guideId,
@@ -96,6 +105,9 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
                 customerName: bookingData.customerName,
                 customerEmail: bookingData.customerEmail,
                 notes: bookingData.notes,
+                ...(Array.isArray(bookingData.inventoryAddons) && bookingData.inventoryAddons.length > 0
+                  ? { inventoryAddons: bookingData.inventoryAddons }
+                  : {}),
               });
           }
         }
@@ -213,10 +225,14 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
 
     try {
       // Confirm payment using the Payment Element
+      const returnBookingRef = bookingResult.bookingId
+        || bookingResult.guideBookingIds?.[0]
+        || bookingResult.chaletBookingId
+        || '';
       const { error: confirmError } = await stripeRef.current.confirmPayment({
         elements: elementsRef.current,
         confirmParams: {
-          return_url: `${globalThis.location.origin}/map?payment=success&booking=${bookingResult.bookingId}`,
+          return_url: `${globalThis.location.origin}/map?payment=success&booking=${returnBookingRef}`,
         },
         redirect: 'if_required',
       });
@@ -234,8 +250,12 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
 
       // Fallback: verify with Stripe API and update DB in case the webhook
       // is delayed.  This is fire-and-forget — non-blocking for the user.
-      confirmBookingPayment(bookingResult.bookingId, bookingType).catch(() => {});
-      
+      // For combined bookings, the webhook handles all confirmations + transfers,
+      // so we skip the per-booking fallback here.
+      if (bookingType !== 'combined' && bookingResult.bookingId) {
+        confirmBookingPayment(bookingResult.bookingId, bookingType).catch(() => {});
+      }
+
       if (onSuccess) {
         onSuccess(bookingResult);
       }
@@ -267,13 +287,16 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
           <div className="checkout-success">
             <div className="checkout-success-icon">✅</div>
             <h3>Paiement réussi!</h3>
-            <p>Votre réservation {bookingType === 'guide' 
-              ? `avec ${title || 'le guide'}` 
-              : `pour ${title || chalet?.Name || 'le chalet'}`} est confirmée.</p>
+            <p>{bookingType === 'combined'
+              ? `Votre séjour ${title ? `avec ${title}` : ''} est confirmé.`
+              : (bookingType === 'guide'
+                ? `Votre réservation avec ${title || 'le guide'} est confirmée.`
+                : `Votre réservation pour ${title || chalet?.Name || 'le chalet'} est confirmée.`)
+            }</p>
             <p>Un reçu sera envoyé à <strong>{bookingData.customerEmail}</strong></p>
-            {bookingResult && (
+            {bookingResult && (bookingResult.bookingId || bookingResult.guideBookingIds?.[0] || bookingResult.chaletBookingId) && (
               <div className="checkout-success-id">
-                Réservation #{bookingResult.bookingId?.slice(0, 8)}
+                Réservation #{(bookingResult.bookingId || bookingResult.guideBookingIds?.[0] || bookingResult.chaletBookingId)?.slice(0, 8)}
               </div>
             )}
             <button
@@ -355,7 +378,50 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
 
               {/* Booking Summary */}
               <div className="checkout-summary">
-                {bookingType === 'guide' ? (
+                {bookingType === 'combined' ? (
+                  <>
+                    {bookingResult.pricing.guideHours > 0 && (
+                      <div className="checkout-summary-row">
+                        <span className="label">
+                          🎣 Guide — {bookingResult.pricing.guideHours}h
+                        </span>
+                        <span>{formatPrice(bookingResult.pricing.guideSubtotal)}</span>
+                      </div>
+                    )}
+                    {bookingResult.pricing.chaletNights > 0 && (
+                      (Number(bookingResult.pricing.chaletInventorySubtotal) > 0 &&
+                        bookingResult.pricing.chaletLodgingSubtotal != null) ? (
+                        <>
+                          <div className="checkout-summary-row">
+                            <span className="label">
+                              🏠 Chalet — {bookingResult.pricing.chaletNights} nuit{bookingResult.pricing.chaletNights > 1 ? 's' : ''} — hébergement
+                            </span>
+                            <span>{formatPrice(bookingResult.pricing.chaletLodgingSubtotal)}</span>
+                          </div>
+                          <div className="checkout-summary-row">
+                            <span className="label">🛶 Équipements</span>
+                            <span>{formatPrice(bookingResult.pricing.chaletInventorySubtotal)}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="checkout-summary-row">
+                          <span className="label">
+                            🏠 Chalet — {bookingResult.pricing.chaletNights} nuit{bookingResult.pricing.chaletNights > 1 ? 's' : ''}
+                          </span>
+                          <span>{formatPrice(bookingResult.pricing.chaletSubtotal)}</span>
+                        </div>
+                      )
+                    )}
+                    <div className="checkout-summary-row" style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                      <span>Frais de service</span>
+                      <span>{formatPrice(bookingResult.pricing.applicationFee)}</span>
+                    </div>
+                    <div className="checkout-summary-row total">
+                      <span>Total</span>
+                      <span>{formatPrice(bookingResult.pricing.total)}</span>
+                    </div>
+                  </>
+                ) : bookingType === 'guide' ? (
                   <>
                     <div className="checkout-summary-dates">
                       📅 {bookingData.startTime ? new Date(bookingData.startTime).toLocaleString('fr-CA') : ''} → {bookingData.endTime ? new Date(bookingData.endTime).toLocaleString('fr-CA') : ''}
@@ -386,6 +452,12 @@ const CheckoutModal = ({ isOpen, onClose, chalet, bookingData, onSuccess, bookin
                       </span>
                       <span>{formatPrice(bookingResult.pricing.subtotal)}</span>
                     </div>
+                    {(Number(bookingResult.pricing.inventorySubtotal) > 0) && (
+                      <div className="checkout-summary-row">
+                        <span className="label">🛶 Équipements</span>
+                        <span>{formatPrice(bookingResult.pricing.inventorySubtotal)}</span>
+                      </div>
+                    )}
                     <div className="checkout-summary-row" style={{ fontSize: '0.85rem', color: '#64748b' }}>
                       <span>Frais de service</span>
                       <span>{formatPrice(bookingResult.pricing.applicationFee)}</span>

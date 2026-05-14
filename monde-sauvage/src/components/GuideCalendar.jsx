@@ -7,6 +7,8 @@ import getDay from "date-fns/getDay";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import { enUS, frCA } from "date-fns/locale";
 import { getGuideBookings, getFailedSyncBookings, retryCalendarSync, syncGuideBookingsWithCalendar } from "../utils/guideBookingService.js";
+import { expandAllDayEvent } from "../utils/guideSchedule.js";
+import { toast } from "../utils/toast.js";
 
 const locales = {
   "en-US": enUS,
@@ -73,7 +75,7 @@ function filterDuplicateGoogleEvents(googleEvents, dbBookings) {
   });
 }
 
-export default function GuideCalendar({ guideId }) {
+export default function GuideCalendar({ guideId, scheduleConfig }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -145,35 +147,42 @@ export default function GuideCalendar({ guideId }) {
 
       if (data.items) {
         console.log('📅 Raw Google Calendar items count:', data.items.length);
-        const formatted = data.items.map((event) => {
+        const formatted = data.items.flatMap((event) => {
           const isAllDay = !event.start.dateTime;
-          let start, end;
-          
+
           if (isAllDay) {
-            // For all-day events, Google returns dates in YYYY-MM-DD format
-            // The end date is exclusive (day after), so we need to adjust
-            // Use Z suffix for consistent UTC interpretation
-            start = new Date(event.start.date + 'T00:00:00Z');
-            // Subtract 1 day from the end to get the actual last day of the event
-            const endDate = new Date(event.end.date + 'T00:00:00Z');
-            endDate.setUTCDate(endDate.getUTCDate() - 1);
-            // Set to end of day (UTC)
-            end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate(), 23, 59, 59));
-          } else {
-            start = new Date(event.start.dateTime);
-            end = new Date(event.end.dateTime);
+            // All-day Google events come back as YYYY-MM-DD with an exclusive
+            // end date. Expand them into one or more 8h fishing sessions per
+            // day instead of treating them as 24h blocks.
+            const startDay = new Date(event.start.date + 'T00:00:00');
+            const endExclusive = new Date(event.end.date + 'T00:00:00');
+            const lastDay = new Date(endExclusive);
+            lastDay.setDate(lastDay.getDate() - 1);
+
+            const baseEvent = {
+              id: event.id,
+              googleEventId: event.id,
+              title: event.summary || 'Indisponible',
+              description: event.description || '',
+              start: startDay,
+              end: lastDay,
+              source: 'google',
+            };
+
+            return expandAllDayEvent(baseEvent, scheduleConfig);
           }
-          
-          return {
+
+          return [{
             id: event.id,
             googleEventId: event.id,
             title: event.summary || 'Indisponible',
             description: event.description || '',
-            start,
-            end,
-            allDay: isAllDay,
+            start: new Date(event.start.dateTime),
+            end: new Date(event.end.dateTime),
+            allDay: false,
+            durationHours: (new Date(event.end.dateTime) - new Date(event.start.dateTime)) / 3_600_000,
             source: 'google',
-          };
+          }];
         });
         return { events: formatted, error: null };
       }
@@ -183,7 +192,7 @@ export default function GuideCalendar({ guideId }) {
       console.error('Error fetching Google Calendar:', err);
       return { events: [], error: { error: 'Network error', description: err.message } };
     }
-  }, [guideId, range]);
+  }, [guideId, range, scheduleConfig]);
 
   useEffect(() => {
     if (!guideId) return;
@@ -306,14 +315,13 @@ export default function GuideCalendar({ guideId }) {
             window.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-calendar-oauth?guideId=${guideId}&redirect_to=${redirectTo}`;
           }
         } else {
-          // Show error to user
-          alert(`Échec de la synchronisation: ${result.error}\n\nVérifiez la console pour plus de détails.`);
+          toast.error(`Échec de la synchronisation : ${result.error}`);
         }
       }
       return result;
     } catch (err) {
       console.error('Error in handleRetrySync:', err);
-      alert(`Erreur de synchronisation: ${err.message}`);
+      toast.error(`Erreur de synchronisation : ${err.message}`);
       return { success: false, error: err.message };
     }
   };

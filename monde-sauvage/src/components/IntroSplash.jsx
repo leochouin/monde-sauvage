@@ -6,12 +6,16 @@ const FADE_DURATION_MS = 1000;
 const MIN_DURATION_MS = 1800;
 const END_EVENT_FALLBACK_OFFSET_MS = 220;
 const POST_END_HOLD_MS = 700;
+const SHORT_MODE_DURATION_MS = 900;
+const SHORT_MODE_FADE_MS = 400;
 
-export default function IntroSplash({ onComplete }) {
+export default function IntroSplash({ onComplete, shortMode = false }) {
   const [fadeOut, setFadeOut] = useState(false);
   const [isDone, setIsDone] = useState(false);
   const [videoEnded, setVideoEnded] = useState(false);
-  const [totalDurationMs, setTotalDurationMs] = useState(FALLBACK_DURATION_MS);
+  const [totalDurationMs, setTotalDurationMs] = useState(
+    shortMode ? SHORT_MODE_DURATION_MS : FALLBACK_DURATION_MS
+  );
 
   const handleSkip = () => {
     if (fadeOut || isDone) {
@@ -41,14 +45,21 @@ export default function IntroSplash({ onComplete }) {
 
     const holdTimer = setTimeout(() => {
       setFadeOut(true);
-    }, POST_END_HOLD_MS);
+    }, shortMode ? 0 : POST_END_HOLD_MS);
 
     return () => {
       clearTimeout(holdTimer);
     };
-  }, [videoEnded]);
+  }, [videoEnded, shortMode]);
 
   useEffect(() => {
+    if (shortMode) {
+      const shortTimer = setTimeout(() => {
+        setFadeOut(true);
+      }, SHORT_MODE_DURATION_MS);
+      return () => clearTimeout(shortTimer);
+    }
+
     const fallbackFadeTimer = setTimeout(() => {
       setFadeOut(true);
     }, totalDurationMs + POST_END_HOLD_MS + END_EVENT_FALLBACK_OFFSET_MS);
@@ -56,20 +67,21 @@ export default function IntroSplash({ onComplete }) {
     return () => {
       clearTimeout(fallbackFadeTimer);
     };
-  }, [totalDurationMs]);
+  }, [totalDurationMs, shortMode]);
 
   useEffect(() => {
     if (!fadeOut) return undefined;
 
+    const fadeMs = shortMode ? SHORT_MODE_FADE_MS : FADE_DURATION_MS;
     const doneTimer = setTimeout(() => {
       setIsDone(true);
       onComplete?.();
-    }, FADE_DURATION_MS);
+    }, fadeMs);
 
     return () => {
       clearTimeout(doneTimer);
     };
-  }, [fadeOut, onComplete]);
+  }, [fadeOut, onComplete, shortMode]);
 
   if (isDone) {
     return null;

@@ -8,8 +8,15 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "audit:no-webgl": "npm exec --yes --package=playwright -- node scripts/audit/no-webgl-fallback.cjs",
-    "audit:auth-smoke": "npm exec --yes --package=playwright -- node scripts/audit/auth-flow-smoke.cjs",
+    "playwright:install": "playwright install chromium",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:chaos": "playwright test e2e/chaos.spec.js --reporter=list",
+    "test:chaos:ui": "playwright test e2e/chaos.spec.js --ui",
+    "test:chaos:register": "CHAOS_REGISTER=1 playwright test e2e/chaos.spec.js --reporter=list",
+    "audit:no-webgl": "node scripts/audit/no-webgl-fallback.cjs",
+    "audit:auth-smoke": "node scripts/audit/auth-flow-smoke.cjs",
+    "audit:booking-rls-smoke": "node scripts/audit/guide-booking-rls-smoke.cjs",
     "audit:recommended": "npm run audit:no-webgl && npm run audit:auth-smoke"
   },
   "dependencies": {
@@ -26,6 +33,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@playwright/test": "^1.49.1",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.4",

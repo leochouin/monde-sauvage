@@ -4,12 +4,15 @@ import supabase from './utils/supabase.js'
 import { getAvatarRawValueFromSources } from './utils/avatar.js'
 import { installRuntimeTranslation } from './utils/runtimeTranslations.js'
 import IntroSplash from './components/IntroSplash.jsx'
+import ToastContainer from './components/Toast.jsx'
 import './App.css'
 
 const MapApp = lazy(() => import('./components/MapApp.jsx'))
+const ChaletDetailPage = lazy(() => import('./pages/ChaletDetailPage.jsx'))
 
 const INTRO_SPLASH_COOLDOWN_MS = 12 * 60 * 1000;
 const INTRO_SPLASH_STORAGE_KEY = 'ms_intro_splash_until';
+const INTRO_SPLASH_FIRST_SEEN_KEY = 'ms_intro_splash_first_seen';
 const LANGUAGE_STORAGE_KEY = 'ms_language';
 
 const shouldSkipIntroSplash = () => {
@@ -43,8 +46,18 @@ const markIntroSplashSeen = () => {
   try {
     const skipUntil = Date.now() + INTRO_SPLASH_COOLDOWN_MS;
     window.localStorage.setItem(INTRO_SPLASH_STORAGE_KEY, String(skipUntil));
+    window.localStorage.setItem(INTRO_SPLASH_FIRST_SEEN_KEY, '1');
   } catch {
     // Ignore storage errors (private mode, disabled storage, etc.).
+  }
+};
+
+const hasSeenIntroBefore = () => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(INTRO_SPLASH_FIRST_SEEN_KEY) === '1';
+  } catch {
+    return false;
   }
 };
 
@@ -421,8 +434,10 @@ function App() {
 
   return (
     <div className="App">
+      <ToastContainer />
       {!introDone && (
         <IntroSplash
+          shortMode={hasSeenIntroBefore()}
           onComplete={() => {
             markIntroSplashSeen();
             setIntroDone(true);
@@ -434,6 +449,7 @@ function App() {
           <Suspense fallback={null}>
             <Routes>
               <Route path="/" element={<Navigate to="/map" />} />
+              <Route path="/chalet/:id" element={<ChaletDetailPage />} />
               <Route
                 path="/map"
                 element={(
@@ -448,15 +464,21 @@ function App() {
               />
               <Route
                 path="/social"
-                element={(
-                  <MapApp
-                    user={appUser}
-                    profile={appProfile}
-                    guide={appGuide}
-                    language={language}
-                    setLanguage={setLanguage}
-                  />
-                )}
+                element={
+                  loading ? null : (
+                    appProfile?.type === 'admin' ? (
+                      <MapApp
+                        user={appUser}
+                        profile={appProfile}
+                        guide={appGuide}
+                        language={language}
+                        setLanguage={setLanguage}
+                      />
+                    ) : (
+                      <Navigate to="/map" replace />
+                    )
+                  )
+                }
               />
             </Routes>
           </Suspense>

@@ -140,58 +140,114 @@ Deno.serve(async (req: Request) => {
     // Create Google Calendar event
     console.log("📅 Creating Google Calendar event...");
 
-    // Format dates for Google Calendar (all-day events use date format, not dateTime)
-    const startDateObj = new Date(start_date);
-    const endDateObj = new Date(end_date);
-
-    // Create event object
-    const event = {
-      summary: `${chalet_name} - ${customer_name}`,
-      description: notes 
-        ? `Réservation par ${customer_name}\nEmail: ${customer_email}\n\nNotes: ${notes}`
-        : `Réservation par ${customer_name}\nEmail: ${customer_email}`,
-      start: {
-        date: start_date, // Use 'date' for all-day events
-      },
-      end: {
-        date: end_date, // Use 'date' for all-day events
-      },
-      attendees: customer_email ? [{ email: customer_email }] : [],
-      // Mark as busy to block time
-      transparency: "opaque",
-      // Add metadata to identify this as a website booking
-      extendedProperties: {
-        private: {
-          booking_id: booking_id.toString(),
-          source: "monde_sauvage_website"
-        }
+    /** Google Calendar all-day events require `date` as YYYY-MM-DD only (not ISO timestamps). */
+    const toGoogleAllDayDate = (raw: string): string => {
+      const s = String(raw).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+      const d = new Date(s);
+      if (Number.isNaN(d.getTime())) {
+        throw new Error(`Invalid date for Google Calendar: ${raw}`);
       }
+      return d.toISOString().slice(0, 10);
     };
 
-    const createEventRes = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar_id)}/events`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(event),
+    let startDay: string;
+    let endDay: string;
+    try {
+      startDay = toGoogleAllDayDate(start_date);
+      endDay = toGoogleAllDayDate(end_date);
+      if (startDay >= endDay) {
+        return new Response(
+          JSON.stringify({
+            error: "Invalid date range for Google Calendar",
+            details:
+              "Pour une réservation « journée entière », la date de fin doit être après la date de début (fin exclusive).",
+          }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
+        );
       }
-    );
+    } catch (e) {
+      console.log("❌ Date parse error:", e);
+      return new Response(
+        JSON.stringify({
+          error: "Invalid start_date or end_date",
+          details: (e as Error).message,
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Create event object (all-day; end.date is exclusive per Google API — matches DB checkout day).
+    // Ne pas mettre `attendees` ici : l’API refuse souvent les invitations depuis un sous-agenda
+    // secondaire ou sans domaine G Workspace (403 / Invalid attendee). Le courriel reste dans la description.
+    const descriptionLines = [
+      `Réservation : ${customer_name}`,
+      customer_email ? `Courriel : ${customer_email}` : null,
+      notes ? `\nNotes :\n${notes}` : null,
+    ].filter(Boolean).join("\n");
+
+    const event = {
+      summary: `${chalet_name} - ${customer_name}`,
+      description: descriptionLines,
+      start: {
+        date: startDay,
+      },
+      end: {
+        date: endDay,
+      },
+      transparency: "opaque",
+      extendedProperties: {
+        private: {
+          booking_id: String(booking_id),
+          source: "monde_sauvage_website",
+        },
+      },
+    };
+
+    // sendUpdates=none : pas d’e-mails aux participants (il n’y en a plus dans le corps).
+    const eventsUrl =
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar_id)}/events?sendUpdates=none`;
+
+    const createEventRes = await fetch(eventsUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(event),
+    });
 
     if (!createEventRes.ok) {
       const errorText = await createEventRes.text();
       console.log("❌ Failed to create Google Calendar event:", createEventRes.status);
       console.log("Error details:", errorText);
-      
+
+      let googleMessage = errorText;
+      try {
+        const parsed = JSON.parse(errorText) as {
+          error?: { message?: string; errors?: Array<{ reason?: string; message?: string }> };
+        };
+        googleMessage =
+          parsed?.error?.message ||
+          parsed?.error?.errors?.map((e) => e.message || e.reason).filter(Boolean).join("; ") ||
+          errorText;
+      } catch {
+        // garder errorText brut
+      }
+
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "Failed to create Google Calendar event",
-          details: errorText
+          details: googleMessage,
         }),
         {
-          status: createEventRes.status,
+          status: createEventRes.status > 599 ? 502 : createEventRes.status,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         }
       );

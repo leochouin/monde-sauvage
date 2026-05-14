@@ -118,6 +118,19 @@ Deno.serve(async (req: Request) => {
       return errorResponse("Failed to update booking", 500);
     }
 
+    // Same fallback pour les lignes équipements (addons inventaire)
+    if (type !== "guide" && bookingId) {
+      await supabase
+        .from("booking_inventory_allocation")
+        .update({
+          status: "confirmed",
+          payment_status: "paid",
+          stripe_payment_intent_id: piId,
+        })
+        .eq("chalet_booking_id", bookingId)
+        .in("status", ["pending", "pending_payment"]);
+    }
+
     // NOTE: Google Calendar event creation is handled by the Stripe webhook.
     // We do NOT create it here to prevent duplicate events from racing.
 

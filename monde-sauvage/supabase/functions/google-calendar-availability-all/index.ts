@@ -31,6 +31,43 @@ interface TimeInterval {
   end: number;
 }
 
+// ── Brussels timezone helpers ─────────────────────────────────
+const BUSINESS_START_HOUR = 8;
+const BUSINESS_END_HOUR   = 16;
+
+function isDSTBrussels(dateStr: string): boolean {
+  const [ys, ms, ds] = dateStr.split("-");
+  const year = parseInt(ys, 10), month = parseInt(ms, 10), day = parseInt(ds, 10);
+  if (month < 3 || month > 10) return false;
+  if (month > 3 && month < 10) return true;
+  const lastSunday = (y: number, m: number): number => {
+    const lastDay = new Date(y, m, 0).getDate();
+    return lastDay - new Date(y, m - 1, lastDay).getDay();
+  };
+  if (month === 3) return day >= lastSunday(year, 3);
+  if (month === 10) return day < lastSunday(year, 10);
+  return false;
+}
+
+function brusselsHourToUTC(dateStr: string, hour: number): number {
+  const offsetHours = isDSTBrussels(dateStr) ? 2 : 1;
+  return new Date(`${dateStr}T${String(hour - offsetHours).padStart(2, "0")}:00:00Z`).getTime();
+}
+
+function expandAllDayToBusinessHours(startDate: string, endDate: string): TimeInterval[] {
+  const intervals: TimeInterval[] = [];
+  const endExcl = new Date(`${endDate}T00:00:00Z`);
+  const cur = new Date(`${startDate}T00:00:00Z`);
+  while (cur < endExcl) {
+    const ds = cur.toISOString().slice(0, 10);
+    const s = brusselsHourToUTC(ds, BUSINESS_START_HOUR);
+    const e = brusselsHourToUTC(ds, BUSINESS_END_HOUR);
+    if (e > s) intervals.push({ start: s, end: e });
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return intervals;
+}
+
 function eventToInterval(event: any): TimeInterval | null {
   const startStr = event.start?.dateTime || event.start?.date;
   const endStr = event.end?.dateTime || event.end?.date;
@@ -38,7 +75,7 @@ function eventToInterval(event: any): TimeInterval | null {
 
   let s: number, e: number;
   if (!startStr.includes("T")) {
-    // All-day event: use explicit Z suffix for consistent UTC interpretation
+    // All-day event: midnight-to-midnight UTC (used for busy blocks)
     s = new Date(`${startStr}T00:00:00Z`).getTime();
     e = new Date(`${endStr}T00:00:00Z`).getTime(); // end date exclusive in Google
   } else {
@@ -85,8 +122,6 @@ Deno.serve(async (req: Request) => {
 
   const SUPABASE_URL = Deno.env.get("URL")!;
   const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
-  const GOOGLE_CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID")!;
-  const GOOGLE_CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET")!;
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -195,20 +230,30 @@ Deno.serve(async (req: Request) => {
 
   for (const guide of activeGuides) {
     try {
-      // 3️⃣ Exchange refresh token → access token
-      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: GOOGLE_CLIENT_ID,
-          client_secret: GOOGLE_CLIENT_SECRET,
-          refresh_token: guide.google_refresh_token,
-          grant_type: "refresh_token",
-        }),
+      // 3️⃣ Refresh access token through the canonical edge function
+      // so connection status bookkeeping stays consistent everywhere.
+      const tokenRefreshUrl = `${SUPABASE_URL}/functions/v1/refresh-google-token?guideId=${guide.id}`;
+      const tokenRes = await fetch(tokenRefreshUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
       });
-
       const tokenData = await tokenRes.json();
-      if (!tokenData.access_token) continue;
+      if (!tokenRes.ok || !tokenData.access_token) {
+        results.push({
+          guide_id: guide.id,
+          name: guide.name,
+          events: [],
+          all_events: [],
+          booked_slots: [],
+          net_available_windows: 0,
+          is_available: false,
+          connection_status: tokenData?.connection_status || "pending_reauth",
+          error: tokenData?.error || "Unable to refresh Google access token",
+        });
+        continue;
+      }
 
       const calendarId = guide.availability_calendar_id;
       if (!calendarId) {
@@ -268,12 +313,25 @@ Deno.serve(async (req: Request) => {
         const desc = (event.description || "") as string;
         if (desc.includes("Booking ID:") || desc.includes("Monde Sauvage booking system")) continue;
 
-        const interval = eventToInterval(event);
-        if (!interval) continue;
+        const startStr = event.start?.dateTime || event.start?.date;
+        const endStr = event.end?.dateTime || event.end?.date;
+        const isAllDay = startStr && !startStr.includes("T");
 
         if (isAvailabilityEvent(event)) {
-          availabilityBlocks.push({ event, interval });
+          if (isAllDay && startStr && endStr) {
+            // All-day availability → expand to per-day 08:00–16:00 Brussels
+            const dailyIntervals = expandAllDayToBusinessHours(startStr, endStr);
+            for (const di of dailyIntervals) {
+              availabilityBlocks.push({ event, interval: di });
+            }
+          } else {
+            const interval = eventToInterval(event);
+            if (!interval) continue;
+            availabilityBlocks.push({ event, interval });
+          }
         } else {
+          const interval = eventToInterval(event);
+          if (!interval) continue;
           busyBlocks.push(interval);
         }
       }
@@ -319,6 +377,7 @@ Deno.serve(async (req: Request) => {
         booked_slots: guideBookedSlots,
         net_available_windows: netAvailableWindows,
         is_available: hasAvailability,
+        connection_status: "connected",
       });
 
     } catch (err) {

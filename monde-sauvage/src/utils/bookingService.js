@@ -218,11 +218,19 @@ export const createBooking = async (bookingData) => {
  * @param {Object} booking - The booking object from database
  * @returns {Promise<void>}
  */
-const syncBookingToGoogleCalendar = async (booking) => {
+/**
+ * @param {Object} booking
+ * @param {Object} [options]
+ * @param {string} [options.accessToken] — JWT session (recommended for Edge Function invoke)
+ * @returns {Promise<{ ok: boolean, skipped?: string, error?: string, event_id?: string }>}
+ */
+export const syncBookingToGoogleCalendar = async (booking, options = {}) => {
+    const accessToken = options.accessToken;
+    const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
     try {
         console.log('📅 Syncing booking to Google Calendar:', booking.id);
 
-        // Get the chalet to access its Google Calendar ID
         const { data: chalet, error: chaletError } = await supabase
             .from('chalets')
             .select('google_calendar, Name')
@@ -231,22 +239,24 @@ const syncBookingToGoogleCalendar = async (booking) => {
 
         if (chaletError || !chalet) {
             console.log('⏭️ Chalet not found or no access, skipping Google sync');
-            return;
+            return { ok: false, skipped: 'chalet_not_found' };
         }
 
         if (!chalet.google_calendar) {
             console.log('⏭️ No Google Calendar connected for this chalet, skipping sync');
-            return;
+            return { ok: false, skipped: 'no_chalet_calendar' };
         }
 
-        // Call edge function to create Google Calendar event
+        const authBearer = accessToken || anon;
+
         const response = await fetch(
             `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-booking-calendar-event`,
             {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-                    'Content-Type': 'application/json'
+                    Authorization: `Bearer ${authBearer}`,
+                    apikey: anon,
+                    'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
                     booking_id: booking.id,
@@ -256,21 +266,33 @@ const syncBookingToGoogleCalendar = async (booking) => {
                     end_date: booking.end_date,
                     customer_name: booking.customer_name,
                     customer_email: booking.customer_email,
-                    notes: booking.notes
-                })
-            }
+                    notes: booking.notes,
+                }),
+            },
         );
 
+        const payload = await response.json().catch(() => ({}));
+
         if (!response.ok) {
-            const errorData = await response.json();
-            console.warn('⚠️ Google Calendar sync failed:', errorData);
-            return;
+            console.warn('⚠️ Google Calendar sync failed:', payload);
+            const detail =
+                payload.details ||
+                payload.message ||
+                (typeof payload === 'string' ? payload : '');
+            const base =
+                payload.error ||
+                payload.message ||
+                `HTTP ${response.status}`;
+            return {
+                ok: false,
+                error: detail ? `${base} — ${detail}` : base,
+                requiresAuth: Boolean(payload.requiresAuth),
+            };
         }
 
-        const result = await response.json();
+        const result = payload;
         console.log('✅ Booking synced to Google Calendar:', result.event_id);
 
-        // Update booking with Google event ID
         if (result.event_id) {
             const { error: updateError } = await supabase
                 .from('bookings')
@@ -279,14 +301,13 @@ const syncBookingToGoogleCalendar = async (booking) => {
 
             if (updateError) {
                 console.warn('⚠️ Failed to update booking with Google event ID:', updateError);
-            } else {
-                console.log('✅ Booking updated with Google event ID');
             }
         }
 
+        return { ok: true, event_id: result.event_id };
     } catch (error) {
         console.error('❌ Error syncing to Google Calendar:', error);
-        // Don't throw - this is a non-critical operation
+        return { ok: false, error: error.message || String(error) };
     }
 };
 
@@ -378,10 +399,11 @@ export const cancelBooking = async (bookingId, deleteFromCalendar = true) => {
  * @param {string} status - The new status
  */
 const updateGoogleCalendarEventStatus = (booking, status) => {
-    // For now, we'll just log this
-    // In production, you'd call an edge function to update the event title
     console.log('📅 Would update Google Calendar event:', booking.google_event_id, 'to status:', status);
-    // TODO: Implement edge function to update Google Calendar event
+    // Updating chalet calendar event titles requires a dedicated edge function
+    // (needs establishment OAuth token). Not yet implemented — returns a resolved
+    // promise so the .catch() call in confirmBooking() does not throw a TypeError.
+    return Promise.resolve();
 };
 
 /**
@@ -452,4 +474,143 @@ export const getChaletBookings = async (chaletId) => {
         console.error('❌ Error fetching chalet bookings:', error);
         throw error;
     }
+};
+
+/** Normalise YYYY-MM-DD → ISO pour insertion cohérente avec les autres réservations. */
+function ymdToUtcMidnightIso(ymd) {
+    const s = String(ymd).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        throw new Error(`Date invalide (attendu AAAA-MM-JJ): ${ymd}`);
+    }
+    return `${s}T00:00:00.000Z`;
+}
+
+/**
+ * Liste les réservations pour plusieurs chalets (RLS établissement).
+ */
+export const getBookingsForChaletIds = async (chaletIds, options = {}) => {
+    if (!chaletIds?.length) return [];
+    const limit = options.limit ?? 300;
+    let q = supabase
+        .from('bookings')
+        .select('*')
+        .in('chalet_id', chaletIds)
+        .order('start_date', { ascending: false })
+        .limit(limit);
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    return data || [];
+};
+
+/**
+ * Création par le propriétaire (migration / saisie manuelle). Pas de commission plateforme.
+ * @param {Object} o
+ * @param {boolean} [o.skipOverlapCheck=false] — pour import bulk migration : ignorer dispo
+ * @param {boolean} [o.syncToGoogle=true]
+ */
+export const createEstablishmentManualBooking = async (o) => {
+    const {
+        chaletId,
+        startDateYmd,
+        endDateYmd,
+        customerName,
+        customerEmail,
+        notes,
+        status = 'confirmed',
+        skipOverlapCheck = false,
+        syncToGoogle = true,
+        source = 'migration',
+    } = o;
+
+    if (!chaletId) throw new Error('Chalet requis');
+    if (!customerName?.trim()) throw new Error('Nom du client requis');
+
+    const startIso = ymdToUtcMidnightIso(startDateYmd);
+    const endIso = ymdToUtcMidnightIso(endDateYmd);
+    if (new Date(endIso) <= new Date(startIso)) {
+        throw new Error('La date de fin doit être après la date de début.');
+    }
+
+    if (!skipOverlapCheck) {
+        const availabilityCheck = await checkChaletAvailability(chaletId, startIso, endIso);
+        if (!availabilityCheck.available) {
+            throw new Error(availabilityCheck.reason || 'Dates non disponibles');
+        }
+    }
+
+    const insertPayload = {
+        chalet_id: chaletId,
+        start_date: startIso,
+        end_date: endIso,
+        status,
+        source,
+        customer_name: customerName.trim(),
+        customer_email: customerEmail?.trim() || null,
+        notes: notes?.trim() || null,
+        booking_origin: 'establishment_manual',
+        platform_fee_amount: 0,
+        platform_fee_waived: true,
+        payment_status: 'paid',
+    };
+
+    const { data: booking, error: bookingError } = await supabase
+        .from('bookings')
+        .insert([insertPayload])
+        .select()
+        .single();
+
+    if (bookingError) {
+        console.error('createEstablishmentManualBooking:', bookingError);
+        throw new Error(bookingError.message || 'Impossible de créer la réservation');
+    }
+
+    let googleSync = { ok: true, skipped: syncToGoogle ? undefined : 'sync_disabled' };
+    if (syncToGoogle) {
+        const session = (await supabase.auth.getSession()).data.session;
+        googleSync = await syncBookingToGoogleCalendar(booking, {
+            accessToken: session?.access_token,
+        });
+    }
+
+    return { booking, googleSync };
+};
+
+/**
+ * Import plusieurs réservations ; renvoie inserted count et erreurs par ligne.
+ */
+export const importEstablishmentBookingsBatch = async (rows, resolveChaletId, options = {}) => {
+    const syncToGoogle = options.syncToGoogle === true;
+    const errors = [];
+    let inserted = 0;
+
+    for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
+        try {
+            const chaletId = typeof resolveChaletId === 'function' ? resolveChaletId(r) : r.chaletId;
+            if (!chaletId) {
+                errors.push({ row: i + 1, message: 'Chalet introuvable' });
+                continue;
+            }
+            if (!r.customerName?.trim()) {
+                errors.push({ row: i + 1, message: 'Nom client vide' });
+                continue;
+            }
+            await createEstablishmentManualBooking({
+                chaletId,
+                startDateYmd: r.startDateYmd,
+                endDateYmd: r.endDateYmd,
+                customerName: r.customerName,
+                customerEmail: r.customerEmail,
+                notes: r.notes,
+                skipOverlapCheck: true,
+                syncToGoogle,
+                source: 'migration',
+            });
+            inserted += 1;
+        } catch (err) {
+            errors.push({ row: i + 1, message: err.message || String(err) });
+        }
+    }
+
+    return { inserted, errors };
 };

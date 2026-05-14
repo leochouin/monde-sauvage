@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AvatarImage from './AvatarImage.jsx';
 import DateRangePicker from './DateRangePicker.jsx';
+import GuideAvailabilityCalendarModal from '../modals/guideAvailabilityCalendarModal.jsx';
 import supabase from '../utils/supabase.js';
 import useAvatarSource from '../utils/useAvatarSource.js';
 import { buildRiverGeoJSON } from '../utils/riverPaths.js';
 import { useStep3Markers, PreviewCard, MapLegend } from './MapBrowse.jsx';
-import { RIVER_CENTERS_BY_PATH_ID } from '../utils/riverGuideData.js';
+import RiverBioCards from './RiverBioCards.jsx';
+import GuideSlotPickerModal from '../modals/guideSlotPickerModal.jsx';
+import { getRiverByPathId } from '../utils/riverGuideData.js';
 
 let mapboxAssetsPromise = null;
 
@@ -140,6 +143,34 @@ const loadMapboxAssets = () => {
   return mapboxAssetsPromise;
 };
 
+/** Même tonalité que le panneau gauche (menu réservation). */
+const SIDEBAR_PANEL_BG = 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)';
+
+const SIDEBAR_WIDTH_TOKENS = {
+  compact: 'clamp(300px, 28vw, 420px)',
+  medium: 'clamp(360px, 32vw, 500px)',
+  /** Étape 3 — large panneau liste (inchangé quand on veut « garder » le menu). */
+  step3Narrow: 'clamp(450px, 42vw, 720px)',
+  wide: 'clamp(520px, 40vw, 760px)',
+  xwide: 'clamp(340px, 35vw, 560px)',
+};
+
+const getSidebarWidthToken = ({ bookingStep }) => {
+  switch (bookingStep) {
+    case 1:
+      return 'xwide';
+    case 2:
+      return 'medium';
+    case 3:
+    case 4:
+      return 'step3Narrow';
+    case 5:
+      return 'medium';
+    default:
+      return 'compact';
+  }
+};
+
 const GaspesieMap = ({ 
   onClick,
   login,
@@ -185,6 +216,7 @@ const GaspesieMap = ({
   chalets,
   loadingChalets,
   chaletError,
+  handleVoirPlus,
   handleSelectedChalet,
   selectedPoint,
   // NEW FLOW: Step 1 destination — river + radius coexist
@@ -210,8 +242,17 @@ const GaspesieMap = ({
   guideAvailabilityEvents,
   loadingGuideAvailability,
   selectedTimeSlots,
-  handleSelectTimeSlot
+  handleSelectTimeSlot,
+  equipmentKinds = [],
+  loadingEquipmentKinds = false,
+  inventoryAddonQtyBySlug = {},
+  setInventoryAddonQtyBySlug = () => {},
+  availableCountByKindId = {},
+  availableCountsLoaded = false,
 }) => {
+  // Start slightly shifted to the right/east so the initial view avoids
+  // placing key content under fixed skin elements.
+  const INITIAL_MAP_CENTER = [-65.35, 48.55];
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const mapStyleLoaded = useRef(false);
@@ -269,34 +310,72 @@ const GaspesieMap = ({
       if (map.getLayer('circle')) map.removeLayer('circle');
       if (map.getSource('circle-source')) map.removeSource('circle-source');
     } catch { /* layers already gone */ }
-    // Clear the multi-river glow (single-river or nothing takes over)
+    // Réinitialise le halo « cercle / rivières proches » (partage les mêmes calques que la sélection).
+    // Sans ré-application, une rivière déjà choisie disparaît visuellement dès ce reset.
     if (typeof map._setRiversGlow === 'function') map._setRiversGlow([]);
-  }, [selectedPoint]);
+    const rid = map._riverSelected || selectedRiver;
+    if (rid && typeof map._setRiverGlow === 'function') {
+      map._setRiverGlow(rid);
+    }
+  }, [selectedPoint, selectedRiver]);
+
+  // En quittant l’étape 1 avec une rivière choisie, garantir ref + calques (clics carte sans rivière sous le curseur, etc.).
+  useEffect(() => {
+    if (bookingStep <= 1) return;
+    const map = mapRef.current;
+    if (!map || !selectedRiver) return;
+    map._riverSelected = selectedRiver;
+    if (typeof map._setRiverGlow === 'function') {
+      map._setRiverGlow(selectedRiver);
+    }
+  }, [bookingStep, selectedRiver]);
 
   // Detect if mobile for responsive button sizing
   const [isMobile, setIsMobile] = useState(typeof globalThis !== 'undefined' && globalThis.innerWidth < 768);
+  const [isCompactViewport, setIsCompactViewport] = useState(
+    typeof globalThis !== 'undefined'
+      && globalThis.innerWidth >= 768
+      && (globalThis.innerWidth < 1180 || globalThis.innerHeight < 860)
+  );
   const [mobileSheetExpanded, setMobileSheetExpanded] = useState(false);
-  const [expandedGuideId, setExpandedGuideId] = useState(null);
+  const [calendarModalOpen, setCalendarModalOpen] = useState(false);
+  const [selectedGuideForCalendar, setSelectedGuideForCalendar] = useState(null);
+  const [slotPickerOpen, setSlotPickerOpen] = useState(false);
+  // 'all' | 'chalets' | 'guides' — used at step 3 to declutter the map
+  const [mapLayerFilter, setMapLayerFilter] = useState('all');
   const [showStep3FlexibleDates, setShowStep3FlexibleDates] = useState(false);
   const [showStep3Filters, setShowStep3Filters] = useState(false);
+  const [showOnlyAvailableChalets, setShowOnlyAvailableChalets] = useState(false);
+  const [mapPickerActive, setMapPickerActive] = useState(false);
+  const mapPickerActiveRef = useRef(false);
   const sheetTouchStartY = useRef(0);
 
-  // Stable guide coordinates derived from river centers for step 3 markers.
-  // Uses guide_id hash to pick a consistent river + small offset per guide.
+  // Deactivate map picker mode as soon as a point is placed
+  useEffect(() => {
+    if (selectedPoint && mapPickerActiveRef.current) {
+      setMapPickerActive(false);
+      mapPickerActiveRef.current = false;
+    }
+  }, [selectedPoint]);
+
+  const sidebarWidthToken = useMemo(
+    () => getSidebarWidthToken({ bookingStep }),
+    [bookingStep, browseMode, needsChalet],
+  );
+
+  const sidebarWidth = SIDEBAR_WIDTH_TOKENS[sidebarWidthToken];
+
+  // Guide map coordinates: only use real lng/lat from the database.
+  // Guides without real coordinates are shown in the side list only — we
+  // intentionally avoid fake/random positioning on the map.
   const step3GuideCoords = useMemo(() => {
     const coords = {};
-    const riverKeys = Object.keys(RIVER_CENTERS_BY_PATH_ID);
-    if (riverKeys.length === 0) return coords;
     (availableGuides || []).forEach((g) => {
       const gid = g.guide_id || g.id || '';
-      const hash = Math.abs((gid.charCodeAt(0) || 0) + (gid.charCodeAt(1) || 0) + (gid.charCodeAt(2) || 0));
-      const pick = RIVER_CENTERS_BY_PATH_ID[riverKeys[hash % riverKeys.length]];
-      if (pick) {
-        const seed = (hash * 9301 + 49297) % 233280;
-        coords[gid] = {
-          lng: pick.lng + ((seed / 233280) - 0.5) * 0.06,
-          lat: pick.lat + (((seed * 7) % 233280) / 233280 - 0.5) * 0.03,
-        };
+      const lng = Number(g.lng ?? g.longitude);
+      const lat = Number(g.lat ?? g.latitude);
+      if (Number.isFinite(lng) && Number.isFinite(lat)) {
+        coords[gid] = { lng, lat };
       }
     });
     return coords;
@@ -304,6 +383,10 @@ const GaspesieMap = ({
 
   // Step 3 markers: dual chalet + guide pins on the map
   const step3MarkersActive = bookingStep === 3 && mapReady;
+  // Apply layer filter to declutter the map when both chalets + guides
+  // would otherwise overlap heavily.
+  const visibleChalets = mapLayerFilter === 'guides' ? [] : chalets;
+  const visibleGuides = mapLayerFilter === 'chalets' ? [] : availableGuides;
   const {
     hoveredId: s3HoveredId,
     hoveredType: s3HoveredType,
@@ -314,13 +397,13 @@ const GaspesieMap = ({
     handlePreviewSelect: s3PreviewSelect,
     highlightMarker: s3Highlight,
     clearHighlight: s3ClearHighlight,
-    flyToMarker: s3FlyTo,
+    flyToMarker: _s3FlyTo,
   } = useStep3Markers({
     mapRef,
     mapReady,
     active: step3MarkersActive,
-    chalets,
-    guides: availableGuides,
+    chalets: visibleChalets,
+    guides: visibleGuides,
     guideCoords: step3GuideCoords,
     selectedChalet,
     selectedGuide,
@@ -361,7 +444,6 @@ const GaspesieMap = ({
   // Keep accordion/filter presentation state scoped to the step-3 results surface.
   useEffect(() => {
     if (bookingStep !== 3) {
-      setExpandedGuideId(null);
       setShowStep3FlexibleDates(false);
       setShowStep3Filters(false);
     }
@@ -385,7 +467,83 @@ const GaspesieMap = ({
   const [showLandscapeHint, setShowLandscapeHint] = useState(false);
   const isEnglish = language === 'en';
   const uiLocale = isEnglish ? 'en-CA' : 'fr-CA';
+
+  const addonStayNights = useMemo(() => {
+    if (!startDate || !endDate) return 1;
+    const d0 = new Date(`${startDate}T12:00:00`).getTime();
+    const d1 = new Date(`${endDate}T12:00:00`).getTime();
+    const diff = Math.round((d1 - d0) / 86400000);
+    return Math.max(1, diff);
+  }, [startDate, endDate]);
+
+  const bumpInventoryAddonQty = useCallback((slug, delta, maxAvailable) => {
+    setInventoryAddonQtyBySlug((prev) => {
+      const cur = Math.floor(Number(prev[slug] ?? 0));
+      const hardMax = typeof maxAvailable === 'number' ? Math.min(50, maxAvailable) : 50;
+      const n = Math.min(hardMax, Math.max(0, cur + delta));
+      const next = { ...prev };
+      if (n <= 0) delete next[slug];
+      else next[slug] = n;
+      return next;
+    });
+  }, [setInventoryAddonQtyBySlug]);
+
+  const equipmentTotalUnits = useMemo(() => (
+    Object.values(inventoryAddonQtyBySlug).reduce(
+      (s, q) => s + Math.max(0, Math.floor(Number(q) || 0)),
+      0,
+    )
+  ), [inventoryAddonQtyBySlug]);
+
   const t = useCallback((frText, enText) => (isEnglish ? enText : frText), [isEnglish]);
+
+  /** 5 = parcours avec chalet (étape 4 équipements, 5 confirmation), 4 = sans chalet. */
+  const bookingMaxStep = useMemo(
+    () => (browseMode === 'chalet' || (browseMode === 'trip' && needsChalet) ? 5 : 4),
+    [browseMode, needsChalet],
+  );
+
+  /** Normalised river slug derived from the currently selected river path ID. */
+  const selectedRiverSlug = useMemo(() => {
+    if (!selectedRiver) return null;
+    const r = getRiverByPathId(selectedRiver);
+    if (!r) return null;
+    const raw = r.name?.fr || r.name?.en || r.slug || '';
+    return raw.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+  }, [selectedRiver]);
+
+  /** Guides sorted: preferred-river first, then available first. */
+  const sortedAvailableGuides = useMemo(() => {
+    const prefersRiver = (guide) => {
+      if (!selectedRiverSlug) return true;
+      const zones = guide.preferredZoneNames || [];
+      if (zones.length === 0) return false;
+      return zones.some((z) => z.includes(selectedRiverSlug));
+    };
+    return [...(availableGuides || [])].sort((a, b) => {
+      const aPref = prefersRiver(a) ? 1 : 0;
+      const bPref = prefersRiver(b) ? 1 : 0;
+      if (bPref !== aPref) return bPref - aPref;
+      return (b.is_available === true) - (a.is_available === true);
+    });
+  }, [availableGuides, selectedRiverSlug]);
+
+  const goFromStep3ToNext = useCallback(() => {
+    if (!canProceedStep3 || isCreatingBooking) return;
+    const withChaletLeg = (browseMode === 'chalet' || (browseMode === 'trip' && needsChalet)) && selectedChalet;
+    if (withChaletLeg) setBookingStep(4);
+    else handleBookGuide();
+  }, [canProceedStep3, isCreatingBooking, browseMode, needsChalet, selectedChalet, handleBookGuide, setBookingStep]);
+
+  const openGuideSlotPicker = useCallback((guide) => {
+    if (!guide || guide.is_available === false) return;
+
+    if (selectedGuide?.guide_id !== guide.guide_id) {
+      handleSelectGuide(guide);
+    }
+
+    setSlotPickerOpen(true);
+  }, [handleSelectGuide, selectedGuide?.guide_id]);
 
   const parseIsoDateLocal = useCallback((isoDate) => {
     if (!isoDate) return null;
@@ -494,7 +652,12 @@ const GaspesieMap = ({
   // Handle window resize for mobile detection
   useEffect(() => {
     const handleResize = () => {
-      setIsMobile(typeof globalThis !== 'undefined' && globalThis.innerWidth < 768);
+      if (typeof globalThis === 'undefined') return;
+      setIsMobile(globalThis.innerWidth < 768);
+      setIsCompactViewport(
+        globalThis.innerWidth >= 768
+        && (globalThis.innerWidth < 1180 || globalThis.innerHeight < 860)
+      );
     };
 
     if (typeof globalThis !== 'undefined' && globalThis.addEventListener) {
@@ -516,6 +679,35 @@ const GaspesieMap = ({
     if (map.scrollZoom) map.scrollZoom.disable();
     if (map.dragPan) map.dragPan.disable();
   }, [isMobile]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || isMobile) return;
+
+    const syncResize = () => {
+      if (typeof map.resize === 'function') {
+        map.resize();
+      }
+    };
+
+    const timers = [0, 160, 320].map((delay) => setTimeout(syncResize, delay));
+
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [sidebarWidthToken, isMobile]);
+
+  // Dimensions du conteneur (flex/menu) peuvent changer sans que le token suive — évite carte / logo coupés à droite
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    const map = mapRef.current;
+    if (!el || !map || !mapReady || isMobile) return;
+    const ro = new ResizeObserver(() => {
+      if (typeof map.resize === 'function') map.resize();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mapReady, isMobile]);
 
   const initializeMapRuntime = useCallback(() => {
     let cancelled = false;
@@ -966,13 +1158,14 @@ const GaspesieMap = ({
       style: 'mapbox://styles/mapbox/standard',
       projection: 'mercator',
       zoom: 6,
-      center: [-66, 49.2],
+      center: INITIAL_MAP_CENTER,
       maxBounds: gaspBounds
     });
 
     mapRef.current = map;
 
-    map.addControl(new mapboxgl.NavigationControl());
+    /** Haut-gauche : laisse le coin haut-droit à Mapbox (logo / marque). Les filtres étape 3 sont à côté (left). */
+    map.addControl(new mapboxgl.NavigationControl(), 'top-left');
   map.scrollZoom.disable();
     if (!isMobile) map.dragPan.disable();
 
@@ -980,6 +1173,21 @@ const GaspesieMap = ({
       console.log('Map loaded successfully!');
       setMapReady(true);
       const mapImage = '/NewMap.png';
+
+      // Start camera on the right-side portion of the interactive area instead
+      // of centered, so top-right branding is visible immediately on load.
+      const west = gaspBounds[0][0];
+      const south = gaspBounds[0][1];
+      const east = gaspBounds[1][0];
+      const north = gaspBounds[1][1];
+      const rightBiasedCenter = [
+        west + (east - west) * 0.75, // right half start
+        south + (north - south) * 0.52,
+      ];
+      map.jumpTo({
+        center: rightBiasedCenter,
+        zoom: 6,
+      });
 
       // Add vector source for businesses
       map.addSource('businesses', {
@@ -1349,6 +1557,8 @@ const GaspesieMap = ({
       // replace the multi-filter with a single-id filter on every mousemove.
       map.on('mousemove', 'rivers-hit', (e) => {
         if (map._circleMode) return;
+        // Après l’étape 1 : la rivière choisie reste mise en avant (pas de survol d’une autre rivière).
+        if (bookingStepRef.current !== 1 && mapRef.current?._riverSelected) return;
         if (e.features && e.features.length > 0) {
           const id = e.features[0].properties.id;
           if (mapRef.current?._riverSelected !== id) {
@@ -1366,27 +1576,27 @@ const GaspesieMap = ({
         }
       });
 
-      // Click to select/deselect.
+      // Click to select/deselect (étape 1 uniquement — au-delà, la destination rivière est verrouillée).
       // When in booking step 1 (destination), also sync to parent via
       // onSelectRiver so MapApp can anchor chalet search to the river.
       map.on('click', 'rivers-hit', (e) => {
+        if (bookingStepRef.current !== 1) return;
         if (e.features && e.features.length > 0) {
           const id = e.features[0].properties.id;
           const prev = mapRef.current?._riverSelected;
-          const isBookingDestinationStep = bookingStepRef.current === 1;
 
           if (prev === id) {
             mapRef.current._riverSelected = null;
             setSelectedRiver(null);
             setGlow(null);
-            if (isBookingDestinationStep && onSelectRiverRef.current) {
+            if (onSelectRiverRef.current) {
               onSelectRiverRef.current(null);
             }
           } else {
             mapRef.current._riverSelected = id;
             setSelectedRiver(id);
             setGlow(id, SELECT_BLUE);
-            if (isBookingDestinationStep && onSelectRiverRef.current) {
+            if (onSelectRiverRef.current) {
               onSelectRiverRef.current(id);
             }
           }
@@ -1444,7 +1654,7 @@ const GaspesieMap = ({
           zIndex: 500,
           height: mobileSheetExpanded ? '78dvh' : '172px',
           maxHeight: '90dvh',
-          background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)',
+          background: SIDEBAR_PANEL_BG,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -1456,15 +1666,48 @@ const GaspesieMap = ({
           overflow: 'hidden',
           transition: 'height 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
           willChange: 'height',
-        } : {
-          // Step 3: split layout — panel takes ~45% width, map stays visible alongside
+        } : isCompactViewport ? {
+          // Compact desktop/tablet: même largeur dynamique qu’en grand écran à l’étape 3 (liste + grille chalets).
           position: 'relative',
-          flex: bookingStep === 3 ? '0 0 clamp(360px, 45vw, 560px)' : '0 0 clamp(300px, 30vw, 420px)',
-          width: bookingStep === 3 ? 'clamp(360px, 45vw, 560px)' : 'clamp(300px, 30vw, 420px)',
-          maxWidth: '100%',
+          ...((bookingStep === 3 || bookingStep === 4) ? {
+            flex: `0 0 ${sidebarWidth}`,
+            width: sidebarWidth,
+            minWidth: sidebarWidth,
+            maxWidth: sidebarWidth,
+            transition: 'flex-basis 300ms ease-in-out, width 300ms ease-in-out, max-width 300ms ease-in-out, min-width 300ms ease-in-out',
+            willChange: 'width, flex-basis',
+          } : {
+            flex: '0 0 clamp(330px, 34vw, 450px)',
+            width: 'clamp(330px, 34vw, 450px)',
+            minWidth: 'clamp(330px, 34vw, 450px)',
+            maxWidth: 'clamp(330px, 34vw, 450px)',
+            transition: 'flex-basis 220ms ease-in-out, width 220ms ease-in-out',
+          }),
           height: '100%',
           minHeight: 0,
-          background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)',
+          background: SIDEBAR_PANEL_BG,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'flex-start',
+          alignItems: 'center',
+          gap: '0',
+          boxSizing: 'border-box',
+          padding: 'clamp(12px, 2.2vh, 18px) clamp(10px, 1.6vw, 16px) clamp(10px, 2vh, 14px)',
+          boxShadow: '6px 0 26px rgba(31, 58, 46, 0.14)',
+          borderRight: '1px solid rgba(72, 102, 86, 0.16)',
+          zIndex: 100,
+          fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
+          overflow: 'hidden',
+        } : {
+          // Étapes réservation desktop : largeur pilotée par `sidebarWidth`
+          position: 'relative',
+          flex: `0 0 ${sidebarWidth}`,
+          width: sidebarWidth,
+          minWidth: sidebarWidth,
+          maxWidth: sidebarWidth,
+          height: '100%',
+          minHeight: 0,
+          background: SIDEBAR_PANEL_BG,
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'flex-start',
@@ -1477,6 +1720,8 @@ const GaspesieMap = ({
           zIndex: 100,
           fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
           overflow: 'hidden',
+          transition: 'flex-basis 300ms ease-in-out, width 300ms ease-in-out, max-width 300ms ease-in-out, min-width 300ms ease-in-out',
+          willChange: 'width, flex-basis',
         }}
       >
         {/* Mobile drag handle */}
@@ -1664,7 +1909,7 @@ const GaspesieMap = ({
         }}>
         {/* BOOKING FLOW CONTENT */}
         {bookingStep > 0 ? (
-          <div style={{ width: '100%', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '20px', paddingRight: '2px' }}>
+          <div style={{ width: '100%', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: isCompactViewport ? '12px' : '20px', paddingRight: '2px' }}>
             {/* Header with close button */}
             <div style={{ 
               display: 'flex', 
@@ -1676,7 +1921,7 @@ const GaspesieMap = ({
             }}>
               <h2 style={{ 
                 margin: 0, 
-                fontSize: '18px', 
+                fontSize: isCompactViewport ? '15px' : '18px', 
                 color: '#1F3A2E', 
                 fontWeight: '600',
                 flex: 1
@@ -1726,9 +1971,9 @@ const GaspesieMap = ({
               </button>
             </div>
 
-            {/* Progress indicator */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-              {[1, 2, 3, 4].map((step) => (
+            {/* Progress indicator (5 segments si parcours chalet : étape 4 = équipements) */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: isCompactViewport ? '8px' : '16px' }}>
+              {Array.from({ length: bookingMaxStep }, (_, i) => i + 1).map((step) => (
                 <div
                   key={step}
                   style={{
@@ -1769,30 +2014,33 @@ const GaspesieMap = ({
               };
 
               return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: isCompactViewport ? '8px' : '14px', height: '100%', minHeight: 0, overflow: 'hidden' }}>
+                  <div style={{ flexShrink: 0 }}>
+                    <h3 style={{ margin: 0, fontSize: isCompactViewport ? '13px' : '16px', color: '#1F3A2E' }}>
                       1. {t('Votre destination', 'Your destination')}
                     </h3>
-                    <p style={{ fontSize: '12px', color: '#5A7766', margin: '4px 0 0', lineHeight: 1.5 }}>
+                    <p style={{ fontSize: isCompactViewport ? '11px' : '12px', color: '#5A7766', margin: '3px 0 0', lineHeight: 1.5 }}>
                       {t(
-                        'Optionnel — choisissez une rivière, cherchez-en une ou cliquez sur la carte.',
-                        'Optional — pick a river, search for one, or click the map.'
+                        'Choisissez une rivière dans la liste ou touchez la carte pour partir d’une zone.',
+                        'Choose a river from the list or tap the map to start from an area.'
                       )}
                     </p>
                   </div>
 
                   {/* Unified picker card */}
                   <div style={{
-                    padding: '12px',
+                    padding: isCompactViewport ? '8px 10px' : '12px',
                     backgroundColor: '#FFFCF7',
                     borderRadius: '12px',
                     border: '1px solid #E5E7EB',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '12px',
+                    gap: isCompactViewport ? '6px' : '12px',
+                    flex: '1 1 auto',
+                    minHeight: 0,
+                    overflow: 'hidden',
                   }}>
-                    {/* Searchable river dropdown */}
+                    {/* Searchable river dropdown — on compact, sits in a row with map-pin badge */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                       <label style={{
                         fontSize: '11px',
@@ -1801,54 +2049,94 @@ const GaspesieMap = ({
                         textTransform: 'uppercase',
                         letterSpacing: '0.04em',
                       }}>
-                        🔍 {t('Rechercher une rivière', 'Search a river')}
+                        🔍 {t('Choisir une rivière', 'Choose a river')}
                       </label>
-                      <select
-                        value={selectedRiver || ''}
-                        onChange={(e) => {
-                          const id = e.target.value || null;
-                          if (id) {
-                            // Selecting a river via dropdown: clear any custom point
-                            if (onSelectRiver) onSelectRiver(id);
-                            setSelectedRiver(id);
-                            if (mapRef.current) {
-                              mapRef.current._riverSelected = id;
-                              if (typeof mapRef.current._setRiverGlow === 'function') {
-                                mapRef.current._setRiverGlow(id);
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <select
+                          value={selectedRiver || ''}
+                          onChange={(e) => {
+                            const id = e.target.value || null;
+                            if (id) {
+                              // Selecting a river via dropdown: clear any custom point
+                              if (onSelectRiver) onSelectRiver(id);
+                              setSelectedRiver(id);
+                              if (mapRef.current) {
+                                mapRef.current._riverSelected = id;
+                                if (typeof mapRef.current._setRiverGlow === 'function') {
+                                  mapRef.current._setRiverGlow(id);
+                                }
                               }
+                            } else {
+                              clearRiver();
                             }
-                          } else {
-                            clearRiver();
-                          }
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '10px 12px',
-                          borderRadius: '8px',
-                          border: '1.5px solid #D1D5DB',
-                          backgroundColor: '#FFFFFF',
-                          fontSize: '14px',
-                          color: '#1F3A2E',
-                          cursor: 'pointer',
-                          appearance: 'none',
-                          backgroundImage: 'url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'><path fill=\'%235A7766\' d=\'M2 4l4 4 4-4\'/></svg>")',
-                          backgroundRepeat: 'no-repeat',
-                          backgroundPosition: 'right 12px center',
-                          paddingRight: '34px',
-                        }}
-                      >
-                        <option value="">
-                          {t('— Toutes les rivières —', '— All rivers —')}
-                        </option>
-                        {[...knownRivers].sort((a, b) => a.localeCompare(b)).map((id) => (
-                          <option key={id} value={id}>
-                            {formatRiverName ? formatRiverName(id) : `Rivière ${id}`}
+                          }}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            padding: isCompactViewport ? '7px 10px' : '10px 12px',
+                            borderRadius: '8px',
+                            border: '1.5px solid #D1D5DB',
+                            backgroundColor: '#FFFFFF',
+                            fontSize: isCompactViewport ? '12px' : '14px',
+                            color: '#1F3A2E',
+                            cursor: 'pointer',
+                            appearance: 'none',
+                            backgroundImage: 'url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'><path fill=\'%235A7766\' d=\'M2 4l4 4 4-4\'/></svg>")',
+                            backgroundRepeat: 'no-repeat',
+                            backgroundPosition: 'right 10px center',
+                            paddingRight: '28px',
+                          }}
+                        >
+                          <option value="">
+                            {t('— Sélectionner une rivière —', '— Select a river —')}
                           </option>
-                        ))}
-                      </select>
+                          {[...knownRivers].sort((a, b) => a.localeCompare(b)).map((id) => (
+                            <option key={id} value={id}>
+                              {formatRiverName ? formatRiverName(id) : `Rivière ${id}`}
+                            </option>
+                          ))}
+                        </select>
+
+                        {/* Compact: map-pin badge beside the dropdown — activates picker mode */}
+                        {isCompactViewport && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMapPickerActive(true);
+                              mapPickerActiveRef.current = true;
+                            }}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              gap: '3px',
+                              padding: '6px 10px',
+                              borderRadius: '10px',
+                              border: mapPickerActive
+                                ? '1.5px solid #2D5F4C'
+                                : '1.5px dashed rgba(74, 155, 142, 0.55)',
+                              backgroundColor: mapPickerActive
+                                ? 'rgba(45, 95, 76, 0.12)'
+                                : 'rgba(74, 155, 142, 0.07)',
+                              flexShrink: 0,
+                              cursor: 'pointer',
+                              transition: 'background-color 0.2s, border-color 0.2s',
+                            }}
+                          >
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={mapPickerActive ? '#2D5F4C' : '#4A9B8E'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                              <circle cx="12" cy="10" r="3"/>
+                            </svg>
+                            <span style={{ fontSize: '9px', color: mapPickerActive ? '#2D5F4C' : '#2D7D70', fontWeight: 700, textAlign: 'center', lineHeight: 1.2, whiteSpace: 'nowrap' }}>
+                              {t('Carte', 'Map')}
+                            </span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    {/* OR divider */}
+                    {/* OR divider — full layout only */}
+                    {!isCompactViewport && (
                     <div style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -1863,38 +2151,97 @@ const GaspesieMap = ({
                       <span>{t('ou', 'or')}</span>
                       <div style={{ flex: 1, height: '1px', backgroundColor: '#E5E7EB' }} />
                     </div>
+                    )}
 
-                    {/* Map interaction hint */}
+                    {/* Map interaction hint — hidden on compact to free vertical space */}
+                    {!isCompactViewport && (
                     <div style={{
                       display: 'flex',
-                      alignItems: 'center',
-                      gap: '10px',
-                      fontSize: '12px',
-                      color: '#2D5F4C',
-                      backgroundColor: 'rgba(74, 155, 142, 0.1)',
-                      border: '1px dashed #4A9B8E',
-                      borderRadius: '8px',
+                      flexDirection: 'column',
+                      gap: '8px',
                       padding: '10px 12px',
+                      backgroundColor: 'rgba(74, 155, 142, 0.08)',
+                      border: '1px solid rgba(74, 155, 142, 0.22)',
+                      borderRadius: '10px',
                     }}>
-                      <span style={{ fontSize: '18px' }}>🗺️</span>
-                      <span style={{ lineHeight: 1.4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1F3A2E', fontSize: '13px', fontWeight: 600 }}>
+                        <span style={{ fontSize: '16px' }}>🧭</span>
+                        <span>{t('Point de départ', 'Starting point')}</span>
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        <span style={{
+                          fontSize: '11px',
+                          padding: '4px 8px',
+                          borderRadius: '999px',
+                          backgroundColor: 'rgba(45, 95, 76, 0.1)',
+                          color: '#2D5F4C',
+                          fontWeight: 600,
+                        }}>
+                          {t('Choisir dans la liste', 'Pick from the list')}
+                        </span>
+                        <span style={{
+                          fontSize: '11px',
+                          padding: '4px 8px',
+                          borderRadius: '999px',
+                          backgroundColor: 'rgba(45, 95, 76, 0.1)',
+                          color: '#2D5F4C',
+                          fontWeight: 600,
+                        }}>
+                          {t('Cliquer sur la carte', 'Click the map')}
+                        </span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#355446', lineHeight: 1.45 }}>
                         {t(
-                          'Cliquez sur une rivière ou sur un point de la carte',
-                          'Click a river or a point on the map'
+                          'Vous pouvez choisir une rivière ci-dessous ou toucher la carte pour définir la zone.',
+                          'You can choose a river below or tap the map to define the area.'
                         )}
-                      </span>
+                      </p>
+                    </div>
+                    )}
+
+                    {/* River bio cards — discovery grid */}
+                    <div style={{ marginTop: isCompactViewport ? 4 : 14, display: 'flex', flexDirection: 'column', minHeight: isCompactViewport ? 180 : 0, flex: '1 1 auto' }}>
+                      <p style={{
+                        margin: '0 0 6px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: '#5A7766',
+                        textTransform: 'uppercase',
+                        letterSpacing: 0.5,
+                        flexShrink: 0,
+                      }}>
+                        {t('Découvrir les rivières', 'Discover rivers')}
+                      </p>
+                      <div style={{ flex: '1 1 auto', minHeight: isCompactViewport ? 160 : 0, overflowY: 'auto', paddingRight: '2px' }}>
+                        <RiverBioCards
+                          language={language}
+                          selectedPathId={selectedRiver}
+                          compact={isCompactViewport}
+                          onSelect={(pathId) => {
+                            if (onSelectRiver) onSelectRiver(pathId);
+                            setSelectedRiver(pathId);
+                            if (mapRef.current) {
+                              mapRef.current._riverSelected = pathId;
+                              if (typeof mapRef.current._setRiverGlow === 'function') {
+                                mapRef.current._setRiverGlow(pathId);
+                              }
+                            }
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
 
                   {/* Current selection — adaptive card (river OR point) */}
                   <div style={{
-                    padding: '12px',
+                    padding: isCompactViewport ? '7px 9px' : '12px',
                     backgroundColor: hasSelection ? 'rgba(45, 95, 76, 0.08)' : 'transparent',
                     border: hasSelection ? '1px solid #2D5F4C' : '1px dashed #D1D5DB',
                     borderRadius: '12px',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: (hasPoint || hasRiver) ? '10px' : '0',
+                    gap: (hasPoint || hasRiver) ? (isCompactViewport ? '6px' : '10px') : '0',
+                    flexShrink: 0,
                   }}>
                     <div style={{
                       display: 'flex',
@@ -1902,13 +2249,13 @@ const GaspesieMap = ({
                       justifyContent: 'space-between',
                       gap: '10px',
                     }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                        <span style={{ fontSize: '20px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        <span style={{ fontSize: isCompactViewport ? '16px' : '20px' }}>
                           {hasRiver ? '🌊' : hasPoint ? '📍' : '✨'}
                         </span>
                         <div style={{ minWidth: 0 }}>
                           <div style={{
-                            fontSize: '13px',
+                            fontSize: isCompactViewport ? '12px' : '13px',
                             fontWeight: 600,
                             color: hasSelection ? '#1F3A2E' : '#9CA3AF',
                             overflow: 'hidden',
@@ -1921,13 +2268,11 @@ const GaspesieMap = ({
                               ? t('Point personnalisé', 'Custom point')
                               : t('Aucune destination', 'No destination')}
                           </div>
-                          <div style={{ fontSize: '11px', color: '#5A7766', marginTop: '2px' }}>
-                            {hasRiver
-                              ? (selectedRiverDetails?.description || t('Recherche autour de cette rivière', 'Search around this river'))
-                              : hasPoint
-                              ? t('Zone circulaire', 'Circular area')
-                              : t('Toute la Gaspésie sera explorée', 'Browsing all of Gaspésie')}
-                          </div>
+                          {hasPoint && (
+                            <div style={{ fontSize: '11px', color: '#5A7766', marginTop: '2px' }}>
+                              {t('Zone circulaire', 'Circular area')}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -2051,15 +2396,18 @@ const GaspesieMap = ({
                     onClick={() => setBookingStep(2)}
                     style={{
                       width: '100%',
-                      padding: '14px 20px',
+                      padding: isCompactViewport ? '10px 14px' : '14px 20px',
                       backgroundColor: '#2D5F4C',
                       color: '#FFFCF7',
                       border: 'none',
                       borderRadius: '12px',
                       cursor: 'pointer',
                       fontWeight: '600',
-                      fontSize: '15px',
+                      fontSize: isCompactViewport ? '13px' : '15px',
                       marginTop: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
                   >
                     {t('Continuer →', 'Continue →')}
@@ -2070,12 +2418,12 @@ const GaspesieMap = ({
 
             {/* Step 2: Dates (NEW FLOW) */}
             {bookingStep === 2 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: isCompactViewport ? '10px' : '16px' }}>
+                <h3 style={{ margin: 0, fontSize: isCompactViewport ? '13px' : '16px', color: '#1F3A2E' }}>
                   2. {t('Vos dates', 'Your dates')}
                 </h3>
 
-                <p style={{ fontSize: '13px', color: '#5A7766', margin: 0, lineHeight: 1.5 }}>
+                <p style={{ fontSize: isCompactViewport ? '11px' : '13px', color: '#5A7766', margin: 0, lineHeight: 1.5 }}>
                   {t(
                     'Sélectionnez une plage de dates en 2 clics: arrivée puis départ.',
                     'Select your date range in 2 clicks: check-in then check-out.'
@@ -2157,20 +2505,23 @@ const GaspesieMap = ({
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                   <button
                     type="button"
                     onClick={() => setBookingStep(1)}
                     style={{
                       flex: 1,
-                      padding: '14px',
+                      padding: isCompactViewport ? '10px' : '14px',
                       backgroundColor: 'transparent',
                       color: '#5A7766',
                       border: '1.5px solid #5A7766',
                       borderRadius: '12px',
                       cursor: 'pointer',
                       fontWeight: '500',
-                      fontSize: '14px',
+                      fontSize: isCompactViewport ? '12px' : '14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
                   >
                     {t('← Retour', '← Back')}
@@ -2181,14 +2532,17 @@ const GaspesieMap = ({
                     disabled={!canProceedStep2}
                     style={{
                       flex: 1,
-                      padding: '14px',
+                      padding: isCompactViewport ? '10px' : '14px',
                       backgroundColor: canProceedStep2 ? '#2D5F4C' : '#9CA3AF',
                       color: '#FFFCF7',
                       border: 'none',
                       borderRadius: '12px',
                       cursor: canProceedStep2 ? 'pointer' : 'not-allowed',
                       fontWeight: '600',
-                      fontSize: '14px',
+                      fontSize: isCompactViewport ? '12px' : '14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
                   >
                     {t('Continuer →', 'Continue →')}
@@ -2199,8 +2553,8 @@ const GaspesieMap = ({
 
             {/* Step 3: Guides + Chalets (NEW FLOW — full-screen overlay) */}
             {bookingStep === 3 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#1F3A2E', flexShrink: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: isCompactViewport ? '8px' : '12px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                <h3 style={{ margin: 0, fontSize: isCompactViewport ? '13px' : '16px', color: '#1F3A2E', flexShrink: 0 }}>
                   3. {browseMode === 'guide'
                     ? t('Sélectionnez un guide', 'Select a guide')
                     : browseMode === 'chalet'
@@ -2211,8 +2565,8 @@ const GaspesieMap = ({
                 <div style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '8px',
-                  padding: '10px 12px',
+                  gap: '6px',
+                  padding: isCompactViewport ? '8px 10px' : '10px 12px',
                   backgroundColor: 'rgba(32, 79, 61, 0.045)',
                   borderRadius: '10px',
                   border: '1px solid rgba(32, 79, 61, 0.14)',
@@ -2223,7 +2577,7 @@ const GaspesieMap = ({
                       <p style={{ margin: 0, fontSize: '11px', fontWeight: 600, color: '#5A7766' }}>
                         {t('Plage active', 'Active range')}
                       </p>
-                      <p style={{ margin: '2px 0 0', fontSize: '13px', fontWeight: 700, color: '#1F3A2E' }}>
+                      <p style={{ margin: '2px 0 0', fontSize: isCompactViewport ? '12px' : '13px', fontWeight: 700, color: '#1F3A2E' }}>
                         {new Date(`${startDate}T00:00:00`).toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' })}
                         {' - '}
                         {new Date(`${endDate}T00:00:00`).toLocaleDateString(uiLocale, { day: 'numeric', month: 'short' })}
@@ -2340,15 +2694,15 @@ const GaspesieMap = ({
                 <div style={{
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '8px',
-                  padding: '9px 10px',
+                  gap: '6px',
+                  padding: isCompactViewport ? '7px 9px' : '9px 10px',
                   backgroundColor: 'rgba(45, 95, 76, 0.03)',
                   borderRadius: '10px',
                   border: '1px solid #E6ECE9',
                   flexShrink: 0,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                    <p style={{ margin: 0, fontSize: '12px', color: '#355446', fontWeight: 600 }}>
+                    <p style={{ margin: 0, fontSize: isCompactViewport ? '11px' : '12px', color: '#355446', fontWeight: 600 }}>
                       {t('Filtres', 'Filters')}: {numberOfPeople} {t('pers.', 'people')}
                       {' • '}
                       {browseMode !== 'chalet'
@@ -2468,26 +2822,31 @@ const GaspesieMap = ({
                 )}
 
                 {/* Scrollable content area for guide and chalet sections */}
-                <div style={{ 
-                  flex: 1, 
+                <div style={{
+                  flex: 1,
                   minHeight: 0,
-                  overflow: 'hidden',
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
                   display: 'grid',
-                  gridTemplateColumns: '1fr',
-                  gap: '12px',
+                  // Pile verticale (guides puis chalets) — équipements en étape 4 dédiée.
+                  gridTemplateColumns: 'minmax(0, 1fr)',
+                  alignItems: 'start',
+                  gap: isCompactViewport ? '10px' : '12px',
                 }}>
                   {/* GUIDE SECTION - hidden in chalet-only mode */}
                   {browseMode !== 'chalet' && (
-                  <div style={{ 
-                    minHeight: 0,
+                  <div style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    minWidth: 0,
                     display: 'flex',
                     flexDirection: 'column',
                     border: '1px solid #E3EAE6',
                     borderRadius: '10px',
                     backgroundColor: '#FFFCF7',
-                    padding: '10px'
+                    padding: '10px',
                   }}>
-                    <h4 style={{ margin: '0 0 10px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
+                    <h4 style={{ margin: '0 0 8px', flexShrink: 0, fontSize: isCompactViewport ? '13px' : '14px', color: '#1F3A2E', fontWeight: '600' }}>
                       {t('Guides disponibles', 'Available guides')}
                     </h4>
 
@@ -2508,7 +2867,14 @@ const GaspesieMap = ({
                         : t('Aucun guide trouvé pour ces dates', 'No guides found for these dates')}
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minHeight: 0, overflowY: 'auto', paddingRight: '2px' }}>
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      width: '100%',
+                      minWidth: 0,
+                    }}
+                    >
                       {/* Option to skip guide */}
                       <div
                         onClick={() => handleSelectGuide(null)}
@@ -2527,241 +2893,143 @@ const GaspesieMap = ({
                         </div>
                       </div>
 
-                      {/* Guide list — compact rows, details only on expand */}
+                      {/* Guide list — compact rows with direct access to slots */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {[...availableGuides]
-                          .sort((a, b) => (b.is_available === true) - (a.is_available === true))
-                          .map((guide) => {
-                            const isGuideSelected = selectedGuide?.guide_id === guide.guide_id;
-                            const isGuideExpanded = expandedGuideId === guide.guide_id;
-                            const isAvailable = guide.is_available !== false;
+                        {sortedAvailableGuides.map((guide) => {
+                          const isGuideSelected = selectedGuide?.guide_id === guide.guide_id;
+                          const isAvailable = guide.is_available !== false;
+                          const zones = guide.preferredZoneNames || [];
+                          const prefersRiver = !selectedRiverSlug || (zones.length > 0 && zones.some((z) => z.includes(selectedRiverSlug)));
+                          const showOutsideZoneNote = selectedRiverSlug && !prefersRiver;
 
-                            return (
-                              <div
-                                key={guide.guide_id}
-                                onMouseEnter={() => s3Highlight(guide.guide_id, 'guide')}
-                                onMouseLeave={s3ClearHighlight}
-                                style={{
-                                  padding: '7px 8px',
-                                  backgroundColor: isGuideSelected
-                                    ? 'rgba(45, 95, 76, 0.1)'
-                                    : (s3HoveredId === guide.guide_id && s3HoveredType === 'guide')
-                                    ? 'rgba(232, 123, 53, 0.08)'
-                                    : '#FFFCF7',
-                                  borderRadius: '8px',
-                                  border: isGuideSelected ? '1.5px solid #2D5F4C' : '1px solid #E1E7E3',
-                                  opacity: isAvailable ? 1 : 0.7,
-                                  transition: 'background-color 0.15s ease',
-                                }}
-                              >
-                                <div
-                                  onClick={() => {
-                                    setExpandedGuideId((prev) => prev === guide.guide_id ? null : guide.guide_id);
-                                    if (isAvailable && !isGuideSelected) {
-                                      handleSelectGuide(guide);
-                                    }
+                          return (
+                            <div
+                              key={guide.guide_id}
+                              onMouseEnter={() => s3Highlight(guide.guide_id, 'guide')}
+                              onMouseLeave={s3ClearHighlight}
+                              onClick={() => openGuideSlotPicker(guide)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  openGuideSlotPicker(guide);
+                                }
+                              }}
+                              role={isAvailable ? 'button' : undefined}
+                              tabIndex={isAvailable ? 0 : -1}
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '8px',
+                                padding: '7px 8px',
+                                backgroundColor: isGuideSelected
+                                  ? 'rgba(45, 95, 76, 0.1)'
+                                  : (s3HoveredId === guide.guide_id && s3HoveredType === 'guide')
+                                  ? 'rgba(232, 123, 53, 0.08)'
+                                  : '#FFFCF7',
+                                borderRadius: '8px',
+                                border: isGuideSelected ? '1.5px solid #2D5F4C' : '1px solid #E1E7E3',
+                                opacity: isAvailable ? 1 : 0.7,
+                                transition: 'background-color 0.15s ease',
+                                cursor: isAvailable ? 'pointer' : 'default',
+                              }}
+                            >
+                              {/* Row 1: avatar + info */}
+                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', minWidth: 0 }}>
+                                <AvatarImage
+                                  src={guide.avatarSrc}
+                                  name={guide.name || 'Guide'}
+                                  alt={guide.name || 'Guide'}
+                                  imgStyle={{
+                                    width: '32px', height: '32px', borderRadius: '50%',
+                                    objectFit: 'cover', flexShrink: 0,
+                                    border: '1px solid rgba(74, 155, 142, 0.35)',
                                   }}
-                                  style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
-                                >
-                                  <AvatarImage
-                                    src={guide.avatarSrc}
-                                    name={guide.name || 'Guide'}
-                                    alt={guide.name || 'Guide'}
-                                    imgStyle={{
-                                      width: '32px',
-                                      height: '32px',
-                                      borderRadius: '50%',
-                                      objectFit: 'cover',
-                                      border: '1px solid rgba(74, 155, 142, 0.35)',
-                                    }}
-                                    fallbackStyle={{
-                                      width: '32px',
-                                      height: '32px',
-                                      borderRadius: '50%',
-                                      backgroundColor: '#4A9B8E',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      color: 'white',
-                                      fontWeight: '600',
-                                      fontSize: '12px',
-                                    }}
-                                    fallback="GU"
-                                  />
-                                  <div style={{ flex: 1 }}>
-                                    <p style={{ margin: 0, fontWeight: '600', fontSize: '12px', color: '#1F3A2E' }}>
-                                      {guide.name}
-                                      {!isAvailable && (
-                                        <span style={{
-                                          marginLeft: 6,
-                                          fontSize: 10,
-                                          padding: '2px 6px',
-                                          borderRadius: 4,
-                                          backgroundColor: 'rgba(245, 158, 11, 0.2)',
-                                          color: '#D97706',
-                                          fontWeight: 500,
-                                        }}>
-                                          {t('Non dispo', 'Unavailable')}
-                                        </span>
-                                      )}
-                                    </p>
-                                    {guide.fish_types && guide.fish_types.length > 0 && (
-                                      <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5A7766' }}>
-                                        {guide.fish_types.slice(0, 3).join(', ')}
-                                      </p>
-                                    )}
-                                  </div>
-
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    {isAvailable && (
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (isGuideSelected) {
-                                            handleSelectGuide(null);
-                                            if (isGuideExpanded) setExpandedGuideId(null);
-                                          } else {
-                                            handleSelectGuide(guide);
-                                            setExpandedGuideId(guide.guide_id);
-                                          }
-                                        }}
-                                        style={{
-                                          border: isGuideSelected ? '1px solid #2D5F4C' : '1px solid #C5D2CB',
-                                          backgroundColor: isGuideSelected ? '#2D5F4C' : '#FFFCF7',
-                                          color: isGuideSelected ? '#FFFCF7' : '#2D5F4C',
-                                          borderRadius: '999px',
-                                          padding: '4px 9px',
-                                          fontSize: '11px',
-                                          fontWeight: 600,
-                                          cursor: 'pointer',
-                                        }}
-                                      >
-                                        {isGuideSelected ? t('Choisi', 'Selected') : t('Choisir', 'Select')}
-                                      </button>
-                                    )}
-
-                                    <span style={{ fontSize: '14px', color: '#5A7766', lineHeight: 1 }}>
-                                      {isGuideExpanded ? '▾' : '▸'}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {isGuideExpanded && (
-                                  <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #E8ECEA' }}>
+                                  fallbackStyle={{
+                                    width: '32px', height: '32px', borderRadius: '50%',
+                                    backgroundColor: '#4A9B8E', flexShrink: 0,
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    color: 'white', fontWeight: '600', fontSize: '12px',
+                                  }}
+                                  fallback="GU"
+                                />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <p style={{ margin: 0, fontWeight: '600', fontSize: '12px', color: '#1F3A2E' }}>
+                                    {guide.name}
                                     {!isAvailable && (
-                                      <div style={{
-                                        padding: '8px 10px',
-                                        backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                                        borderRadius: '7px',
-                                        color: '#B45309',
-                                        fontSize: '11px'
+                                      <span style={{
+                                        marginLeft: 6, fontSize: 10, padding: '2px 6px',
+                                        borderRadius: 4, backgroundColor: 'rgba(220, 38, 38, 0.16)',
+                                        color: '#B91C1C', fontWeight: 500,
                                       }}>
-                                        {t('Ce guide n\'est pas disponible pour la plage de dates active.', 'This guide is unavailable for the active date range.')}
-                                      </div>
+                                        {t('Non dispo', 'Unavailable')}
+                                      </span>
                                     )}
-
-                                    {isAvailable && (
-                                      <p style={{ fontSize: '11px', color: '#5A7766', margin: '0 0 6px' }}>
-                                        {t('Disponibilités pour vos dates actives', 'Availability for your active dates')}
-                                      </p>
-                                    )}
-
-                                    {!isGuideSelected && (
-                                      <div style={{
-                                        padding: '7px 9px',
-                                        borderRadius: '6px',
-                                        border: '1px solid #E3EAE6',
-                                        backgroundColor: '#FCFDFC',
-                                        fontSize: '11px',
-                                        color: '#5A7766',
-                                      }}>
-                                        {t('Sélectionnez ce guide pour charger et choisir des créneaux.', 'Select this guide to load and choose time slots.')}
-                                      </div>
-                                    )}
-
-                                    {isGuideSelected && (loadingGuideAvailability ? (
-                                      <div style={{ textAlign: 'center', padding: '10px', color: '#5A7766', fontSize: '12px' }}>
-                                        {t('Chargement des disponibilités...', 'Loading availability...')}
-                                      </div>
-                                    ) : guideAvailabilityEvents && guideAvailabilityEvents.length > 0 ? (
-                                      <div style={{ maxHeight: '170px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                        {(() => {
-                                          const eventsByDate = guideAvailabilityEvents.reduce((acc, event) => {
-                                            const date = event.date || (event.start ? event.start.split('T')[0] : 'unknown');
-                                            if (!acc[date]) acc[date] = [];
-                                            acc[date].push(event);
-                                            return acc;
-                                          }, {});
-
-                                          return Object.entries(eventsByDate).map(([date, events]) => (
-                                            <div key={date} style={{ marginBottom: '4px' }}>
-                                              <div style={{
-                                                fontSize: '10px',
-                                                fontWeight: '600',
-                                                color: '#1F3A2E',
-                                                marginBottom: '3px',
-                                                padding: '3px 7px',
-                                                backgroundColor: 'rgba(45, 95, 76, 0.06)',
-                                                borderRadius: '4px'
-                                              }}>
-                                                {new Date(date + 'T00:00:00').toLocaleDateString(uiLocale, {
-                                                  weekday: 'short',
-                                                  day: 'numeric',
-                                                  month: 'short'
-                                                })}
-                                              </div>
-                                              {events.map((event) => {
-                                                const isSelected = selectedTimeSlots?.some(slot => slot.id === event.id);
-                                                const startTime = event.start ? new Date(event.start).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
-                                                const endTime = event.end ? new Date(event.end).toLocaleTimeString(uiLocale, { hour: '2-digit', minute: '2-digit' }) : '';
-
-                                                return (
-                                                  <div
-                                                    key={event.id}
-                                                    onClick={() => handleSelectTimeSlot && handleSelectTimeSlot(event)}
-                                                    style={{
-                                                      padding: '6px 8px',
-                                                      backgroundColor: isSelected ? 'rgba(34, 197, 94, 0.15)' : '#FFFCF7',
-                                                      borderRadius: '5px',
-                                                      border: isSelected ? '1.5px solid #22C55E' : '1px solid #E5E7EB',
-                                                      cursor: 'pointer',
-                                                      display: 'flex',
-                                                      alignItems: 'center',
-                                                      gap: '7px',
-                                                      marginBottom: '3px',
-                                                    }}
-                                                  >
-                                                    <span style={{ fontSize: '14px', opacity: isSelected ? 1 : 0.45 }}>
-                                                      {isSelected ? '✓' : '○'}
-                                                    </span>
-                                                    <p style={{ margin: 0, fontSize: '11px', fontWeight: '500', color: '#1F3A2E' }}>
-                                                      {startTime} - {endTime}
-                                                    </p>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          ));
-                                        })()}
-                                      </div>
-                                    ) : (
-                                      <div style={{
-                                        padding: '10px',
-                                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                                        borderRadius: '8px',
-                                        color: '#D97706',
-                                        fontSize: '11px',
-                                        textAlign: 'center'
-                                      }}>
-                                        {t('Aucun créneau disponible pour cette période.', 'No slots available for this range.')}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
+                                  </p>
+                                  {guide.fish_types && guide.fish_types.length > 0 && (
+                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5A7766' }}>
+                                      {guide.fish_types.slice(0, 3).join(', ')}
+                                    </p>
+                                  )}
+                                  {showOutsideZoneNote && (
+                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#92400E', fontStyle: 'italic' }}>
+                                      {t('Peut guider hors de ses rivières habituelles', 'Can guide outside their usual rivers')}
+                                    </p>
+                                  )}
+                                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#5A7766' }}>
+                                    {isAvailable
+                                      ? t('Cliquez sur la carte pour voir les créneaux.', 'Click the card to see time slots.')
+                                      : t('Ce guide n\'est pas disponible pour la plage de dates active.', 'This guide is unavailable for the active date range.')}
+                                  </p>
+                                </div>
                               </div>
-                            );
-                          })}
+
+                              {/* Row 2: action buttons — separate row so they never overflow */}
+                              <div style={{
+                                display: 'flex', alignItems: 'center',
+                                gap: '8px', flexWrap: 'wrap', paddingLeft: '42px',
+                              }}>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedGuideForCalendar(guide);
+                                    setCalendarModalOpen(true);
+                                  }}
+                                  title={t('Voir le calendrier mensuel', 'View the monthly calendar')}
+                                  style={{
+                                    border: '1px solid #D9D9D9', backgroundColor: '#F5F5F5',
+                                    color: '#4A9B8E', borderRadius: '999px', padding: '4px 10px',
+                                    fontSize: '11px', cursor: 'pointer', display: 'flex',
+                                    alignItems: 'center', justifyContent: 'center',
+                                    gap: '6px', minHeight: '28px', transition: 'all 0.15s ease',
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#E8E8E8';
+                                    e.currentTarget.style.borderColor = '#4A9B8E';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                    e.currentTarget.style.borderColor = '#D9D9D9';
+                                  }}
+                                >
+                                  📅
+                                  <span style={{ whiteSpace: 'nowrap' }}>
+                                    {t('Calendrier mensuel', 'Monthly calendar')}
+                                  </span>
+                                </button>
+
+                                <span style={{
+                                  fontSize: '11px', fontWeight: 600, lineHeight: 1,
+                                  padding: '4px 8px', borderRadius: '999px',
+                                  color: isGuideSelected ? '#2D5F4C' : '#5A7766',
+                                  backgroundColor: isGuideSelected ? 'rgba(45, 95, 76, 0.10)' : 'rgba(90, 119, 102, 0.08)',
+                                }}>
+                                  {isGuideSelected ? t('Choisi', 'Selected') : t('Voir les créneaux', 'View slots')}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {/* Selected slot count stays visible but compact */}
@@ -2785,17 +3053,46 @@ const GaspesieMap = ({
                 {/* CHALET SECTION - only if needsChalet is true (always shown in chalet mode) */}
                 {needsChalet && (
                   <div style={{
-                    minHeight: 0,
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    minWidth: 0,
                     display: 'flex',
                     flexDirection: 'column',
                     border: '1px solid #E3EAE6',
                     borderRadius: '10px',
                     backgroundColor: '#FFFCF7',
-                    padding: '10px'
+                    padding: '10px',
+                    overflow: 'hidden',
                   }}>
-                    <h4 style={{ margin: '0 0 8px', fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
-                      {t('Chalets disponibles', 'Available chalets')}
-                    </h4>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <h4 style={{ margin: 0, fontSize: '14px', color: '#1F3A2E', fontWeight: '600' }}>
+                        {t('Chalets', 'Chalets')}
+                        {!loadingChalets && chalets.length > 0 && (
+                          <span style={{ marginLeft: '6px', fontSize: '11px', fontWeight: 400, color: '#5A7766' }}>
+                            ({chalets.filter(c => c.is_available !== false).length}/{chalets.length} {t('dispo', 'available')})
+                          </span>
+                        )}
+                      </h4>
+                      {!loadingChalets && chalets.some(c => c.is_available === false) && (
+                        <button
+                          type="button"
+                          onClick={() => setShowOnlyAvailableChalets(prev => !prev)}
+                          style={{
+                            padding: '3px 8px',
+                            borderRadius: '999px',
+                            border: showOnlyAvailableChalets ? '1.5px solid #2D5F4C' : '1px solid #C5D2CB',
+                            backgroundColor: showOnlyAvailableChalets ? 'rgba(45, 95, 76, 0.12)' : '#FFFCF7',
+                            color: showOnlyAvailableChalets ? '#2D5F4C' : '#5A7766',
+                            fontSize: '10px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {showOnlyAvailableChalets ? t('Tout afficher', 'Show all') : t('Dispo seulement', 'Available only')}
+                        </button>
+                      )}
+                    </div>
 
                     {!selectedPoint?.lngLat && !selectedRiverProp ? (
                       <div style={{
@@ -2813,7 +3110,14 @@ const GaspesieMap = ({
                         )}
                       </div>
                     ) : (
-                      <div style={{ minHeight: 0, overflowY: 'auto', paddingRight: '2px' }}>
+                      <div style={{
+                        flex: 'none',
+                        width: '100%',
+                        minWidth: 0,
+                        overflowX: 'hidden',
+                        paddingRight: '2px',
+                      }}
+                      >
                         {loadingChalets && (
                           <div style={{ textAlign: 'center', padding: '16px', color: '#5A7766' }}>
                             {t('Chargement des chalets...', 'Loading chalets...')}
@@ -2841,29 +3145,33 @@ const GaspesieMap = ({
                             fontSize: '12px',
                             textAlign: 'center'
                           }}>
-                            {t('Aucun chalet trouvé pour ces dates à proximité.', 'No chalet found nearby for these dates.')}
+                            {t('Aucun chalet trouvé à proximité.', 'No chalet found nearby.')}
                           </div>
                         )}
 
                         {!loadingChalets && !chaletError && chalets.length > 0 && (() => {
-                          const chaletFitsCriteria = (chalet) => {
-                            if (chalet.nb_personnes && numberOfPeople > chalet.nb_personnes) {
-                              return false;
-                            }
-                            return true;
+                          const displayChalets = showOnlyAvailableChalets
+                            ? chalets.filter(c => c.is_available !== false)
+                            : chalets;
+
+                          const fmtDist = (dm) => {
+                            if (dm == null || !isFinite(dm)) return null;
+                            const km = dm / 1000;
+                            return km < 1 ? `${Math.round(dm)} m` : `${km.toFixed(1)} km`;
                           };
 
                           return (
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', padding: '2px' }}>
-                              {chalets.map((chalet, index) => {
+                              {displayChalets.map((chalet, index) => {
                                 const cId = chalet.key || chalet.id;
                                 const isChaletHovered = s3HoveredId === cId && s3HoveredType === 'chalet';
-                                const fitsCriteria = chaletFitsCriteria(chalet);
+                                const isAvailable = chalet.is_available !== false;
+                                const distLabel = fmtDist(chalet.distance_m);
 
                                 return (
                                   <div
                                     key={chalet.id || index}
-                                    onClick={() => handleSelectedChalet({ id: cId, name: chalet.Name, ...chalet })}
+                                    onClick={() => isAvailable && handleSelectedChalet({ id: cId, name: chalet.Name, ...chalet })}
                                     onMouseEnter={() => s3Highlight(cId, 'chalet')}
                                     onMouseLeave={s3ClearHighlight}
                                     style={{
@@ -2875,17 +3183,17 @@ const GaspesieMap = ({
                                         ? 'rgba(45, 95, 76, 0.15)'
                                         : isChaletHovered
                                         ? 'rgba(45, 95, 76, 0.18)'
-                                        : (fitsCriteria ? 'rgba(45, 95, 76, 0.05)' : 'transparent'),
-                                      opacity: fitsCriteria ? 1 : 0.6,
+                                        : 'rgba(45, 95, 76, 0.05)',
+                                      opacity: isAvailable ? 1 : 0.55,
                                       border: selectedChalet?.id === cId
                                         ? '2px solid #2D5F4C'
                                         : '1px solid rgba(31, 58, 46, 0.15)',
-                                      boxShadow: isChaletHovered
+                                      boxShadow: isChaletHovered && isAvailable
                                         ? '0 8px 18px rgba(31, 58, 46, 0.16)'
                                         : '0 3px 10px rgba(31, 58, 46, 0.08)',
-                                      cursor: 'pointer',
+                                      cursor: isAvailable ? 'pointer' : 'default',
                                       transition: 'transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease',
-                                      transform: isChaletHovered ? 'translateY(-1px)' : 'translateY(0)',
+                                      transform: isChaletHovered && isAvailable ? 'translateY(-1px)' : 'translateY(0)',
                                     }}
                                   >
                                     {chalet.Image ? (
@@ -2913,6 +3221,26 @@ const GaspesieMap = ({
                                       background: 'linear-gradient(180deg, rgba(0, 0, 0, 0) 42%, rgba(0, 0, 0, 0.58) 100%)'
                                     }} />
 
+                                    {/* Unavailability badge */}
+                                    {!isAvailable && (
+                                      <div style={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        left: 0,
+                                        right: 0,
+                                        zIndex: 3,
+                                        backgroundColor: 'rgba(0,0,0,0.54)',
+                                        color: '#FFDB99',
+                                        fontSize: '9px',
+                                        fontWeight: 700,
+                                        textAlign: 'center',
+                                        padding: '4px 4px',
+                                        letterSpacing: '0.3px',
+                                      }}>
+                                        {t('Indisponible pour ces dates', 'Unavailable for these dates')}
+                                      </div>
+                                    )}
+
                                     <div style={{
                                       position: 'absolute',
                                       left: '8px',
@@ -2926,9 +3254,37 @@ const GaspesieMap = ({
                                         {chalet.Name}
                                       </p>
                                       <p style={{ margin: '2px 0 0', fontSize: '10px', opacity: 0.95 }}>
-                                        {chalet.nb_personnes} {t('pers.', 'people')} {chalet.price && `• ${chalet.price}$/${t('nuit', 'night')}`}
+                                        {chalet.nb_personnes} {t('pers.', 'people')}
+                                        {(chalet.price_per_night || chalet.price) && ` • ${Math.round(chalet.price_per_night || chalet.price)}$/${t('nuit', 'night')}`}
+                                        {distLabel && ` • ${distLabel}`}
                                       </p>
                                     </div>
+
+                                    {handleVoirPlus && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleVoirPlus(chalet);
+                                        }}
+                                        style={{
+                                          position: 'absolute',
+                                          left: '8px',
+                                          top: isAvailable ? '8px' : '28px',
+                                          zIndex: 4,
+                                          padding: '4px 8px',
+                                          borderRadius: '999px',
+                                          border: '1px solid rgba(255, 255, 255, 0.7)',
+                                          backgroundColor: 'rgba(0, 0, 0, 0.55)',
+                                          color: '#FFFCF7',
+                                          fontSize: '10px',
+                                          fontWeight: '600',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        {t('Voir détails', 'View details')}
+                                      </button>
+                                    )}
 
                                     {selectedChalet?.id === cId && (
                                       <span style={{
@@ -2999,7 +3355,7 @@ const GaspesieMap = ({
                   </div>
                 )}
 
-                {/* Navigation buttons: Back → step 2 | Reserve → handleBookGuide → step 4 */}
+                {/* Navigation: retour dates | suite équipements (chalet) ou réservation directe */}
                 <div style={{ display: 'flex', gap: '8px', flexShrink: 0, position: 'sticky', bottom: 0, background: '#FAF7F1', paddingTop: '6px' }}>
                   <button
                     type="button"
@@ -3016,13 +3372,16 @@ const GaspesieMap = ({
                       fontWeight: '500',
                       fontSize: '12px',
                       opacity: isCreatingBooking ? 0.6 : 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
                   >
                     {t('← Retour', '← Back')}
                   </button>
                   <button
                     type="button"
-                    onClick={handleBookGuide}
+                    onClick={goFromStep3ToNext}
                     disabled={!canProceedStep3 || isCreatingBooking}
                     style={{
                       flex: 1,
@@ -3053,6 +3412,337 @@ const GaspesieMap = ({
                         {t('Réservation...', 'Booking...')}
                       </>
                     ) : (
+                      (browseMode === 'chalet' || (browseMode === 'trip' && needsChalet)) && selectedChalet
+                        ? t('Continuer →', 'Continue →')
+                        : t('Réserver →', 'Book →')
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 4: Équipements optionnels (parcours avec chalet) — image couverture */}
+            {bookingStep === 4 && bookingMaxStep === 5 && selectedChalet && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: isCompactViewport ? '10px' : '14px', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                <h3 style={{ margin: 0, fontSize: isCompactViewport ? '13px' : '17px', color: '#1F3A2E', fontWeight: 700 }}>
+                  {`4. ${t('Équipements optionnels', 'Optional equipment')}`}
+                </h3>
+
+                <div style={{
+                  width: '100%',
+                  borderRadius: '14px',
+                  overflow: 'hidden',
+                  border: '1px solid rgba(45, 95, 76, 0.2)',
+                  backgroundColor: 'rgba(32, 79, 61, 0.06)',
+                  flexShrink: 0,
+                }}>
+                  {(selectedChalet.Image || selectedChalet.image) ? (
+                    <img
+                      src={selectedChalet.Image || selectedChalet.image}
+                      alt=""
+                      style={{
+                        width: '100%',
+                        height: isCompactViewport ? 'min(42vw, 160px)' : 'min(200px, 28vh)',
+                        objectFit: 'cover',
+                        display: 'block',
+                      }}
+                    />
+                  ) : (
+                    <div style={{
+                      width: '100%',
+                      height: isCompactViewport ? '120px' : '140px',
+                      background: 'linear-gradient(145deg, #2D5F4C 0%, #5A9078 55%, #8EB8A8 100%)',
+                    }} aria-hidden />
+                  )}
+                  <div style={{ padding: isCompactViewport ? '10px 12px' : '12px 14px', backgroundColor: '#FFFCF7' }}>
+                    <p style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#1F3A2E' }}>
+                      {selectedChalet.name || selectedChalet.Name || t('Votre chalet', 'Your chalet')}
+                    </p>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#5A7766', fontWeight: 500 }}>
+                      {startDate && endDate ? (
+                        <>
+                          {new Date(`${startDate}T12:00:00`).toLocaleDateString(uiLocale, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                          {' → '}
+                          {new Date(`${endDate}T12:00:00`).toLocaleDateString(uiLocale, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                        </>
+                      ) : null}
+                    </p>
+                  </div>
+                </div>
+
+                <p style={{ margin: 0, fontSize: '12px', color: '#5A7766', lineHeight: 1.45 }}>
+                  {t(
+                    'Ajoutez du matériel à votre séjour si vous en avez besoin. Vous pouvez passer cette étape sans rien sélectionner.',
+                    'Add gear for your stay if you need it. You can skip this step with nothing selected.',
+                  )}
+                </p>
+
+                <div style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  paddingRight: 2,
+                }}>
+                  {loadingEquipmentKinds ? (
+                    <p style={{ margin: 0, fontSize: 12, color: '#5A7766' }}>{t('Chargement…', 'Loading…')}</p>
+                  ) : equipmentKinds.length === 0 ? (
+                    <div style={{
+                      padding: '14px',
+                      borderRadius: '10px',
+                      border: '1px dashed #C5D2CB',
+                      backgroundColor: 'rgba(45, 95, 76, 0.04)',
+                      fontSize: '13px',
+                      color: '#5A7766',
+                      textAlign: 'center',
+                    }}>
+                      {t('Aucun équipement optionnel pour cet hébergement.', 'No optional equipment for this property.')}
+                    </div>
+                  ) : (
+                    <>
+                      <p style={{ margin: 0, fontSize: 11, color: '#5A7766' }}>
+                        {t(
+                          `Tarifs selon votre séjour (${addonStayNights} nuitée(s)).`,
+                          `Rates for your stay (${addonStayNights} night(s)).`,
+                        )}
+                      </p>
+                      {equipmentKinds.map((kind) => {
+                        const qty = Math.floor(Number(inventoryAddonQtyBySlug[kind.slug] ?? 0));
+                        const meta = kind.metadata || {};
+                        const ps = meta.addon_price_per_stay;
+                        const pn = meta.addon_price_per_night;
+                        let hint = '';
+                        if (ps != null && !Number.isNaN(Number(ps))) {
+                          hint = t(
+                            `${Math.round(Number(ps))} $ / séjour`,
+                            `${Math.round(Number(ps))} $ / stay`,
+                          );
+                        } else if (pn != null && !Number.isNaN(Number(pn))) {
+                          hint = t(
+                            `${Math.round(Number(pn))} $/nuit × ${addonStayNights}`,
+                            `${Math.round(Number(pn))} $/night × ${addonStayNights}`,
+                          );
+                        }
+                        const lineEst = (() => {
+                          if (qty < 1) return null;
+                          if (ps != null && !Number.isNaN(Number(ps))) {
+                            return Math.round(Number(ps) * qty * 100) / 100;
+                          }
+                          if (pn != null && !Number.isNaN(Number(pn))) {
+                            return Math.round(Number(pn) * addonStayNights * qty * 100) / 100;
+                          }
+                          return null;
+                        })();
+
+                        // null = pas encore chargé ; 0 = épuisé pour ces dates
+                        const availableCount = availableCountsLoaded && kind.id
+                          ? (availableCountByKindId[kind.id] ?? 0)
+                          : null;
+                        const isOutOfStock = availableCount === 0;
+                        const atMax = availableCount !== null && qty >= availableCount;
+                        const plusDisabled = isOutOfStock || atMax || qty >= 50;
+
+                        return (
+                          <div
+                            key={kind.id || kind.slug}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 6,
+                              padding: '10px 12px',
+                              backgroundColor: isOutOfStock ? 'rgba(239,68,68,0.04)' : '#FFFCF7',
+                              borderRadius: '10px',
+                              border: isOutOfStock
+                                ? '1px solid rgba(239,68,68,0.3)'
+                                : '1px solid #E6ECE9',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#1F3A2E', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                  {kind.label || kind.slug}
+                                  {isOutOfStock && (
+                                    <span style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      backgroundColor: 'rgba(239,68,68,0.12)',
+                                      color: '#DC2626',
+                                    }}>
+                                      {t('Épuisé pour ces dates', 'Sold out for these dates')}
+                                    </span>
+                                  )}
+                                  {!isOutOfStock && availableCount !== null && availableCount <= 3 && (
+                                    <span style={{
+                                      fontSize: 10,
+                                      fontWeight: 600,
+                                      padding: '2px 6px',
+                                      borderRadius: 4,
+                                      backgroundColor: 'rgba(217,119,6,0.12)',
+                                      color: '#B45309',
+                                    }}>
+                                      {t(`${availableCount} restante(s)`, `${availableCount} left`)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 11, color: '#5A7766', marginTop: 2 }}>
+                                  {hint}{lineEst != null && qty > 0 && (
+                                    <span style={{ color: '#2D5F4C', fontWeight: 600 }}>{` · ≈ ${Math.round(lineEst)} $`}</span>
+                                  )}
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => bumpInventoryAddonQty(kind.slug, -1, availableCount)}
+                                  disabled={qty === 0}
+                                  style={{
+                                    width: '32px',
+                                    height: '32px',
+                                    borderRadius: '8px',
+                                    border: '1px solid #5A7766',
+                                    backgroundColor: qty === 0 ? '#F3F4F6' : '#FFFCF7',
+                                    cursor: qty === 0 ? 'not-allowed' : 'pointer',
+                                    fontWeight: 700,
+                                    fontSize: 16,
+                                    color: qty === 0 ? '#9CA3AF' : '#1F3A2E',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    lineHeight: 1,
+                                    padding: 0,
+                                    opacity: qty === 0 ? 0.5 : 1,
+                                  }}
+                                  aria-label={t('Diminuer', 'Decrease')}
+                                >
+                                  −
+                                </button>
+                                <span style={{ minWidth: '22px', textAlign: 'center', fontWeight: 700, fontSize: '14px' }}>{qty}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => bumpInventoryAddonQty(kind.slug, 1, availableCount)}
+                                  disabled={plusDisabled}
+                                  style={{
+                                    width: '32px',
+                                    height: '32px',
+                                    borderRadius: '8px',
+                                    border: `1px solid ${plusDisabled ? 'transparent' : '#5A7766'}`,
+                                    backgroundColor: plusDisabled ? '#F3F4F6' : '#FFFCF7',
+                                    cursor: plusDisabled ? 'not-allowed' : 'pointer',
+                                    fontWeight: 700,
+                                    fontSize: 16,
+                                    color: plusDisabled ? '#9CA3AF' : '#1F3A2E',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    lineHeight: 1,
+                                    padding: 0,
+                                    opacity: plusDisabled ? 0.5 : 1,
+                                  }}
+                                  aria-label={t('Augmenter', 'Increase')}
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                            {/* Inline error quand le max est atteint */}
+                            {atMax && !isOutOfStock && (
+                              <div style={{
+                                fontSize: 11,
+                                color: '#B45309',
+                                backgroundColor: 'rgba(217,119,6,0.08)',
+                                borderRadius: 6,
+                                padding: '4px 8px',
+                              }}>
+                                {t(
+                                  `Maximum atteint — seulement ${availableCount} unité(s) disponible(s) pour ces dates.`,
+                                  `Maximum reached — only ${availableCount} unit(s) available for these dates.`,
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+
+                {equipmentTotalUnits > 0 && (
+                  <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#2D5F4C', textAlign: 'center' }}>
+                    {t(`${equipmentTotalUnits} article(s) au total`, `${equipmentTotalUnits} item(s) total`)}
+                  </p>
+                )}
+
+                {bookingError && (
+                  <div style={{
+                    padding: '10px 12px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: '#DC2626',
+                  }}>
+                    ⚠️ {bookingError}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px', flexShrink: 0, paddingTop: 4 }}>
+                  <button
+                    type="button"
+                    onClick={() => setBookingStep(3)}
+                    disabled={isCreatingBooking}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      backgroundColor: 'transparent',
+                      color: '#5A7766',
+                      border: '1.5px solid #5A7766',
+                      borderRadius: '10px',
+                      cursor: isCreatingBooking ? 'not-allowed' : 'pointer',
+                      fontWeight: 600,
+                      fontSize: '13px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {t('← Retour', '← Back')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBookGuide}
+                    disabled={isCreatingBooking}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      backgroundColor: isCreatingBooking ? '#9CA3AF' : '#2D5F4C',
+                      color: '#FFFCF7',
+                      border: 'none',
+                      borderRadius: '10px',
+                      cursor: isCreatingBooking ? 'not-allowed' : 'pointer',
+                      fontWeight: 700,
+                      fontSize: '13px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    {isCreatingBooking ? (
+                      <>
+                        <span style={{
+                          width: '14px',
+                          height: '14px',
+                          border: '2px solid #FFFCF7',
+                          borderTopColor: 'transparent',
+                          borderRadius: '50%',
+                          animation: 'spin 1s linear infinite',
+                        }} />
+                        {t('Réservation...', 'Booking...')}
+                      </>
+                    ) : (
                       t('Réserver →', 'Book →')
                     )}
                   </button>
@@ -3060,8 +3750,8 @@ const GaspesieMap = ({
               </div>
             )}
 
-            {/* Step 4: Confirmation */}
-            {bookingStep === 4 && (
+            {/* Confirmation (étape 4 si sans chalet, étape 5 si avec chalet) */}
+            {bookingStep === bookingMaxStep && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', textAlign: 'center' }}>
                 <div style={{
                   width: '64px',
@@ -3123,16 +3813,43 @@ const GaspesieMap = ({
                     </>
                   )}
                   {selectedChalet && needsChalet && (
-                    <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
-                      <strong>🏠 Chalet:</strong> {selectedChalet?.name}
-                    </p>
+                    <div style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
+                      <p style={{ margin: 0 }}>
+                        <strong>🏠 Chalet:</strong> {selectedChalet?.name}
+                      </p>
+                      {handleVoirPlus && (
+                        <button
+                          type="button"
+                          onClick={() => handleVoirPlus(selectedChalet)}
+                          style={{
+                            marginTop: '6px',
+                            border: '1px solid #2D5F4C',
+                            backgroundColor: '#FFFCF7',
+                            color: '#2D5F4C',
+                            borderRadius: '8px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            padding: '5px 8px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {t('Voir la page chalet', 'Open chalet page')}
+                        </button>
+                      )}
+                    </div>
                   )}
                   <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
                     <strong>📅 Dates:</strong> {startDate} - {endDate}
                   </p>
-                  <p style={{ margin: 0, fontSize: '13px', color: '#5A7766' }}>
+                  <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#5A7766' }}>
                     <strong>👥 Personnes:</strong> {numberOfPeople}
                   </p>
+                  {equipmentTotalUnits > 0 && selectedChalet && needsChalet && (
+                    <p style={{ margin: 0, fontSize: '13px', color: '#5A7766' }}>
+                      <strong>🛶 {t('Équipements', 'Equipment')}:</strong>{' '}
+                      {equipmentTotalUnits}{' '}{t('article(s)', 'item(s)')}
+                    </p>
+                  )}
                 </div>
 
                 <button
@@ -3148,7 +3865,10 @@ const GaspesieMap = ({
                     cursor: 'pointer',
                     fontWeight: '600',
                     fontSize: '15px',
-                    marginTop: '12px'
+                    marginTop: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                   }}
                 >
                   {t('Terminer', 'Done')}
@@ -3195,7 +3915,7 @@ const GaspesieMap = ({
                 </div>
                 <h1 style={{
                   margin: '6px 0 0',
-                  fontSize: isMobile ? '22px' : '26px',
+                  fontSize: isMobile ? '20px' : isCompactViewport ? '21px' : '26px',
                   lineHeight: 1.1,
                   fontFamily: '"Iowan Old Style", "Palatino Linotype", serif',
                   fontWeight: '600',
@@ -3205,7 +3925,7 @@ const GaspesieMap = ({
                 </h1>
                 <p style={{
                   margin: '4px 0 0',
-                  fontSize: '12px',
+                  fontSize: isCompactViewport ? '11px' : '12px',
                   color: '#4E695B'
                 }}>
                     {t('Séjours et expériences en Gaspésie', 'Trips and experiences in Gaspesie')}
@@ -3214,14 +3934,14 @@ const GaspesieMap = ({
 
               <div style={{
                 width: '100%',
-                padding: isMobile ? '12px 12px 13px' : '13px 14px 14px',
+                padding: isMobile ? '10px 11px 11px' : isCompactViewport ? '10px 12px 11px' : '13px 14px 14px',
                 borderRadius: '14px',
                 background: 'linear-gradient(145deg, rgba(255, 252, 247, 0.94), rgba(244, 238, 227, 0.96))',
                 boxShadow: '0 5px 14px rgba(46, 68, 56, 0.09)'
               }}>
                 <h2 style={{
                   margin: 0,
-                  fontSize: isMobile ? '18px' : '20px',
+                  fontSize: isMobile ? '16px' : isCompactViewport ? '16px' : '20px',
                   lineHeight: 1.2,
                   fontFamily: '"Iowan Old Style", "Palatino Linotype", serif',
                   color: '#193629'
@@ -3229,8 +3949,8 @@ const GaspesieMap = ({
                     {t('Explorez la Gaspésie', 'Explore Gaspesie')}
                 </h2>
                 <p style={{
-                  margin: '6px 0 0',
-                  fontSize: '12.5px',
+                  margin: '4px 0 0',
+                  fontSize: isCompactViewport ? '11.5px' : '12.5px',
                   lineHeight: 1.35,
                   color: '#4D685A'
                 }}>
@@ -3261,12 +3981,12 @@ const GaspesieMap = ({
                   width: '100%',
                   border: 'none',
                   borderRadius: '14px',
-                  padding: isMobile ? '13px 13px' : '14px 15px',
+                  padding: isMobile ? '12px 13px' : isCompactViewport ? '11px 12px' : '14px 15px',
                   background: 'linear-gradient(145deg, #214537, #2F5C49)',
                   color: '#FFFCF7',
                   cursor: 'pointer',
                   fontWeight: '600',
-                  fontSize: '15px',
+                  fontSize: isCompactViewport ? '13px' : '15px',
                   letterSpacing: '0.02em',
                   textAlign: 'left',
                   boxShadow: '0 10px 20px rgba(22, 43, 34, 0.24)',
@@ -3297,16 +4017,16 @@ const GaspesieMap = ({
                     width: '100%',
                     border: '1px solid rgba(74, 117, 98, 0.32)',
                     borderRadius: '12px',
-                    padding: isMobile ? '10px 11px' : '11px',
+                    padding: isMobile ? '9px 10px' : isCompactViewport ? '8px 10px' : '11px',
                     backgroundColor: 'rgba(255, 252, 247, 0.72)',
                     color: '#214337',
                     cursor: 'pointer',
                     fontWeight: '600',
-                    fontSize: '14px',
+                    fontSize: isCompactViewport ? '12px' : '14px',
                     textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '10px',
+                    gap: isCompactViewport ? '7px' : '10px',
                     transition: 'border-color 0.2s ease, background-color 0.2s ease'
                   }}
                   onMouseOver={(e) => {
@@ -3321,7 +4041,7 @@ const GaspesieMap = ({
                   <img
                     src="/fish.png"
                     alt={t('Trouvez un guide', 'Find a guide')}
-                    style={{ width: '28px', height: '28px', flexShrink: 0 }}
+                    style={{ width: isCompactViewport ? '22px' : '28px', height: isCompactViewport ? '22px' : '28px', flexShrink: 0 }}
                   />
                   <span>{t('Trouvez un guide', 'Find a guide')}</span>
                 </button>
@@ -3333,16 +4053,16 @@ const GaspesieMap = ({
                     width: '100%',
                     border: '1px solid rgba(74, 117, 98, 0.32)',
                     borderRadius: '12px',
-                    padding: isMobile ? '10px 11px' : '11px',
+                    padding: isMobile ? '9px 10px' : isCompactViewport ? '8px 10px' : '11px',
                     backgroundColor: 'rgba(255, 252, 247, 0.72)',
                     color: '#214337',
                     cursor: 'pointer',
                     fontWeight: '600',
-                    fontSize: '14px',
+                    fontSize: isCompactViewport ? '12px' : '14px',
                     textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '10px',
+                    gap: isCompactViewport ? '7px' : '10px',
                     transition: 'border-color 0.2s ease, background-color 0.2s ease'
                   }}
                   onMouseOver={(e) => {
@@ -3357,7 +4077,7 @@ const GaspesieMap = ({
                   <img
                     src="/chalet.png"
                     alt={t('Réservez un chalet', 'Book a chalet')}
-                    style={{ width: '28px', height: '28px', flexShrink: 0 }}
+                    style={{ width: isCompactViewport ? '22px' : '28px', height: isCompactViewport ? '22px' : '28px', flexShrink: 0 }}
                   />
                   <span>{t('Réservez un chalet', 'Book a chalet')}</span>
                 </button>
@@ -3382,33 +4102,35 @@ const GaspesieMap = ({
                 {t('Decouvrir', 'Discover')}
               </p>
 
-              <button
-                type="button"
-                onClick={isSocialFeedOpen}
-                style={{
-                  width: '100%',
-                  border: '1px solid rgba(74, 117, 98, 0.28)',
-                  borderRadius: '12px',
-                  padding: '10px 13px',
-                  backgroundColor: 'rgba(255, 252, 247, 0.68)',
-                  color: '#1F3A2E',
-                  cursor: 'pointer',
-                  fontWeight: '500',
-                  fontSize: '14px',
-                  textAlign: 'left',
-                  transition: 'background-color 0.2s ease, border-color 0.2s ease'
-                }}
-                onMouseOver={(e) => {
-                  e.currentTarget.style.backgroundColor = 'rgba(245, 238, 225, 0.95)';
-                  e.currentTarget.style.borderColor = 'rgba(45, 95, 76, 0.5)';
-                }}
-                onMouseOut={(e) => {
-                  e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.68)';
-                  e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
-                }}
-              >
-                {t('Section sociale', 'Social feed')}
-              </button>
+              {profile?.type === 'admin' && (
+                <button
+                  type="button"
+                  onClick={isSocialFeedOpen}
+                  style={{
+                    width: '100%',
+                    border: '1px solid rgba(74, 117, 98, 0.28)',
+                    borderRadius: '12px',
+                    padding: isCompactViewport ? '7px 10px' : '10px 13px',
+                    backgroundColor: 'rgba(255, 252, 247, 0.68)',
+                    color: '#1F3A2E',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: isCompactViewport ? '12px' : '14px',
+                    textAlign: 'left',
+                    transition: 'background-color 0.2s ease, border-color 0.2s ease'
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(245, 238, 225, 0.95)';
+                    e.currentTarget.style.borderColor = 'rgba(45, 95, 76, 0.5)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.68)';
+                    e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.28)';
+                  }}
+                >
+                  {t('Section sociale', 'Social feed')}
+                </button>
+              )}
 
               {(profile?.type === 'establishment' || profile?.type === 'admin') && (
                 <button
@@ -3418,12 +4140,12 @@ const GaspesieMap = ({
                     width: '100%',
                     border: '1px solid rgba(74, 117, 98, 0.28)',
                     borderRadius: '12px',
-                    padding: '10px 13px',
+                    padding: isCompactViewport ? '7px 10px' : '10px 13px',
                     backgroundColor: 'rgba(255, 252, 247, 0.68)',
                     color: '#1F3A2E',
                     cursor: 'pointer',
                     fontWeight: '500',
-                    fontSize: '14px',
+                    fontSize: isCompactViewport ? '12px' : '14px',
                     textAlign: 'left',
                     transition: 'background-color 0.2s ease, border-color 0.2s ease'
                   }}
@@ -3447,12 +4169,12 @@ const GaspesieMap = ({
                   width: '100%',
                   border: '1px solid rgba(74, 117, 98, 0.28)',
                   borderRadius: '12px',
-                  padding: '10px 13px',
+                  padding: isCompactViewport ? '7px 10px' : '10px 13px',
                   backgroundColor: 'rgba(255, 252, 247, 0.68)',
                   color: '#1F3A2E',
                   cursor: 'pointer',
                   fontWeight: '500',
-                  fontSize: '14px',
+                  fontSize: isCompactViewport ? '12px' : '14px',
                   textAlign: 'left',
                   transition: 'background-color 0.2s ease, border-color 0.2s ease'
                 }}
@@ -3481,7 +4203,7 @@ const GaspesieMap = ({
                 <div style={{
                   borderRadius: '12px',
                   backgroundColor: 'rgba(255, 252, 247, 0.62)',
-                  padding: '9px 11px',
+                  padding: isCompactViewport ? '7px 9px' : '9px 11px',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '9px'
@@ -3492,8 +4214,8 @@ const GaspesieMap = ({
                     referrerPolicy="no-referrer"
                     onError={handleAvatarError}
                     style={{
-                      width: 40,
-                      height: 40,
+                      width: isCompactViewport ? 32 : 40,
+                      height: isCompactViewport ? 32 : 40,
                       borderRadius: '50%',
                       border: '2px solid rgba(74, 155, 142, 0.8)',
                       objectFit: 'cover',
@@ -3586,11 +4308,12 @@ const GaspesieMap = ({
         </div>
       </div>
 
-      {/* Map Container - 80% */}
+      {/* Carte : occupe tout l’espace à droite du menu — aucune marge beige ni cadre autour de Mapbox */}
       <div style={{
         position: 'relative',
         flex: '1 1 auto',
         minWidth: 0,
+        minHeight: 0,
         height: '100%',
         overflow: 'hidden',
       }}
@@ -3599,17 +4322,89 @@ const GaspesieMap = ({
       >
         <div
           ref={mapContainerRef}
-          style={{ position: 'absolute', inset: 0 }}
+          style={{ position: 'absolute', inset: 0, cursor: mapPickerActive ? 'crosshair' : undefined }}
         />
+
+        {/* Map picker overlay — pointer-events:none so clicks reach Mapbox underneath */}
+        {mapPickerActive && bookingStep === 1 && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 25,
+            pointerEvents: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '14px',
+          }}>
+            {/* Pulsing rectangle */}
+            <div className="map-picker-pulse" style={{
+              position: 'absolute',
+              inset: '12px',
+              borderRadius: '14px',
+              border: '2.5px dashed rgba(45, 95, 76, 0.55)',
+              backgroundColor: 'rgba(180, 200, 190, 0.18)',
+            }} />
+
+            {/* Center label card */}
+            <div style={{
+              position: 'relative',
+              background: 'rgba(255, 252, 247, 0.96)',
+              borderRadius: '14px',
+              padding: '14px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '8px',
+              border: '1.5px solid rgba(45, 95, 76, 0.35)',
+              boxShadow: '0 8px 28px rgba(0,0,0,0.16)',
+              maxWidth: '220px',
+              textAlign: 'center',
+            }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2D5F4C" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                <circle cx="12" cy="10" r="3"/>
+              </svg>
+              <span style={{ fontSize: '14px', fontWeight: 700, color: '#1F3A2E', lineHeight: 1.3 }}>
+                {t('Touchez la carte pour choisir un point', 'Tap the map to place a pin')}
+              </span>
+              <span style={{ fontSize: '11px', color: '#5A7766', lineHeight: 1.4 }}>
+                {t('Un cercle de recherche apparaîtra', 'A search radius will appear')}
+              </span>
+            </div>
+
+            {/* Cancel button — needs its own pointer-events */}
+            <button
+              type="button"
+              onClick={() => {
+                setMapPickerActive(false);
+                mapPickerActiveRef.current = false;
+              }}
+              style={{
+                position: 'relative',
+                pointerEvents: 'auto',
+                background: 'rgba(255,252,247,0.95)',
+                border: '1px solid #D1D5DB',
+                borderRadius: '999px',
+                padding: '6px 16px',
+                fontSize: '12px',
+                fontWeight: 600,
+                color: '#5A7766',
+                cursor: 'pointer',
+              }}
+            >
+              {t('Annuler', 'Cancel')}
+            </button>
+          </div>
+        )}
 
         {/* River layers are now rendered natively by Mapbox — no HTML SVG overlay */}
 
-        {/* Selected river info box */}
-        {selectedRiver && (
+        {/* Encart rivière — uniquement à l’étape 1 ; masqué aux étapes suivantes sans désélectionner */}
+        {selectedRiver && bookingStep === 1 && (
           (() => {
-            const selectedRiverMeta = getRiverDetails ? getRiverDetails(selectedRiver) : null;
             const title = formatRiverName ? formatRiverName(selectedRiver) : selectedRiver;
-            const subtitle = selectedRiverMeta?.description || 'Zone de peche selectionnee';
             return (
           <div style={{
             position: 'absolute',
@@ -3619,30 +4414,26 @@ const GaspesieMap = ({
             background: 'rgba(255,252,247,0.96)',
             border: '1px solid rgba(33,150,243,0.35)',
             borderRadius: 10,
-            padding: '10px 16px',
+            padding: '8px 12px',
             fontSize: 13,
             color: '#1a3a2a',
             boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-            minWidth: 140,
+            minWidth: 120,
           }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            <div style={{ fontWeight: 600 }}>
               {title}
-            </div>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 6, lineHeight: 1.35 }}>
-              {subtitle}
             </div>
             <button
               type="button"
               onClick={() => {
                 setSelectedRiver(null);
-                mapRef.current._riverSelected = null;
-                const map = mapRef.current;
-                if (map) {
-                  const hide = ['==', ['get', 'id'], ''];
-                  ['rivers-glow-outer', 'rivers-glow-inner', 'rivers-highlight'].forEach(l => {
-                    if (map.getLayer(l)) map.setFilter(l, hide);
-                  });
+                if (mapRef.current) {
+                  mapRef.current._riverSelected = null;
+                  if (typeof mapRef.current._setRiverGlow === 'function') {
+                    mapRef.current._setRiverGlow(null);
+                  }
                 }
+                if (onSelectRiver) onSelectRiver(null);
               }}
               style={{
                 background: 'none',
@@ -3672,6 +4463,11 @@ const GaspesieMap = ({
               type={s3PreviewType}
               onClose={s3ClosePreview}
               onSelect={s3PreviewSelect}
+              onViewDetails={(item, itemType) => {
+                if (itemType === 'chalet' && handleVoirPlus) {
+                  handleVoirPlus(item);
+                }
+              }}
               language={language}
             />
           </div>
@@ -3684,6 +4480,63 @@ const GaspesieMap = ({
             hasChalets={chalets.length > 0}
             hasGuides={availableGuides.length > 0}
           />
+        )}
+
+        {/* Step 3: Layer toggle (declutters when chalets + guides overlap) */}
+        {step3MarkersActive && (chalets.length > 0 || availableGuides.length > 0) && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 16,
+              left: 52,
+              right: 'auto',
+              zIndex: 800,
+              display: 'flex',
+              flexWrap: 'wrap',
+              maxWidth: 'calc(100% - 68px)',
+              background: 'rgba(255, 252, 247, 0.96)',
+              border: '1px solid rgba(15, 23, 42, 0.08)',
+              borderRadius: 999,
+              padding: 4,
+              boxShadow: '0 6px 18px rgba(15, 23, 42, 0.12)',
+              gap: 2,
+            }}
+            role="group"
+            aria-label={t('Filtrer la carte', 'Filter the map')}
+          >
+            {[
+              { key: 'all', labelFr: 'Tout', labelEn: 'All', icon: '✦' },
+              { key: 'chalets', labelFr: 'Chalets', labelEn: 'Chalets', icon: '🛖' },
+              { key: 'guides', labelFr: 'Guides', labelEn: 'Guides', icon: '🎣' },
+            ].map((opt) => {
+              const active = mapLayerFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setMapLayerFilter(opt.key)}
+                  aria-pressed={active}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 999,
+                    border: 'none',
+                    background: active ? '#2D5F4C' : 'transparent',
+                    color: active ? '#FFFCF7' : '#1F3A2E',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    transition: 'background 120ms ease, color 120ms ease',
+                  }}
+                >
+                  <span aria-hidden="true">{opt.icon}</span>
+                  <span>{language === 'en' ? opt.labelEn : opt.labelFr}</span>
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
 
@@ -3872,6 +4725,32 @@ const GaspesieMap = ({
           }
         `}</style>
       )}
+
+      {/* Guide Availability Calendar Modal */}
+      <GuideAvailabilityCalendarModal
+        guide={selectedGuideForCalendar}
+        isOpen={calendarModalOpen}
+        onClose={() => {
+          setCalendarModalOpen(false);
+          setSelectedGuideForCalendar(null);
+        }}
+        dateRange={startDate && endDate ? { startDate, endDate } : null}
+      />
+
+      {/* Client-facing fullscreen slot picker (replaces inline sidebar list) */}
+      <GuideSlotPickerModal
+        open={slotPickerOpen}
+        onClose={() => setSlotPickerOpen(false)}
+        onConfirm={() => setSlotPickerOpen(false)}
+        guide={selectedGuide}
+        events={guideAvailabilityEvents || []}
+        loading={loadingGuideAvailability}
+        selectedSlots={selectedTimeSlots || []}
+        onToggleSlot={(slot) => handleSelectTimeSlot && handleSelectTimeSlot(slot)}
+        language={language}
+        dateRange={startDate && endDate ? { start: startDate, end: endDate } : null}
+        hourlyRate={selectedGuide?.hourly_rate}
+      />
     </div>
   );
 };

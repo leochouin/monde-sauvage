@@ -36,7 +36,7 @@ export function createGuideMarkerEl(guide, { onClick, onHover, onLeave }) {
 }
 
 // ── PreviewCard ──────────────────────────────────────────────────
-export function PreviewCard({ item, type, onClose, onSelect, language = 'fr' }) {
+export function PreviewCard({ item, type, onClose, onSelect, onViewDetails, language = 'fr' }) {
   const t = (fr, en) => language === 'en' ? en : fr;
 
   if (type === 'chalet') {
@@ -57,9 +57,23 @@ export function PreviewCard({ item, type, onClose, onSelect, language = 'fr' }) 
           {price && (
             <p className="ms-preview-card-price">{price} <span>/ {t('nuit', 'night')}</span></p>
           )}
-          <button className="ms-preview-card-cta" onClick={() => onSelect && onSelect(item, 'chalet')}>
-            {t('Sélectionner ce chalet', 'Select this chalet')}
-          </button>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+            <button className="ms-preview-card-cta" onClick={() => onSelect && onSelect(item, 'chalet')} style={{ flex: 1 }}>
+              {t('Sélectionner ce chalet', 'Select this chalet')}
+            </button>
+            <button
+              className="ms-preview-card-cta"
+              onClick={() => onViewDetails && onViewDetails(item, 'chalet')}
+              style={{
+                flex: 1,
+                background: '#FFFCF7',
+                color: '#2D5F4C',
+                border: '1px solid #2D5F4C'
+              }}
+            >
+              {t('Voir détails', 'View details')}
+            </button>
+          </div>
         </div>
       </div>
     );

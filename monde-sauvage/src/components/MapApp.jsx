@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useState, useCallback } from "react";
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guideOnboardingModal.jsx";
 import HighlightOverlay from "./HighlightOverlay.jsx";
+import { toast } from "../utils/toast.js";
 import supabase from "../utils/supabase.js";
 import { createGuideBooking, checkGuideConflictsServer } from "../utils/guideBookingService.js";
 import { createBooking } from "../utils/bookingService.js";
@@ -18,9 +19,11 @@ import {
 import {
     formatRiverDisplayName,
     getKnownRiverPathIds,
+    getRiverByPathId,
     getRiverGuideByPathId,
     RIVER_CENTERS_BY_PATH_ID,
 } from "../utils/riverGuideData.js";
+import { expandAllDayEvent } from "../utils/guideSchedule.js";
 
 const GaspesieMap = lazy(() => import("./Map.jsx"));
 const SocialFeedPage = lazy(() => import("../pages/SocialFeedPage.jsx"));
@@ -30,7 +33,6 @@ const EtablissementModal = lazy(() => import("../modals/etablissementModal.jsx")
 const GuideBookingModal = lazy(() => import("../modals/guideBookingModal.jsx"));
 const GuideProfilePreviewModal = lazy(() => import("../modals/guideProfilePreviewModal.jsx"));
 const GuideClientModal = lazy(() => import("../modals/guideClientModal.jsx"));
-const ChaletDetailModal = lazy(() => import("../modals/chaletDetailModal.jsx"));
 const AccountSettingsModal = lazy(() => import("../modals/accountSettingsModal.jsx"));
 const CheckoutModal = lazy(() => import("../modals/checkoutModal.jsx"));
 const ReservationCart = lazy(() => import("./ReservationCart.jsx"));
@@ -60,21 +62,36 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         label: isEnglish ? fish.labelEn : fish.labelFr,
     }));
 
-    // NEW FLOW: Step 1 (preferences) -> Step 2 (guide+chalet selection) -> Step 3 (dates) -> Step 4 (confirmation)
+    // Réservation : 1 destination, 2 dates, 3 guide/chalet, 4 équipements (si chalet), confirmation 4 ou 5.
     
     // Browse mode: 'trip' = full flow, 'guide' = guide-only, 'chalet' = chalet-only
     const [browseMode, setBrowseMode] = useState('trip');
     
-    // Account settings modal
-    const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
+    // Account settings modal — restore open state across reloads via sessionStorage
+    const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(() => {
+        try { return sessionStorage.getItem('ms_settings_open') === '1'; } catch { return false; }
+    });
+    const openAccountSettings = () => {
+        try { sessionStorage.setItem('ms_settings_open', '1'); } catch {}
+        setIsAccountSettingsOpen(true);
+    };
+    const closeAccountSettings = () => {
+        try { sessionStorage.removeItem('ms_settings_open'); } catch {}
+        setIsAccountSettingsOpen(false);
+    };
     
     // Booking flow state
-    const [bookingStep, setBookingStep] = useState(0); // 0 = not started, 1 = preferences, 2 = guide+chalet, 3 = dates, 4 = confirmation
+    const [bookingStep, setBookingStep] = useState(0); // 0=closed, 1=dest, 2=dates, 3=guide/chalet, 4=équipements (si chalet), 4|5=confirmation selon parcours
     
     // Step 1: Trip preferences
     const [numberOfPeople, setNumberOfPeople] = useState(2);
     const [fishType, setFishType] = useState('');
     const [needsChalet, setNeedsChalet] = useState(true);
+
+    const bookingConfirmationStep = useMemo(() => (
+      (browseMode === 'chalet' || (browseMode === 'trip' && needsChalet)) ? 5 : 4
+    ), [browseMode, needsChalet]);
+
     const [fishingZones, setFishingZones] = useState([]);
     const [loadingZones, setLoadingZones] = useState(false);
     
@@ -99,9 +116,6 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     const [loadingChalets, setLoadingChalets] = useState(false);
     const [chaletError, setChaletError] = useState(null);
     const [expandedEstablishments, setExpandedEstablishments] = useState(new Set());
-    const [chaletDetailModalOpen, setChaletDetailModalOpen] = useState(false);
-    const [chaletForDetail, setChaletForDetail] = useState(null);
-    
     // Step 3: Date selection (moved to after guide/chalet)
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
@@ -130,9 +144,27 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     // Stripe payment checkout state for main booking flow
     const [showPaymentCheckout, setShowPaymentCheckout] = useState(false);
     const [paymentCheckoutData, setPaymentCheckoutData] = useState(null);
-    const [paymentCheckoutType, setPaymentCheckoutType] = useState(null); // 'guide' or 'chalet'
-    const [pendingChaletBooking, setPendingChaletBooking] = useState(null); // chalet data waiting after guide payment
-    
+    const [paymentCheckoutType, setPaymentCheckoutType] = useState(null); // 'guide' | 'chalet' | 'combined'
+
+    /** Types d'équipements (addons) pour l'établissement du chalet sélectionné */
+    const [equipmentKinds, setEquipmentKinds] = useState([]);
+    const [loadingEquipmentKinds, setLoadingEquipmentKinds] = useState(false);
+    /** Quantités demandées par slug (ex. { chaloupe: 2 }) */
+    const [inventoryAddonQtyBySlug, setInventoryAddonQtyBySlug] = useState({});
+    /** Stock disponible par equipment_kind_id pour les dates choisies */
+    const [availableCountByKindId, setAvailableCountByKindId] = useState({});
+    /** true une fois que get_available_equipment_counts a retourné (même si vide) */
+    const [availableCountsLoaded, setAvailableCountsLoaded] = useState(false);
+
+    const buildInventoryAddonsForCheckout = useCallback(() => {
+        const lines = [];
+        for (const kind of equipmentKinds) {
+            const q = Math.floor(Number(inventoryAddonQtyBySlug[kind.slug] ?? 0));
+            if (q > 0) lines.push({ slug: kind.slug, quantity: Math.min(50, q) });
+        }
+        return lines;
+    }, [equipmentKinds, inventoryAddonQtyBySlug]);
+
     // Guide onboarding state
     const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
     const [highlightedElement, setHighlightedElement] = useState(null);
@@ -156,6 +188,97 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         }
     }, [profile]);
     
+    useEffect(() => {
+        const estId = selectedChalet?.etablishment_id;
+        if (!estId || !needsChalet) {
+            setEquipmentKinds([]);
+            setLoadingEquipmentKinds(false);
+            return;
+        }
+        let cancelled = false;
+        setLoadingEquipmentKinds(true);
+        (async () => {
+            const { data, error } = await supabase
+                .from('equipment_kind')
+                .select('id, slug, label, metadata')
+                .eq('establishment_id', estId)
+                .eq('is_active', true)
+                .order('slug');
+            if (cancelled) return;
+            if (error) {
+                console.warn('equipment_kind:', error.message);
+                setEquipmentKinds([]);
+            } else {
+                setEquipmentKinds(data || []);
+            }
+            setLoadingEquipmentKinds(false);
+        })();
+        return () => { cancelled = true; };
+    }, [selectedChalet?.etablishment_id, needsChalet]);
+
+    useEffect(() => {
+        setInventoryAddonQtyBySlug({});
+        setAvailableCountByKindId({});
+        setAvailableCountsLoaded(false);
+    }, [selectedChalet?.key || selectedChalet?.id]);
+
+    // Fetch available stock counts when entering the equipment step
+    useEffect(() => {
+        const estId = selectedChalet?.etablishment_id;
+        const chaletId = selectedChalet?.key || selectedChalet?.id;
+        if (!estId || !chaletId || !startDate || !endDate || !needsChalet) {
+            setAvailableCountByKindId({});
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            const { data, error } = await supabase.rpc('get_available_equipment_counts', {
+                p_establishment_id: estId,
+                p_chalet_id: chaletId,
+                p_start_date: startDate,
+                p_end_date: endDate,
+            });
+            if (cancelled) return;
+            if (error) {
+                console.warn('get_available_equipment_counts:', error.message);
+                setAvailableCountsLoaded(true);
+                return;
+            }
+            const map = {};
+            for (const row of data || []) {
+                map[row.equipment_kind_id] = Number(row.available_count);
+            }
+            setAvailableCountByKindId(map);
+            setAvailableCountsLoaded(true);
+        })();
+        return () => { cancelled = true; };
+    }, [selectedChalet?.etablishment_id, selectedChalet?.key, selectedChalet?.id, startDate, endDate, needsChalet]);
+
+    // Sync Stripe readiness from latest RPC row (évite chalet sans stripe_charges_enabled après refresh liste).
+    useEffect(() => {
+        if (!selectedChalet?.key || !Array.isArray(chalets)) return;
+        const row = chalets.find((c) => String(c.key) === String(selectedChalet.key));
+        if (!row || typeof row.stripe_charges_enabled === 'undefined') return;
+        if (selectedChalet.stripe_charges_enabled === row.stripe_charges_enabled) return;
+        setSelectedChalet((prev) => (prev ? { ...prev, stripe_charges_enabled: row.stripe_charges_enabled } : prev));
+    }, [chalets, selectedChalet?.key, selectedChalet?.stripe_charges_enabled]);
+
+    // Listen for chalet selection signaled from a detail page tab
+    useEffect(() => {
+        const handleStorage = (e) => {
+            if (e.key !== 'ms_select_chalet') return;
+            try {
+                const { key: chaletKey } = JSON.parse(e.newValue || '{}');
+                if (!chaletKey) return;
+                const found = chalets.find((c) => (c.key || c.id) === chaletKey);
+                if (found) handleSelectedChalet({ id: chaletKey, name: found.Name, ...found });
+                localStorage.removeItem('ms_select_chalet');
+            } catch { /* ignore parse errors */ }
+        };
+        window.addEventListener('storage', handleStorage);
+        return () => window.removeEventListener('storage', handleStorage);
+    }, [chalets]);
+
     // Check URL parameters on mount to reopen establishment modal if needed
     useEffect(() => {
         const urlParams = new URLSearchParams(globalThis.location.search);
@@ -221,7 +344,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                     .from('guide')
                     .select('*')
                     .not('google_refresh_token', 'is', null)
-                    .neq('calendar_connection_status', 'disconnected');
+                    .eq('calendar_connection_status', 'connected');
                 
                 if (fishType) {
                     query = query.contains('fish_types', [fishType]);
@@ -230,6 +353,30 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 const { data: guides, error } = await query;
                 
                 if (error) throw error;
+
+                // Fetch guide service locations (preferred fishing zones) for river priority sorting
+                const guideIds = (guides || []).map((g) => g.id).filter(Boolean);
+                let serviceLocationsByGuide = {};
+                if (guideIds.length > 0) {
+                    try {
+                        const { data: locData } = await supabase
+                            .from('guide_service_locations')
+                            .select('guide_id, fishing_zone:fishing_zone_id(id, name)')
+                            .in('guide_id', guideIds);
+                        if (locData) {
+                            for (const row of locData) {
+                                if (!serviceLocationsByGuide[row.guide_id]) serviceLocationsByGuide[row.guide_id] = [];
+                                if (row.fishing_zone?.name) {
+                                    serviceLocationsByGuide[row.guide_id].push(
+                                        row.fishing_zone.name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+                                    );
+                                }
+                            }
+                        }
+                    } catch (locErr) {
+                        console.warn('Could not fetch guide service locations (non-fatal):', locErr);
+                    }
+                }
 
                 const guideUserIds = [...new Set((guides || []).map((g) => g.user_id).filter(Boolean))];
                 let usersById = new Map();
@@ -370,6 +517,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                             events: rawEvents,
                             booked_slots: bookedSlots,
                             avatarSrc,
+                            // Normalized fishing zone names for river-priority sorting
+                            preferredZoneNames: serviceLocationsByGuide[g.id] || [],
                         };
                     })))
                     .filter(g => g !== null);
@@ -565,25 +714,59 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 console.log("📅 Guide availability events:", data);
                 
                 if (data.items && Array.isArray(data.items)) {
-                    // Process events to extract time slots for each day
-                    // IMPORTANT: Use LOCAL date for grouping, not UTC date.
-                    // This prevents events near midnight UTC from being grouped
-                    // under the wrong day relative to the guide's timezone.
-                    const events = data.items.map(event => {
+                    // Process events to extract time slots for each day.
+                    // All-day events get split into 8h sessions (DEFAULT_DAY_HOURS)
+                    // so the client doesn't see/bill 24h slots.
+                    const guideScheduleConfig = selectedGuide?.schedule_config || null;
+                    const events = data.items.flatMap(event => {
+                        const isAllDay = !event.start?.dateTime && Boolean(event.start?.date);
+
+                        if (isAllDay) {
+                            const dayStart = new Date(event.start.date + 'T00:00:00');
+                            const endExclusive = new Date(event.end.date + 'T00:00:00');
+                            const lastDay = new Date(endExclusive);
+                            lastDay.setDate(lastDay.getDate() - 1);
+
+                            const sessions = expandAllDayEvent(
+                                {
+                                    id: event.id,
+                                    summary: event.summary || 'Disponible',
+                                    start: dayStart,
+                                    end: lastDay,
+                                },
+                                guideScheduleConfig,
+                            );
+
+                            return sessions.map(s => {
+                                const localDate = `${s.start.getFullYear()}-${String(s.start.getMonth()+1).padStart(2,'0')}-${String(s.start.getDate()).padStart(2,'0')}`;
+                                return {
+                                    id: s.id,
+                                    summary: s.summary,
+                                    start: s.start.toISOString(),
+                                    end: s.end.toISOString(),
+                                    date: localDate,
+                                    durationHours: s.durationHours,
+                                    sessionLabel: s.sessionLabel,
+                                };
+                            });
+                        }
+
                         const startStr = event.start?.dateTime || event.start?.date;
                         const endStr = event.end?.dateTime || event.end?.date;
-                        // Derive local date for display grouping
                         const startDate_obj = new Date(startStr);
                         const localDate = !isNaN(startDate_obj.getTime())
                             ? `${startDate_obj.getFullYear()}-${String(startDate_obj.getMonth()+1).padStart(2,'0')}-${String(startDate_obj.getDate()).padStart(2,'0')}`
                             : (startStr || '').split('T')[0];
-                        return {
+
+                        const durationMs = (new Date(endStr) - new Date(startStr));
+                        return [{
                             id: event.id,
                             summary: event.summary || 'Disponible',
                             start: startStr,
                             end: endStr,
                             date: localDate,
-                        };
+                            durationHours: !isNaN(durationMs) ? durationMs / 3_600_000 : null,
+                        }];
                     });
 
                     // ── Build a combined list of booked intervals ──────────
@@ -734,15 +917,13 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         }
     }, [guideAvailabilityEvents]);
 
-    // Fetch available chalets for the currently active date range.
-    // New flow: triggered at step 3. Location anchor is either the radius point
-    // (selectedPoint) OR a selected river (selectedRiver → river center lookup).
-    // Unnamed rivers (river-N) have no center coord → no chalets loaded.
+    // Fetch ALL chalets regardless of radius, then mark availability for the selected dates.
+    // Two parallel RPC calls: one without date filter (all chalets), one with dates (available only).
+    // Results are merged: each chalet gets is_available=true/false, then sorted available-first,
+    // distance-second. This enables an Airbnb-style browse-all UX instead of hard filtering.
     useEffect(() => {
         if (bookingStep !== 3 || !needsChalet || !startDate || !endDate) return;
 
-        // Resolve a lng/lat anchor: prefer the manually-clicked point, fall
-        // back to the selected river's approximate center coordinate.
         let anchor = null;
         if (selectedPoint?.lngLat) {
             anchor = { lng: selectedPoint.lngLat.lng, lat: selectedPoint.lngLat.lat };
@@ -752,11 +933,12 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
 
         if (!anchor) return;
 
+        const WIDE_RADIUS_M = 500_000; // 500 km — covers all of Quebec
+
         const fetchChalets = async () => {
-            console.log("Querying Supabase for ALL chalets within radius:", {
+            console.log("Querying Supabase for ALL chalets + availability:", {
                 lng: anchor.lng,
                 lat: anchor.lat,
-                radius_km: radius || 20,
                 source: selectedPoint?.lngLat ? 'point' : `river:${selectedRiver}`,
             });
 
@@ -764,29 +946,58 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 setLoadingChalets(true);
                 setChaletError(null);
 
-                // Fetch ALL chalets within radius - no capacity or date filtering
-                const { data, error } = await supabase.rpc('get_chalets_nearby', {
-                    lng: anchor.lng,
-                    lat: anchor.lat,
-                    radius_m: (radius || 20) * 1000,
-                    min_capacity: numberOfPeople || null,
-                    check_start_date: `${startDate}T00:00:00Z`,
-                    check_end_date: `${endDate}T23:59:59Z`
+                // Parallel: all chalets (null dates → bypasses availability filter in RPC)
+                // + available chalets (with actual dates) to build the is_available flag
+                const [allResult, availResult] = await Promise.all([
+                    supabase.rpc('get_chalets_nearby', {
+                        lng: anchor.lng,
+                        lat: anchor.lat,
+                        radius_m: WIDE_RADIUS_M,
+                        min_capacity: numberOfPeople || null,
+                        check_start_date: null,
+                        check_end_date: null,
+                    }),
+                    supabase.rpc('get_chalets_nearby', {
+                        lng: anchor.lng,
+                        lat: anchor.lat,
+                        radius_m: WIDE_RADIUS_M,
+                        min_capacity: numberOfPeople || null,
+                        check_start_date: `${startDate}T00:00:00Z`,
+                        check_end_date: `${endDate}T23:59:59Z`,
+                    }),
+                ]);
+
+                if (allResult.error) throw allResult.error;
+                // If the availability RPC fails, data is empty but the "all chalets" call may succeed —
+                // that would incorrectly mark every chalet unavailable (empty key set).
+                if (availResult.error) throw availResult.error;
+
+                const allChalets = Array.isArray(allResult.data) ? allResult.data : [];
+                const availableKeySet = new Set(
+                    (Array.isArray(availResult.data) ? availResult.data : []).map(c => String(c.key))
+                );
+
+                const enriched = allChalets.map(chalet => ({
+                    ...chalet,
+                    is_available: availableKeySet.has(String(chalet.key)),
+                }));
+
+                // Sort: available first, then by distance ascending
+                enriched.sort((a, b) => {
+                    if (a.is_available !== b.is_available) return a.is_available ? -1 : 1;
+                    return (a.distance_m ?? Infinity) - (b.distance_m ?? Infinity);
                 });
 
-                if (error) throw error;
+                setChalets(enriched);
 
-                setChalets(Array.isArray(data) ? data : []);
-
-                // Automatically expand all establishments
-                if (data && data.length > 0) {
+                if (enriched.length > 0) {
                     const uniqueEstablishmentIds = new Set(
-                        data.map(chalet => chalet.etablishment_id || 'no-establishment')
+                        enriched.map(chalet => chalet.etablishment_id || 'no-establishment')
                     );
                     setExpandedEstablishments(uniqueEstablishmentIds);
                 }
             } catch (err) {
-                console.error("❌ Error fetching nearby chalets:", err);
+                console.error("❌ Error fetching chalets:", err);
                 setChaletError(err.message);
             } finally {
                 setLoadingChalets(false);
@@ -794,7 +1005,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         };
 
         fetchChalets();
-    }, [bookingStep, selectedPoint, selectedRiver, radius, needsChalet, numberOfPeople, startDate, endDate]);
+    }, [bookingStep, selectedPoint, selectedRiver, needsChalet, numberOfPeople, startDate, endDate]);
 
     const goToResultsStep = useCallback(() => {
         if (!startDate || !endDate || new Date(endDate) <= new Date(startDate)) return;
@@ -880,15 +1091,18 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     }, [startDate, endDate, selectedGuide, selectedChalet, selectedTimeSlots]);
 
     useEffect(() => {
-        // Re-check availability when entering the final confirmation step (now step 4).
-        if (bookingStep === 4) {
+        // Re-check availability when entering the confirmation step (4 ou 5 selon parcours chalet).
+        if (bookingStep === bookingConfirmationStep) {
             checkAvailability();
         }
-    }, [bookingStep, startDate, endDate, checkAvailability]);
+    }, [bookingStep, bookingConfirmationStep, startDate, endDate, checkAvailability]);
 
     function handleVoirPlus(chalet) {
-        setChaletForDetail(chalet);
-        setChaletDetailModalOpen(true);
+        const chaletId = chalet?.key || chalet?.id;
+        if (chaletId) {
+            try { localStorage.setItem(`ms_chalet_preview_${chaletId}`, JSON.stringify(chalet)); } catch {}
+            window.open(`/chalet/${chaletId}`, '_blank');
+        }
     }
 
     function toggleEstablishment(establishmentId) {
@@ -1054,32 +1268,31 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         handleSelectGuide(guide);
     }
 
-    // Step 3 → 4: validate guide/chalet selection and move to confirmation.
-    // (Kept the name `proceedToStep4` for clarity in the new flow — step 3
-    // is now guide+chalet selection, step 4 is confirmation.)
+    // Ancien aide-mémoire validation → étape suivante ; le flux passe par Map (goFromStep3ToNext).
     function proceedToStep4() {
         if (browseMode === 'chalet') {
             if (!selectedChalet) {
-                alert('Veuillez sélectionner un chalet.');
+                toast.error('Veuillez sélectionner un chalet.');
                 return;
             }
         } else if (browseMode === 'guide') {
             if (!selectedGuide) {
-                alert('Veuillez sélectionner un guide.');
+                toast.error('Veuillez sélectionner un guide.');
                 return;
             }
         } else {
-            // Trip mode
             if (!selectedGuide && needsChalet && !selectedChalet) {
-                alert('Veuillez sélectionner au moins un guide ou un chalet.');
+                toast.error('Veuillez sélectionner au moins un guide ou un chalet.');
                 return;
             }
             if (!selectedGuide && !needsChalet) {
-                alert('Veuillez sélectionner un guide.');
+                toast.error('Veuillez sélectionner un guide.');
                 return;
             }
         }
-        setBookingStep(4);
+        if ((browseMode === 'chalet' || (browseMode === 'trip' && needsChalet)) && selectedChalet) {
+            setBookingStep(4);
+        }
     }
 
     async function handleBookGuide() {
@@ -1113,82 +1326,120 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                 }
             }
 
-            const guideNeedsStripe = selectedGuide && selectedTimeSlots.length > 0 
-                && selectedGuide.stripe_charges_enabled 
+            const chaletPriced =
+                Boolean(
+                    needsChalet &&
+                    selectedChalet &&
+                    Number(selectedChalet.price_per_night ?? 0) > 0,
+                );
+            const chaletStripeReady = Boolean(selectedChalet?.stripe_charges_enabled);
+
+            if (needsChalet && selectedChalet && chaletPriced && !chaletStripeReady) {
+                const msg =
+                    'Ce logement affiche un tarif mais le paiement en ligne n’est pas activé pour son établissement (Stripe). Le propriétaire doit terminer l’activation ou vous contacter.';
+                setBookingError(msg);
+                toast.error(msg);
+                setIsCreatingBooking(false);
+                return;
+            }
+
+            const guideNeedsStripe = selectedGuide && selectedTimeSlots.length > 0
+                && selectedGuide.stripe_charges_enabled
                 && selectedGuide.hourly_rate > 0;
-            
-            // If guide needs Stripe payment, open CheckoutModal for guide first
+            const chaletNeedsStripe = needsChalet && selectedChalet && chaletPriced && chaletStripeReady;
+
+            const customerName = user?.user_metadata?.name || 'Guest';
+            const customerEmail = user?.email || '';
+            const tripLabel = `Pêche ${FISH_TYPES.find(f => f.value === fishType)?.label || fishType}`;
+            const allSlots = selectedTimeSlots.map(slot => ({
+                startTime: slot.startTime,
+                endTime: slot.endTime,
+            }));
+
+            // Defensive guard: a slot must carry full ISO timestamps with
+            // time-of-day. If anything upstream stripped them down to
+            // "YYYY-MM-DD", or start/end ended up equal, refuse to send —
+            // otherwise we'd silently insert zero-length bookings that break
+            // the availability subtraction algorithm.
+            const DATE_ONLY_RX = /^\d{4}-\d{2}-\d{2}$/;
+            const badSlot = allSlots.find(s =>
+                !s.startTime || !s.endTime ||
+                DATE_ONLY_RX.test(String(s.startTime)) ||
+                DATE_ONLY_RX.test(String(s.endTime)) ||
+                new Date(s.endTime).getTime() <= new Date(s.startTime).getTime()
+            );
+            if (badSlot) {
+                console.error('❌ [DATE GUARD] Refusing to create booking — malformed slot:', badSlot);
+                console.error('   selectedTimeSlots snapshot:', JSON.parse(JSON.stringify(selectedTimeSlots)));
+                const msg = 'Un créneau sélectionné est invalide (heure manquante). Veuillez rafraîchir la disponibilité et re-sélectionner vos créneaux.';
+                setBookingError(msg);
+                toast.error(msg);
+                setIsCreatingBooking(false);
+                return;
+            }
+
+            // ── COMBINED: guide + chalet → single PaymentIntent ──────────
+            if (guideNeedsStripe && chaletNeedsStripe) {
+                const inv = buildInventoryAddonsForCheckout();
+                const combinedCheckoutData = {
+                    customerName,
+                    customerEmail,
+                    notes: `Réservation via Monde Sauvage — ${numberOfPeople} personne(s) — Guide ${selectedGuide.name} + ${selectedChalet.name || selectedChalet.chalet_name || 'Chalet'}`,
+                    guide: {
+                        guideId: selectedGuide.guide_id,
+                        slots: allSlots,
+                        tripType: tripLabel,
+                        numberOfPeople,
+                    },
+                    chalet: {
+                        chaletId: selectedChalet.key,
+                        startDate,
+                        endDate,
+                        ...(inv.length ? { inventoryAddons: inv } : {}),
+                    },
+                };
+                setPaymentCheckoutData(combinedCheckoutData);
+                setPaymentCheckoutType('combined');
+                setShowPaymentCheckout(true);
+                setIsCreatingBooking(false);
+                return;
+            }
+
+            // ── GUIDE ONLY (Stripe) ─────────────────────────────────────
             if (guideNeedsStripe) {
-                // Calculate total hours from all selected time slots
                 const totalHours = selectedTimeSlots.reduce((sum, slot) => {
                     const start = new Date(slot.startTime);
                     const end = new Date(slot.endTime);
                     return sum + (end - start) / (1000 * 60 * 60);
                 }, 0);
-                
-                // Build allSlots array with individual start/end per slot.
-                // The edge function will create one booking per slot and
-                // one combined PaymentIntent for the total amount.
-                const allSlots = selectedTimeSlots.map(slot => ({
-                    startTime: slot.startTime,
-                    endTime: slot.endTime,
-                }));
-                
+
                 const guideCheckoutData = {
                     guideId: selectedGuide.guide_id,
-                    // These are kept for display / pricing calculation only;
-                    // the edge function uses allSlots to create per-slot bookings.
                     startTime: allSlots[0].startTime,
                     endTime: allSlots[allSlots.length - 1].endTime,
-                    customerName: user?.user_metadata?.name || 'Guest',
-                    customerEmail: user?.email || '',
-                    tripType: `Pêche ${FISH_TYPES.find(f => f.value === fishType)?.label || fishType}`,
-                    numberOfPeople: numberOfPeople,
+                    customerName,
+                    customerEmail,
+                    tripType: tripLabel,
+                    numberOfPeople,
                     notes: `Réservation via Monde Sauvage - ${fishType}`,
                     durationHours: totalHours,
                     hourlyRate: selectedGuide.hourly_rate,
                     totalAmount: selectedGuide.hourly_rate * totalHours,
-                    allSlots: allSlots,
+                    allSlots,
                 };
-                
-                // DATE SHIFT GUARD: Log the exact values being sent to the backend
-                console.log('[DATE TRACE] Checkout payload:', {
-                    allSlots: guideCheckoutData.allSlots,
-                    slotCount: allSlots.length,
-                    browserTZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                });
-                
-                // Save chalet data for after guide payment succeeds
-                if (needsChalet && selectedChalet) {
-                    setPendingChaletBooking({
-                        chaletId: selectedChalet.key,
-                        startDate: startDate,
-                        endDate: endDate,
-                        customerName: user?.user_metadata?.name || 'Guest',
-                        customerEmail: user?.email || '',
-                        notes: `Réservation via Monde Sauvage - ${numberOfPeople} personne(s) - Guide: ${selectedGuide.name}`,
-                        pricePerNight: selectedChalet.price_per_night || 0,
-                        chaletName: selectedChalet.name || selectedChalet.chalet_name || 'Chalet'
-                    });
-                }
-                
+
                 setPaymentCheckoutData(guideCheckoutData);
                 setPaymentCheckoutType('guide');
                 setShowPaymentCheckout(true);
                 setIsCreatingBooking(false);
-                return; // Wait for payment callback
+                return;
             }
-            
-            // No Stripe needed — use existing direct flow
-            const bookingResults = {
-                guideBookings: [],
-                chaletBooking: null
-            };
-            
-            // 1. Create guide bookings directly (no Stripe)
-            if (selectedGuide && selectedTimeSlots.length > 0) {
-                console.log('📅 Creating guide bookings for selected time slots:', selectedTimeSlots);
-                
+
+            // Guides sans paiement Stripe (créés avant tout checkout chalet, si besoin plus bas)
+            const bookingResults = { guideBookings: [], chaletBooking: null };
+            if (selectedGuide && selectedTimeSlots.length > 0 && !guideNeedsStripe) {
+                console.log('📅 Creating guide bookings (sans Stripe web):', selectedTimeSlots);
+
                 for (const slot of selectedTimeSlots) {
                     const guideBookingData = {
                         guideId: selectedGuide.guide_id,
@@ -1200,35 +1451,58 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         numberOfPeople: numberOfPeople,
                         notes: `Réservation via Monde Sauvage - ${fishType}`,
                         status: 'pending',
-                        skipAvailabilityCheck: true
+                        skipAvailabilityCheck: true,
                     };
-                    
+
                     const guideBooking = await createGuideBooking(guideBookingData);
                     bookingResults.guideBookings.push(guideBooking);
                     console.log('✅ Guide booking created:', guideBooking);
                 }
             }
-            
-            // 2. Create chalet booking directly (no Stripe)
-            if (needsChalet && selectedChalet) {
-                console.log('🏠 Creating chalet booking:', selectedChalet);
-                
+
+            // ── CHALET Stripe : chalet seul OU guide sans Stripe au panier (anciennement chalet gratuit)
+            if (chaletNeedsStripe && (!selectedGuide || !guideNeedsStripe)) {
+                const inv = buildInventoryAddonsForCheckout();
+                const guideHint = selectedGuide && selectedTimeSlots.length > 0 && !guideNeedsStripe
+                    ? ` — Créneaux guide (${selectedGuide.name}) déjà réservés côté site ; complétez le paiement du chalet.`
+                    : '';
+                const chaletCheckoutData = {
+                    chaletId: selectedChalet.key,
+                    startDate,
+                    endDate,
+                    customerName,
+                    customerEmail,
+                    notes:
+                        `Réservation via Monde Sauvage - ${numberOfPeople} personne(s)${guideHint}`,
+                    ...(inv.length ? { inventoryAddons: inv } : {}),
+                };
+                setPaymentCheckoutData(chaletCheckoutData);
+                setPaymentCheckoutType('chalet');
+                setShowPaymentCheckout(true);
+                setIsCreatingBooking(false);
+                return;
+            }
+
+            // ── Sinon : aucun paiement carte requis pour le chalet ─ insert direct(s)
+            if (needsChalet && selectedChalet && !chaletNeedsStripe) {
+                console.log('🏠 Creating chalet booking (sans Stripe):', selectedChalet);
+
                 const chaletBookingData = {
                     chaletId: selectedChalet.key,
                     startDate: startDate,
                     endDate: endDate,
                     customerName: user?.user_metadata?.name || 'Guest',
                     customerEmail: user?.email || '',
-                    notes: `Réservation via Monde Sauvage - ${numberOfPeople} personne(s)${selectedGuide ? ` - Guide: ${selectedGuide.name}` : ''}`
+                    notes: `Réservation via Monde Sauvage - ${numberOfPeople} personne(s)${selectedGuide ? ` - Guide: ${selectedGuide.name}` : ''}`,
                 };
-                
+
                 const chaletBooking = await createBooking(chaletBookingData);
                 bookingResults.chaletBooking = chaletBooking;
                 console.log('✅ Chalet booking created:', chaletBooking);
             }
-            
-            console.log('🎉 All bookings created successfully:', bookingResults);
-            setBookingStep(4);
+
+            console.log('🎉 Réservations enregistrées:', bookingResults);
+            setBookingStep(bookingConfirmationStep);
             
         } catch (error) {
             console.error('❌ Error creating booking:', error);
@@ -1249,7 +1523,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
             const guideData = await getGuideByUserId(guideUserId);
 
             if (!guideData) {
-                alert('Profil guide introuvable.');
+                toast.error('Profil guide introuvable.');
                 return;
             }
 
@@ -1257,7 +1531,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
             setIsGuideProfilePreviewOpen(true);
         } catch (error) {
             console.error('Error opening guide profile from social:', error);
-            alert(error.message || 'Impossible d\'ouvrir le profil du guide.');
+            toast.error(error.message || 'Impossible d\'ouvrir le profil du guide.');
         }
     }
 
@@ -1266,89 +1540,24 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setIsGuideBookingModalOpen(true);
     }
 
-    // Handle payment success from the main booking flow CheckoutModal
+    // Handle payment success from the main booking flow CheckoutModal.
+    // The webhook now owns booking confirmation + calendar sync + email +
+    // (in combined mode) the per-vendor transfers, so this handler just
+    // tidies up local UI state and advances the flow.
     async function handleMainFlowPaymentSuccess(result) {
         console.log('💳 Payment success for', paymentCheckoutType, result);
-
-        // Capture checkout data before clearing state
-        const currentCheckoutData = paymentCheckoutData;
-        const currentCheckoutType = paymentCheckoutType;
-
         setShowPaymentCheckout(false);
         setPaymentCheckoutData(null);
-
-        // Sync Google Calendar event for guide booking (frontend backup — webhook also does this)
-        // Handle both single booking (bookingId) and multi-slot (allBookingIds)
-        if (currentCheckoutType === 'guide' && currentCheckoutData) {
-            const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-            const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-            // Determine which booking IDs + slots to sync
-            const bookingIds = result?.allBookingIds || (result?.bookingId ? [result.bookingId] : []);
-            const slots = currentCheckoutData.allSlots || [{ startTime: currentCheckoutData.startTime, endTime: currentCheckoutData.endTime }];
-
-            for (let i = 0; i < bookingIds.length; i++) {
-                const bId = bookingIds[i];
-                const slot = slots[i] || slots[0]; // fallback to first slot
-                try {
-                    await fetch(`${SUPABASE_URL}/functions/v1/create-guide-booking-event`, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            booking_id: bId,
-                            guide_id: currentCheckoutData.guideId,
-                            start_time: slot.startTime,
-                            end_time: slot.endTime,
-                            customer_name: currentCheckoutData.customerName,
-                            customer_email: currentCheckoutData.customerEmail,
-                            trip_type: currentCheckoutData.tripType,
-                            notes: currentCheckoutData.notes,
-                        })
-                    });
-                    console.log(`📅 Google Calendar event synced for guide booking ${bId}`);
-                } catch (calendarErr) {
-                    console.warn(`⚠️ Could not sync Google Calendar event for ${bId}:`, calendarErr);
-                }
-            }
-        }
-        
-        if (currentCheckoutType === 'guide') {
-            // Guide payment done. Check if there's a pending chalet booking
-            if (pendingChaletBooking) {
-                const chaletData = pendingChaletBooking;
-                setPendingChaletBooking(null);
-                
-                // For now, create chalet booking directly (chalet Stripe handled via ChaletDetailModal separately)
-                try {
-                    const chaletBooking = await createBooking({
-                        chaletId: chaletData.chaletId,
-                        startDate: chaletData.startDate,
-                        endDate: chaletData.endDate,
-                        customerName: chaletData.customerName,
-                        customerEmail: chaletData.customerEmail,
-                        notes: chaletData.notes
-                    });
-                    console.log('✅ Chalet booking created after guide payment:', chaletBooking);
-                } catch (err) {
-                    console.warn('⚠️ Chalet booking failed after guide payment:', err);
-                }
-            }
-            setPaymentCheckoutType(null);
-            setBookingStep(4);
-        } else if (currentCheckoutType === 'chalet') {
-            setPaymentCheckoutType(null);
-            setBookingStep(4);
-        }
+        setPaymentCheckoutType(null);
+        // Always advance to the computed confirmation step so it matches
+        // bookingMaxStep in Map.jsx and the confirmation panel renders.
+        setBookingStep(bookingConfirmationStep);
     }
 
     function handleMainFlowPaymentClose() {
         setShowPaymentCheckout(false);
         setPaymentCheckoutData(null);
         setPaymentCheckoutType(null);
-        setPendingChaletBooking(null);
         setIsCreatingBooking(false);
     }
 
@@ -1383,7 +1592,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         setShowPaymentCheckout(false);
         setPaymentCheckoutData(null);
         setPaymentCheckoutType(null);
-        setPendingChaletBooking(null);
+        setEquipmentKinds([]);
+        setInventoryAddonQtyBySlug({});
     }
 
     // NEW FLOW:
@@ -1424,7 +1634,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         isTripOpen={startBookingFlow}
                         isGuideFlowOpen={startGuideFlow}
                         isChaletFlowOpen={startChaletFlow}
-                        isAccountSettingsOpen={() => setIsAccountSettingsOpen(true)}
+                        isAccountSettingsOpen={openAccountSettings}
                         isSocialFeedOpen={() => navigate({ pathname: '/social', search: location.search })}
                         user={user}
                         profile={profile}
@@ -1499,16 +1709,17 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         loadingGuideAvailability={loadingGuideAvailability}
                         selectedTimeSlots={selectedTimeSlots}
                         handleSelectTimeSlot={handleSelectTimeSlot}
+                        equipmentKinds={equipmentKinds}
+                        loadingEquipmentKinds={loadingEquipmentKinds}
+                        inventoryAddonQtyBySlug={inventoryAddonQtyBySlug}
+                        setInventoryAddonQtyBySlug={setInventoryAddonQtyBySlug}
+                        availableCountByKindId={availableCountByKindId}
+                        availableCountsLoaded={availableCountsLoaded}
                     />
                 )}
             </Suspense>
             <Suspense fallback={null}>
-                <ChaletDetailModal
-                    isOpen={chaletDetailModalOpen}
-                    onClose={() => setChaletDetailModalOpen(false)}
-                    chalet={chaletForDetail}
-                />
-                <LoginModal 
+<LoginModal 
                     isLoginOpen={isLoginOpen}
                     onLoginClose={() => setIsLoginOpen(false)}
                     language={language}
@@ -1520,7 +1731,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         setIsGuideClientModalOpen(false);
                         if (settingsWasOpenBeforeClients) {
                             setSettingsWasOpenBeforeClients(false);
-                            setIsAccountSettingsOpen(true);
+                            openAccountSettings();
                         }
                     }}
                     guide={guide}
@@ -1539,13 +1750,13 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
 
                 <AccountSettingsModal
                     isOpen={isAccountSettingsOpen}
-                    onClose={() => setIsAccountSettingsOpen(false)}
+                    onClose={closeAccountSettings}
                     user={user}
                     profile={profile}
                     guide={guide}
                     onOpenClients={() => {
                         setSettingsWasOpenBeforeClients(true);
-                        setIsAccountSettingsOpen(false);
+                        closeAccountSettings();
                         setIsGuideClientModalOpen(true);
                     }}
                     onOpenHelp={() => openOnboarding(true)}
@@ -1598,7 +1809,13 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         onClose={handleMainFlowPaymentClose}
                         bookingData={paymentCheckoutData}
                         bookingType={paymentCheckoutType}
-                        title={paymentCheckoutType === 'guide' ? selectedGuide?.name : selectedChalet?.name}
+                        title={
+                            paymentCheckoutType === 'combined'
+                                ? `${selectedGuide?.name || 'Guide'} + ${selectedChalet?.name || selectedChalet?.chalet_name || 'Chalet'}`
+                                : paymentCheckoutType === 'guide'
+                                    ? selectedGuide?.name
+                                    : selectedChalet?.name
+                        }
                         onSuccess={handleMainFlowPaymentSuccess}
                     />
                 </Suspense>
@@ -1630,7 +1847,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                                 setShowPaymentCheckout(true);
                             } catch (err) {
                                 console.error('Failed to resume payment:', err);
-                                alert('Erreur lors de la reprise du paiement: ' + err.message);
+                                toast.error('Erreur lors de la reprise du paiement : ' + err.message);
                             }
                         }}
                     />

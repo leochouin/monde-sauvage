@@ -34,6 +34,7 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
 // ── Availability Word Bank ───────────────────────────────────
@@ -92,8 +93,68 @@ interface TimeInterval {
   end: number;   // Unix ms
 }
 
+// ── Brussels timezone helpers ─────────────────────────────────
+// Fishing guides operate in Europe/Brussels time.
+// All-day availability events are expanded to BUSINESS_START–BUSINESS_END
+// (local Brussels wall-clock) so that bookings created at those hours
+// correctly cancel the dispo without leaving phantom midnight windows.
+
+const BUSINESS_START_HOUR = 8;  // 08:00 Brussels
+const BUSINESS_END_HOUR   = 16; // 16:00 Brussels
+
+/**
+ * Return true if the given date string (YYYY-MM-DD) falls within
+ * Central European Summer Time (CEST = UTC+2) for Europe/Brussels.
+ * CEST runs from the last Sunday of March to the last Sunday of October.
+ */
+function isDSTBrussels(dateStr: string): boolean {
+  const [ys, ms, ds] = dateStr.split("-");
+  const year = parseInt(ys, 10), month = parseInt(ms, 10), day = parseInt(ds, 10);
+  if (month < 3 || month > 10) return false;
+  if (month > 3 && month < 10) return true;
+  const lastSunday = (y: number, m: number): number => {
+    const lastDay = new Date(y, m, 0).getDate();
+    return lastDay - new Date(y, m - 1, lastDay).getDay();
+  };
+  if (month === 3) return day >= lastSunday(year, 3);
+  if (month === 10) return day < lastSunday(year, 10);
+  return false;
+}
+
+/**
+ * Return the UTC millisecond timestamp for a given Brussels wall-clock
+ * hour on a specific date string (YYYY-MM-DD).
+ */
+function brusselsHourToUTC(dateStr: string, hour: number): number {
+  const offsetHours = isDSTBrussels(dateStr) ? 2 : 1;
+  const utcHour = hour - offsetHours;
+  return new Date(`${dateStr}T${String(utcHour).padStart(2, "0")}:00:00Z`).getTime();
+}
+
+/**
+ * Expand an all-day date range (startDate inclusive, endDate exclusive as
+ * returned by Google Calendar) into per-day business-hours intervals
+ * (BUSINESS_START_HOUR–BUSINESS_END_HOUR Brussels time).
+ */
+function expandAllDayToBusinessHours(startDate: string, endDate: string): TimeInterval[] {
+  const intervals: TimeInterval[] = [];
+  const endExcl = new Date(`${endDate}T00:00:00Z`);
+  const cur = new Date(`${startDate}T00:00:00Z`);
+  while (cur < endExcl) {
+    const ds = cur.toISOString().slice(0, 10);
+    const s = brusselsHourToUTC(ds, BUSINESS_START_HOUR);
+    const e = brusselsHourToUTC(ds, BUSINESS_END_HOUR);
+    if (e > s) intervals.push({ start: s, end: e });
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return intervals;
+}
+
 /**
  * Parse a Google Calendar event's start/end into a TimeInterval.
+ * For all-day events this returns a midnight-to-midnight interval;
+ * call expandAllDayToBusinessHours directly when you need per-day
+ * business-hours intervals for availability blocks.
  */
 function eventToInterval(event: any): TimeInterval | null {
   const startStr = event.start?.dateTime || event.start?.date;
@@ -104,7 +165,6 @@ function eventToInterval(event: any): TimeInterval | null {
 
   if (!startStr.includes("T")) {
     // All-day event: treat as midnight-to-midnight UTC
-    // Use explicit Z suffix to avoid local-timezone interpretation
     start = new Date(`${startStr}T00:00:00Z`).getTime();
     end = new Date(`${endStr}T00:00:00Z`).getTime(); // end date is exclusive in Google
   } else {
@@ -184,10 +244,11 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
+  try {
   console.log("📩 [AVAILABILITY] Request received");
 
-  const SUPABASE_URL = Deno.env.get("URL")!;
-  const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+  const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const url = new URL(req.url);
@@ -405,15 +466,31 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
-    const interval = eventToInterval(event);
-    if (!interval) continue;
+    const startStr = event.start?.dateTime || event.start?.date;
+    const endStr = event.end?.dateTime || event.end?.date;
+    const isAllDay = startStr && !startStr.includes("T");
 
     if (isAvailabilityEvent(event)) {
-      availabilityBlocks.push({ event, interval });
-      console.log(
-        `✅ [AVAILABILITY] AVAIL: "${event.summary}" [${new Date(interval.start).toISOString()} — ${new Date(interval.end).toISOString()}]`
-      );
+      if (isAllDay && startStr && endStr) {
+        // All-day availability event → expand to per-day 08:00–16:00 Brussels
+        const dailyIntervals = expandAllDayToBusinessHours(startStr, endStr);
+        for (const di of dailyIntervals) {
+          availabilityBlocks.push({ event, interval: di });
+          console.log(
+            `✅ [AVAILABILITY] AVAIL (all-day→8h): "${event.summary}" [${new Date(di.start).toISOString()} — ${new Date(di.end).toISOString()}]`
+          );
+        }
+      } else {
+        const interval = eventToInterval(event);
+        if (!interval) continue;
+        availabilityBlocks.push({ event, interval });
+        console.log(
+          `✅ [AVAILABILITY] AVAIL: "${event.summary}" [${new Date(interval.start).toISOString()} — ${new Date(interval.end).toISOString()}]`
+        );
+      }
     } else {
+      const interval = eventToInterval(event);
+      if (!interval) continue;
       busyBlocks.push(interval);
       console.log(
         `🚫 [AVAILABILITY] BUSY:  "${event.summary}" [${new Date(interval.start).toISOString()} — ${new Date(interval.end).toISOString()}]`
@@ -494,6 +571,11 @@ Deno.serve(async (req: Request) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     }
   );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("❌ [AVAILABILITY] Unhandled error:", message);
+    return jsonResponse({ error: "Internal server error", description: message }, 500);
+  }
 });
 
 // ── Helper ───────────────────────────────────────────────────

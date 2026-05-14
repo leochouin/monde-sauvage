@@ -5,6 +5,7 @@ import GuideCalendar from "../components/GuideCalendar.jsx";
 import AvatarImage from "../components/AvatarImage.jsx";
 import supabase from "../utils/supabase.js";
 import { resolveAvatarFromSources } from "../utils/avatar.js";
+import { toast } from "../utils/toast.js";
 
 // Fish types available for guides to specialize in
 const FISH_TYPES = [
@@ -206,7 +207,7 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
   const handleSave = async () => {
     console.log("Saving guide data:", editedGuide);
     if (!guide?.id) {
-      alert('Impossible de sauvegarder: ID du guide manquant.');
+      toast.error('Impossible de sauvegarder : ID du guide manquant.');
       return;
     }
 
@@ -235,7 +236,7 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
 
       if (error) {
         console.error("Supabase update error:", error);
-        alert("Erreur lors de la sauvegarde: " + error.message);
+        toast.error("Erreur lors de la sauvegarde : " + error.message);
       } else {
         try {
           const zoneById = new Map(
@@ -280,7 +281,7 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
           }
         } catch (syncErr) {
           console.error('Error syncing guide service locations:', syncErr);
-          alert('Profil sauve, mais erreur lors de la sauvegarde des lieux de service: ' + syncErr.message);
+          toast.error('Profil sauvegardé, mais erreur sur les lieux de service : ' + syncErr.message);
         }
 
         console.log("Guide updated:", data);
@@ -300,7 +301,7 @@ export default function GuideProfile({ isGuideOpen, closeGuide, guide, onOpenHel
       }
     } catch (err) {
       console.error('Unexpected error saving guide:', err);
-      alert('Erreur inattendue lors de la sauvegarde. Voir la console pour plus de détails.');
+      toast.error('Erreur inattendue lors de la sauvegarde.');
     } finally {
       setIsSaving(false);
     }

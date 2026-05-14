@@ -101,8 +101,12 @@ async function runScenario(browser, scenario) {
     const retryButton = page.getByRole('button', { name: /reessayer/i }).first();
     retryVisible = await retryButton.isVisible();
 
-    await retryButton.click({ timeout: 3000 });
-    await page.waitForTimeout(500);
+    // Fixed-position toast is sometimes treated as outside the viewport for
+    // Playwright's hit-testing even with `force: true`; DOM click is reliable.
+    await retryButton.evaluate((el) => {
+      if (el instanceof HTMLElement) el.click();
+    });
+    await page.waitForTimeout(900);
     retryWorked = await page.getByRole('alert').first().isVisible();
 
     await page.goto(socialUrl, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });

@@ -1,178 +1,64 @@
 import { useState, useEffect } from 'react';
 import supabase from '../utils/supabase.js';
-import { 
-    checkChaletAvailability, 
-    calculateBookingPrice, 
-    createBooking 
-} from '../utils/bookingService.js';
 import DateRangePicker from '../components/DateRangePicker.jsx';
-import CheckoutModal from './checkoutModal.jsx';
+import Lightbox from '../components/Lightbox.jsx';
 
 const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
     const [chaletData, setChaletData] = useState(null);
     const [images, setImages] = useState([]);
     const [loading, setLoading] = useState(false);
-    const [showAllImages, setShowAllImages] = useState(false);
-
-    // Reservation states
-    const [checkInDate, setCheckInDate] = useState('');
-    const [checkOutDate, setCheckOutDate] = useState('');
-    const [guestName, setGuestName] = useState('');
-    const [guestEmail, setGuestEmail] = useState('');
-    const [notes, setNotes] = useState('');
-    const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
-    const [availabilityStatus, setAvailabilityStatus] = useState(null); // null, 'available', 'unavailable'
-    const [availabilityMessage, setAvailabilityMessage] = useState('');
-    const [priceBreakdown, setPriceBreakdown] = useState(null);
-    const [isSubmittingBooking, setIsSubmittingBooking] = useState(false);
-    const [bookingSuccess, setBookingSuccess] = useState(false);
-    const [bookingError, setBookingError] = useState(null);
     const [blockedDates, setBlockedDates] = useState([]);
-
-    // Stripe checkout modal state
-    const [showCheckout, setShowCheckout] = useState(false);
-    const [checkoutBookingData, setCheckoutBookingData] = useState(null);
+    const [lightboxIndex, setLightboxIndex] = useState(null);
 
     useEffect(() => {
         if (isOpen && chalet) {
             loadChaletDetails();
             loadBlockedDates();
-            // Reset reservation states when modal opens
-            resetReservationForm();
+            setLightboxIndex(null);
         }
     }, [isOpen, chalet]);
 
-    // Check availability and calculate price when dates change
-    useEffect(() => {
-        if (checkInDate && checkOutDate && chaletData) {
-            handleAvailabilityCheck();
-        } else {
-            setAvailabilityStatus(null);
-            setPriceBreakdown(null);
-        }
-    }, [checkInDate, checkOutDate, chaletData]);
+    const parseLegacyImageField = (value) => {
+        if (!value) return [];
+        if (Array.isArray(value)) return value.filter(Boolean).map(String);
 
-    const resetReservationForm = () => {
-        setCheckInDate('');
-        setCheckOutDate('');
-        setGuestName('');
-        setGuestEmail('');
-        setNotes('');
-        setAvailabilityStatus(null);
-        setAvailabilityMessage('');
-        setPriceBreakdown(null);
-        setBookingSuccess(false);
-        setBookingError(null);
-    };
+        const raw = String(value).trim();
+        if (!raw) return [];
 
-    const handleAvailabilityCheck = async () => {
-        if (!checkInDate || !checkOutDate || !chaletData) return;
-
-        // Validate dates
-        const checkIn = new Date(checkInDate);
-        const checkOut = new Date(checkOutDate);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        if (checkIn < today) {
-            setAvailabilityStatus('unavailable');
-            setAvailabilityMessage('La date d\'arrivée ne peut pas être dans le passé');
-            setPriceBreakdown(null);
-            return;
-        }
-
-        if (checkOut <= checkIn) {
-            setAvailabilityStatus('unavailable');
-            setAvailabilityMessage('La date de départ doit être après la date d\'arrivée');
-            setPriceBreakdown(null);
-            return;
-        }
-
-        setIsCheckingAvailability(true);
-        setAvailabilityMessage('Vérification de la disponibilité...');
-
-        try {
-            // Check availability
-            const result = await checkChaletAvailability(
-                chaletData.key,
-                checkInDate,
-                checkOutDate
-            );
-
-            if (result.available) {
-                setAvailabilityStatus('available');
-                setAvailabilityMessage('✅ Disponible pour ces dates');
-
-                // Calculate price
-                const pricing = calculateBookingPrice(
-                    chaletData.price_per_night,
-                    checkInDate,
-                    checkOutDate
-                );
-                setPriceBreakdown(pricing);
-            } else {
-                setAvailabilityStatus('unavailable');
-                setAvailabilityMessage(`❌ Non disponible: ${result.reason || 'Dates déjà réservées'}`);
-                setPriceBreakdown(null);
+        if (raw.startsWith('[') && raw.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    return parsed.filter(Boolean).map((item) => String(item).trim()).filter(Boolean);
+                }
+            } catch {
+                // Fall through to CSV-like parsing.
             }
-        } catch (error) {
-            console.error('Error checking availability:', error);
-            setAvailabilityStatus('unavailable');
-            setAvailabilityMessage('❌ Erreur lors de la vérification de disponibilité');
-            setPriceBreakdown(null);
-        } finally {
-            setIsCheckingAvailability(false);
-        }
-    };
-
-    const handleSubmitReservation = async (e) => {
-        e.preventDefault();
-
-        // Validate form
-        if (!guestName.trim() || !guestEmail.trim()) {
-            setBookingError('Veuillez remplir tous les champs requis');
-            return;
         }
 
-        if (availabilityStatus !== 'available') {
-            setBookingError('Le chalet n\'est pas disponible pour ces dates');
-            return;
+        if (raw.includes(',')) {
+            return raw
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean);
         }
 
-        // Open the Stripe Checkout modal instead of creating booking directly
-        setCheckoutBookingData({
-            chaletId: chaletData.key,
-            startDate: checkInDate,
-            endDate: checkOutDate,
-            customerName: guestName,
-            customerEmail: guestEmail,
-            notes: notes,
-        });
-        setShowCheckout(true);
-    };
-
-    // Called when payment succeeds
-    const handlePaymentSuccess = (result) => {
-        console.log('✅ Payment successful:', result);
-        setBookingSuccess(true);
-        setShowCheckout(false);
-        
-        // Reload blocked dates to reflect the new booking
-        loadBlockedDates();
-        
-        // Reset form after delay
-        setTimeout(() => {
-            resetReservationForm();
-        }, 5000);
+        return [raw];
     };
 
     const loadBlockedDates = async () => {
         try {
+            const chaletId = chalet?.key || chalet?.id;
+            if (!chaletId) {
+                setBlockedDates([]);
+                return;
+            }
+
             // Fetch all bookings for this chalet
             const { data: bookings, error } = await supabase
                 .from('bookings')
                 .select('start_date, end_date, status')
-                .eq('chalet_id', chalet.key || chalet.id)
+                .eq('chalet_id', chaletId)
                 .in('status', ['confirmed', 'pending', 'blocked']);
 
             if (error) {
@@ -200,31 +86,79 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
             // For now, use the chalet data passed in
             // In the future, you could fetch more detailed data from Supabase
             setChaletData(chalet);
+            const fallbackMainImage = parseLegacyImageField(chalet?.Image);
+
+            // Match Etablissement flow: chalet_images uses chalet key.
+            // If key is missing in this context, resolve it from chalets.
+            let resolvedChaletKey = chalet?.key ?? null;
+            if (!resolvedChaletKey && chalet?.id) {
+                resolvedChaletKey = chalet.id;
+            }
+
+            if (!resolvedChaletKey && (chalet?.Name || chalet?.name)) {
+                const chaletName = chalet?.Name || chalet?.name;
+                let keyLookupQuery = supabase
+                    .from('chalets')
+                    .select('key')
+                    .eq('Name', chaletName)
+                    .limit(1);
+
+                if (chalet?.etablishment_id) {
+                    keyLookupQuery = keyLookupQuery.eq('etablishment_id', chalet.etablishment_id);
+                }
+
+                const { data: keyLookupData, error: keyLookupError } = await keyLookupQuery;
+                if (!keyLookupError && keyLookupData && keyLookupData.length > 0) {
+                    resolvedChaletKey = keyLookupData[0].key;
+                }
+            }
+
+            const candidateIds = [
+                resolvedChaletKey,
+                chalet?.key,
+                chalet?.id,
+                chalet?.chalet_id,
+            ].filter((id, index, arr) => Boolean(id) && arr.indexOf(id) === index);
+
+            let chaletImages = [];
+            let queryError = null;
+
+            for (const candidateId of candidateIds) {
+                try {
+                    const { data, error } = await supabase
+                        .from('chalet_images')
+                        .select('*')
+                        .eq('chalet_id', candidateId)
+                        .order('display_order', { ascending: true });
+
+                    if (error) {
+                        queryError = error;
+                        continue;
+                    }
+
+                    if (Array.isArray(data) && data.length > 0) {
+                        chaletImages = data;
+                        break;
+                    }
+                } catch (err) {
+                    queryError = err;
+                }
+            }
             
-            // Fetch images from chalet_images table
-            const { data: chaletImages, error } = await supabase
-                .from('chalet_images')
-                .select('*')
-                .eq('chalet_id', chalet.key)
-                .order('display_order', { ascending: true });
-            
-            if (error) {
-                console.error('Error fetching chalet images:', error);
-                // Fallback to main image if available
-                const imageList = chalet.Image ? [chalet.Image] : [];
-                setImages(imageList);
+            if (queryError && chaletImages.length === 0) {
+                console.error('Error fetching chalet images:', queryError);
+                setImages(fallbackMainImage);
             } else if (chaletImages && chaletImages.length > 0) {
-                // Use images from chalet_images table
-                const imageUrls = chaletImages.map(img => img.image_url);
-                setImages(imageUrls);
+                const imageUrls = chaletImages
+                    .map((img) => img.image_url)
+                    .filter(Boolean);
+                const deduped = [...new Set([...imageUrls, ...fallbackMainImage])];
+                setImages(deduped);
             } else {
-                // Fallback to main image if no images in chalet_images
-                const imageList = chalet.Image ? [chalet.Image] : [];
-                setImages(imageList);
+                setImages(fallbackMainImage);
             }
         } catch (error) {
             console.error('Error loading chalet details:', error);
-            // Fallback to main image
             const imageList = chalet.Image ? [chalet.Image] : [];
             setImages(imageList);
         } finally {
@@ -285,99 +219,109 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
                             {images.length > 0 ? (
                                 <>
                                     <div className="chalet-detail-gallery-main">
-                                        <img 
-                                            src={images[0]} 
+                                        <img
+                                            src={images[0]}
                                             alt={chaletData?.Name}
                                             className="chalet-detail-main-image"
+                                            onClick={() => setLightboxIndex(0)}
+                                            style={{ cursor: 'zoom-in' }}
                                         />
                                     </div>
                                     {images.length > 1 && (
                                         <div className="chalet-detail-gallery-grid">
-                                            {images.slice(1, showAllImages ? images.length : 5).map((img, index) => (
-                                                <img 
-                                                    key={index + 1}
-                                                    src={img} 
-                                                    alt={`${chaletData?.Name} - ${index + 2}`}
-                                                    className="chalet-detail-grid-image"
-                                                />
-                                            ))}
-                                            {images.length > 5 && !showAllImages && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowAllImages(true)}
-                                                    className="chalet-detail-view-more"
-                                                    style={{
-                                                        position: 'relative',
-                                                        backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                                                        color: 'white',
-                                                        border: 'none',
-                                                        borderRadius: '8px',
-                                                        cursor: 'pointer',
-                                                        fontSize: '1rem',
-                                                        fontWeight: '600',
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        justifyContent: 'center',
-                                                        padding: '0',
-                                                        overflow: 'hidden'
-                                                    }}
-                                                >
-                                                    <img 
-                                                        src={images[5]} 
-                                                        alt="More"
+                                            {images.slice(1, 5).map((img, index) => {
+                                                const realIndex = index + 1;
+                                                const isLastVisible = realIndex === 4 && images.length > 5;
+                                                return (
+                                                    <button
+                                                        key={realIndex}
+                                                        type="button"
+                                                        onClick={() => setLightboxIndex(realIndex)}
+                                                        className="chalet-detail-grid-image"
                                                         style={{
-                                                            width: '100%',
-                                                            height: '100%',
-                                                            objectFit: 'cover',
-                                                            opacity: 0.4
+                                                            position: 'relative',
+                                                            padding: 0,
+                                                            border: 'none',
+                                                            cursor: 'zoom-in',
+                                                            overflow: 'hidden',
+                                                            background: 'transparent',
                                                         }}
-                                                    />
-                                                    <div style={{
-                                                        position: 'absolute',
-                                                        top: '50%',
-                                                        left: '50%',
-                                                        transform: 'translate(-50%, -50%)',
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        gap: '8px'
-                                                    }}>
-                                                        <span>➕</span>
-                                                        <span>{images.length - 5} photos</span>
-                                                    </div>
-                                                </button>
-                                            )}
+                                                    >
+                                                        <img
+                                                            src={img}
+                                                            alt={`${chaletData?.Name} - ${realIndex + 1}`}
+                                                            style={{
+                                                                width: '100%',
+                                                                height: '100%',
+                                                                objectFit: 'cover',
+                                                                opacity: isLastVisible ? 0.55 : 1,
+                                                                display: 'block',
+                                                            }}
+                                                        />
+                                                        {isLastVisible && (
+                                                            <div style={{
+                                                                position: 'absolute',
+                                                                inset: 0,
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                justifyContent: 'center',
+                                                                color: 'white',
+                                                                fontWeight: 600,
+                                                                fontSize: '0.95rem',
+                                                                background: 'rgba(0,0,0,0.35)',
+                                                                gap: 6,
+                                                            }}>
+                                                                <span>➕</span>
+                                                                <span>{images.length - 5} photos</span>
+                                                            </div>
+                                                        )}
+                                                    </button>
+                                                );
+                                            })}
                                         </div>
                                     )}
-                                    {showAllImages && images.length > 5 && (
+                                    {images.length > 1 && (
                                         <button
                                             type="button"
-                                            onClick={() => setShowAllImages(false)}
+                                            onClick={() => setLightboxIndex(0)}
                                             style={{
-                                                marginTop: '10px',
-                                                padding: '8px 16px',
-                                                backgroundColor: '#059669',
-                                                color: 'white',
-                                                border: 'none',
-                                                borderRadius: '6px',
+                                                marginTop: 12,
+                                                padding: '10px 18px',
+                                                backgroundColor: '#fff',
+                                                color: '#0f172a',
+                                                border: '1px solid #0f172a',
+                                                borderRadius: 8,
                                                 cursor: 'pointer',
                                                 fontSize: '0.9rem',
-                                                fontWeight: '500'
+                                                fontWeight: 600,
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 8,
                                             }}
                                         >
-                                            Voir moins
+                                            <span>🖼️</span>
+                                            Voir les {images.length} photos
                                         </button>
                                     )}
                                 </>
                             ) : (
-                                <div style={{ 
-                                    padding: '40px', 
-                                    textAlign: 'center', 
-                                    color: '#64748b' 
+                                <div style={{
+                                    padding: '40px',
+                                    textAlign: 'center',
+                                    color: '#64748b'
                                 }}>
                                     Aucune image disponible
                                 </div>
                             )}
                         </div>
+
+                        <Lightbox
+                            images={images}
+                            index={lightboxIndex}
+                            onIndexChange={setLightboxIndex}
+                            onClose={() => setLightboxIndex(null)}
+                            alt={chaletData?.Name || 'Chalet'}
+                        />
 
                         {/* Description Section */}
                         <div className="chalet-detail-section">
@@ -431,178 +375,22 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
                         {/* Divider */}
                         <div className="chalet-detail-divider"></div>
 
-                        {/* Reservation Section - Airbnb Style */}
+                        {/* Availability Section - read-only */}
                         <div className="chalet-detail-section">
-                            <h2 className="chalet-detail-section-title">Réserver ce chalet</h2>
-                            
-                            {bookingSuccess ? (
-                                <div className="reservation-success-message">
-                                    <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✅</div>
-                                    <h3 style={{ marginBottom: '0.5rem' }}>Réservation confirmée et payée!</h3>
-                                    <p>Votre réservation a été confirmée avec succès.</p>
-                                    <p style={{ fontSize: '0.9rem', color: '#64748b' }}>
-                                        Un reçu de paiement sera envoyé à {guestEmail}
-                                    </p>
+                            <h2 className="chalet-detail-section-title">Calendrier des disponibilités</h2>
+                            <div className="reservation-container">
+                                <p className="chalet-detail-text" style={{ marginBottom: '12px' }}>
+                                    Les journées barrées sont indisponibles (déjà réservées).
+                                </p>
+                                <div className="reservation-calendar-wrapper">
+                                    <DateRangePicker
+                                        onDateChange={() => {}}
+                                        blockedDates={blockedDates}
+                                        monthsToShow={2}
+                                        readOnly
+                                    />
                                 </div>
-                            ) : (
-                                <div className="reservation-container">
-                                    {/* Date Selection Calendar */}
-                                    <div className="reservation-calendar-wrapper">
-                                        <div className="reservation-selected-dates">
-                                            <div className="selected-date-box">
-                                                <label className="selected-date-label">Arrivée</label>
-                                                <div className="selected-date-value">
-                                                    {checkInDate ? (() => {
-                                                        const [year, month, day] = checkInDate.split('-');
-                                                        const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                                                        return date.toLocaleDateString('fr-FR', { 
-                                                            day: 'numeric', 
-                                                            month: 'short', 
-                                                            year: 'numeric' 
-                                                        });
-                                                    })() : 'Sélectionner'}
-                                                </div>
-                                            </div>
-                                            <div className="selected-date-divider">→</div>
-                                            <div className="selected-date-box">
-                                                <label className="selected-date-label">Départ</label>
-                                                <div className="selected-date-value">
-                                                    {checkOutDate ? (() => {
-                                                        const [year, month, day] = checkOutDate.split('-');
-                                                        const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                                                        return date.toLocaleDateString('fr-FR', { 
-                                                            day: 'numeric', 
-                                                            month: 'short', 
-                                                            year: 'numeric' 
-                                                        });
-                                                    })() : 'Sélectionner'}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <DateRangePicker
-                                            onDateChange={(checkIn, checkOut) => {
-                                                // Format date as YYYY-MM-DD in local timezone to avoid timezone shifts
-                                                if (checkIn) {
-                                                    const year = checkIn.getFullYear();
-                                                    const month = String(checkIn.getMonth() + 1).padStart(2, '0');
-                                                    const day = String(checkIn.getDate()).padStart(2, '0');
-                                                    setCheckInDate(`${year}-${month}-${day}`);
-                                                } else {
-                                                    setCheckInDate('');
-                                                }
-                                                if (checkOut) {
-                                                    const year = checkOut.getFullYear();
-                                                    const month = String(checkOut.getMonth() + 1).padStart(2, '0');
-                                                    const day = String(checkOut.getDate()).padStart(2, '0');
-                                                    setCheckOutDate(`${year}-${month}-${day}`);
-                                                } else {
-                                                    setCheckOutDate('');
-                                                }
-                                            }}
-                                            blockedDates={blockedDates}
-                                            initialCheckIn={checkInDate ? (() => {
-                                                const [year, month, day] = checkInDate.split('-');
-                                                return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                                            })() : null}
-                                            initialCheckOut={checkOutDate ? (() => {
-                                                const [year, month, day] = checkOutDate.split('-');
-                                                return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                                            })() : null}
-                                        />
-                                    </div>
-
-                                    {/* Availability Status */}
-                                    {checkInDate && checkOutDate && (
-                                        <div className={`availability-status ${availabilityStatus || 'checking'}`}>
-                                            {isCheckingAvailability ? (
-                                                <span>🔄 {availabilityMessage}</span>
-                                            ) : (
-                                                <span>{availabilityMessage}</span>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    {/* Price Breakdown */}
-                                    {priceBreakdown && availabilityStatus === 'available' && (
-                                        <div className="price-breakdown">
-                                            <div className="price-row">
-                                                <span>{chaletData.price_per_night}$ × {priceBreakdown.nights} {priceBreakdown.nights > 1 ? 'nuits' : 'nuit'}</span>
-                                                <span>{priceBreakdown.subtotal}$ CAD</span>
-                                            </div>
-                                            {priceBreakdown.serviceFee > 0 && (
-                                                <div className="price-row">
-                                                    <span>Frais de service</span>
-                                                    <span>{priceBreakdown.serviceFee}$ CAD</span>
-                                                </div>
-                                            )}
-                                            <div className="price-divider"></div>
-                                            <div className="price-row price-total">
-                                                <span>Total</span>
-                                                <span>{priceBreakdown.total}$ CAD</span>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Guest Information Form */}
-                                    {availabilityStatus === 'available' && (
-                                        <form onSubmit={handleSubmitReservation} className="reservation-form">
-                                            <div className="form-group">
-                                                <label htmlFor="guestName">Nom complet *</label>
-                                                <input
-                                                    id="guestName"
-                                                    type="text"
-                                                    value={guestName}
-                                                    onChange={(e) => setGuestName(e.target.value)}
-                                                    placeholder="Votre nom"
-                                                    required
-                                                    className="form-input"
-                                                />
-                                            </div>
-                                            <div className="form-group">
-                                                <label htmlFor="guestEmail">Email *</label>
-                                                <input
-                                                    id="guestEmail"
-                                                    type="email"
-                                                    value={guestEmail}
-                                                    onChange={(e) => setGuestEmail(e.target.value)}
-                                                    placeholder="votre@email.com"
-                                                    required
-                                                    className="form-input"
-                                                />
-                                            </div>
-                                            <div className="form-group">
-                                                <label htmlFor="notes">Notes (optionnel)</label>
-                                                <textarea
-                                                    id="notes"
-                                                    value={notes}
-                                                    onChange={(e) => setNotes(e.target.value)}
-                                                    placeholder="Informations supplémentaires..."
-                                                    rows="3"
-                                                    className="form-textarea"
-                                                />
-                                            </div>
-
-                                            {bookingError && (
-                                                <div className="booking-error">
-                                                    {bookingError}
-                                                </div>
-                                            )}
-
-                                            <button
-                                                type="submit"
-                                                disabled={isSubmittingBooking || availabilityStatus !== 'available'}
-                                                className="reserve-button"
-                                            >
-                                                {isSubmittingBooking ? 'Réservation en cours...' : '💳 Réserver et payer'}
-                                            </button>
-
-                                            <p className="reservation-note">
-                                                💡 Paiement sécurisé par Stripe. Vous serez débité après confirmation.
-                                            </p>
-                                        </form>
-                                    )}
-                                </div>
-                            )}
+                            </div>
                         </div>
 
                         {/* Future sections placeholder */}
@@ -612,15 +400,6 @@ const ChaletDetailModal = ({ isOpen, onClose, chalet }) => {
                     </>
                 )}
             </div>
-
-            {/* Stripe Checkout Modal */}
-            <CheckoutModal
-                isOpen={showCheckout}
-                onClose={() => setShowCheckout(false)}
-                chalet={chaletData}
-                bookingData={checkoutBookingData}
-                onSuccess={handlePaymentSuccess}
-            />
         </div>
     );
 };

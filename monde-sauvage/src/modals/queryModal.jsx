@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import supabase from "../utils/supabase.js";
-import ChaletDetailModal from "./chaletDetailModal.jsx";
 
 export default function QueryModal({ isOpen, onClose, startDate, endDate, query, SelectedChalet, sRadius, nbPersonnes }) {
   const [chalets, setChalets] = useState([]);
@@ -9,8 +8,6 @@ export default function QueryModal({ isOpen, onClose, startDate, endDate, query,
   const [startChangeDate, setStartChangeDate] = useState("");
   const [endChangeDate, setEndChangeDate] = useState("");
   const [radius, setRadius] = useState(20); // Default 20km
-  const [selectChalet, setSelectChalet] = useState(null);
-  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [expandedEstablishments, setExpandedEstablishments] = useState(new Set());
   
   // Initialize local state with props when modal opens
@@ -27,13 +24,8 @@ export default function QueryModal({ isOpen, onClose, startDate, endDate, query,
   }
 
   const handleVoirPlus = (chalet) => {
-    setSelectChalet(chalet);
-    setIsDetailModalOpen(true);
-  };
-
-  const handleCloseDetail = () => {
-    setIsDetailModalOpen(false);
-    setSelectChalet(null);
+    const chaletId = chalet?.key || chalet?.id;
+    if (chaletId) window.open(`/chalet/${chaletId}`, '_blank');
   };
 
   const toggleEstablishment = (establishmentId) => {
@@ -215,13 +207,6 @@ export default function QueryModal({ isOpen, onClose, startDate, endDate, query,
             
         </div>
 
-        {/* Chalet Detail Modal */}
-        <ChaletDetailModal 
-          isOpen={isDetailModalOpen}
-          onClose={handleCloseDetail}
-          chalet={selectChalet}
-        />
-        
     </div>
 
   );

@@ -60,6 +60,48 @@ export function startEstablishmentQuickbooksConnect(establishmentId, redirectTo 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// INVOICE SYNC & LISTING
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function callQboFunction(functionName, body) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const accessToken = session?.access_token;
+  if (!accessToken) throw new Error('Not signed in');
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(body || {}),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+/**
+ * Sync paid guide bookings to QuickBooks Online invoices.
+ * Only processes bookings without an existing quickbooks_invoice_id.
+ * @returns {Promise<{synced: number, skipped: number, errors: string[]}>}
+ */
+export async function syncGuideQuickbooksInvoices() {
+  return callQboFunction('quickbooks-sync-invoices', {});
+}
+
+/**
+ * List recent QuickBooks invoices for the current guide.
+ * @param {number} [limit=20]
+ * @returns {Promise<{invoices: QboInvoice[]}>}
+ */
+export async function listGuideQuickbooksInvoices(limit = 20) {
+  return callQboFunction('quickbooks-list-invoices', { limit });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CONNECTION TEST
 // ─────────────────────────────────────────────────────────────────────────────
 

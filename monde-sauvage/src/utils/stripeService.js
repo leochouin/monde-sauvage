@@ -202,6 +202,8 @@ export async function checkGuideOnboardingStatus(guideId) {
  * @param {string} bookingData.customerName
  * @param {string} bookingData.customerEmail
  * @param {string} [bookingData.notes]
+ * @param {Array<{ slug?: string, equipment_kind_id?: string, equipmentKindId?: string, quantity: number }>} [bookingData.inventoryAddons]
+ *        Ex. deux chaloupes : `[{ slug: 'chaloupe', quantity: 2 }]`. Allocation auto avant PI (RPC allocate_inventory_for_booking).
  * @returns {Promise<{bookingId, clientSecret, stripeAccountId, pricing}>}
  */
 export async function createBookingWithPayment(bookingData) {
@@ -243,6 +245,32 @@ export async function createGuideBookingWithPayment(bookingData) {
   console.log('✅ Guide booking created:', result.bookingId);
   console.log('💰 Pricing:', result.pricing);
 
+  return result;
+}
+
+/**
+ * Create a combined guide+chalet booking with a single PaymentIntent.
+ * The PI is created on the platform account; the webhook splits the funds
+ * to each connected vendor on success.
+ *
+ * @param {Object} payload
+ * @param {string} payload.customerName
+ * @param {string} payload.customerEmail
+ * @param {string} [payload.customerPhone]
+ * @param {string} [payload.notes]
+ * @param {Object} [payload.guide] - { guideId, slots: [{ startTime, endTime }], tripType, numberOfPeople }
+ * @param {Object} [payload.chalet] - { chaletId, startDate, endDate, inventoryAddons?:Array<{ slug?: string, equipment_kind_id?: string, quantity:number }>}
+ * @returns {Promise<{paymentIntentId, clientSecret, stripeAccountId, guideBookingIds, chaletBookingId, pricing}>}
+ */
+export async function createCombinedBookingWithPayment(payload) {
+  console.log('💳 Creating combined booking with payment:', payload);
+  const result = await callEdgeFunction('stripe-create-combined-booking', {
+    body: payload,
+  });
+  console.log('✅ Combined booking created:', {
+    guideBookingIds: result.guideBookingIds,
+    chaletBookingId: result.chaletBookingId,
+  });
   return result;
 }
 
@@ -334,6 +362,25 @@ export async function confirmBookingPayment(bookingId, bookingType = 'chalet', p
     console.warn('⚠️ Payment confirmation fallback failed (webhook should handle it):', err.message);
     return { confirmed: false, error: err.message };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANALYTICS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch aggregated payment analytics for a connected establishment.
+ *
+ * @param {string} establishmentId
+ * @param {"7d"|"30d"|"custom"} period
+ * @param {string} [from] - ISO date, required when period="custom"
+ * @param {string} [to]   - ISO date, required when period="custom"
+ * @returns {Promise<AnalyticsResult>}
+ */
+export async function fetchStripeAnalytics(establishmentId, period = '30d', from, to) {
+  return callEdgeFunction('stripe-analytics', {
+    body: { establishmentId, period, from, to },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

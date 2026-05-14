@@ -2,7 +2,13 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import supabase from '../utils/supabase.js';
 import ChaletHoraireModal from './chaletHoraireModal.jsx';
 import StripeOnboarding from './stripeOnboarding.jsx';
+import StripeAnalyticsDashboard from '../components/StripeAnalyticsDashboard.jsx';
+import EstablishmentCalendar from '../components/EstablishmentCalendar.jsx';
+import EstablishmentOnboardingChecklist from '../components/EstablishmentOnboardingChecklist.jsx';
+import EstablishmentClientsPanel from '../components/EstablishmentClientsPanel.jsx';
+import EstablishmentBookingsPanel from '../components/EstablishmentBookingsPanel.jsx';
 import { isInGaspesieBounds, toCoordinateInputValue, searchAddressesInGaspesie } from '../utils/locationService.js';
+import { toast } from '../utils/toast.js';
 import {
     DndContext,
     DragOverlay,
@@ -375,20 +381,63 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     });
     const [savingEstablishment, setSavingEstablishment] = useState(false);
     const [establishmentError, setEstablishmentError] = useState(null);
-    const [activeEstablishmentSection, setActiveEstablishmentSection] = useState('overview');
+    const [activeEstablishmentSection, setActiveEstablishmentSection] = useState('demarrage');
     const [selectedChaletCategory, setSelectedChaletCategory] = useState('all');
+    const [equipmentKinds, setEquipmentKinds] = useState([]);
+    const [inventoryUnits, setInventoryUnits] = useState([]);
+    const [loadingInventory, setLoadingInventory] = useState(false);
+    const [inventoryError, setInventoryError] = useState(null);
+    const [newKindForm, setNewKindForm] = useState({
+        slug: '',
+        label: '',
+        addonPricePerStay: '',
+        addonPricePerNight: ''
+    });
+    const [newUnitForm, setNewUnitForm] = useState({
+        equipmentKindId: '',
+        displayName: '',
+        unitCode: '',
+        chaletId: ''
+    });
+    const [savingInventory, setSavingInventory] = useState(false);
+    const [creatingUnitCalendarId, setCreatingUnitCalendarId] = useState(null);
+    const [deactivatingUnitId, setDeactivatingUnitId] = useState(null);
+    const [inventoryUnitPendingDeactivate, setInventoryUnitPendingDeactivate] = useState(null);
+    const prevSelectedEstablishmentKeyRef = useRef(null);
+
+    const selectedEstablishmentKey = useMemo(() => {
+        if (!selectedEstablishment) return '';
+        const k = selectedEstablishment.key ?? selectedEstablishment.id;
+        return k != null && k !== '' ? String(k) : '';
+    }, [selectedEstablishment]);
+
+    const chaletLabelForUnit = (unit) => {
+        if (!unit?.chalet_id) return null;
+        const row = chalets.find((c) => c.key === unit.chalet_id || c.id === unit.chalet_id);
+        return row?.Name || null;
+    };
 
     const establishmentSections = [
+        { key: 'demarrage', label: 'Démarrage', icon: '✅' },
         { key: 'overview', label: 'Aperçu', icon: '📋' },
         { key: 'chalets', label: 'Chalets', icon: '🏠' },
+        { key: 'clients', label: 'Clients', icon: '👤' },
+        { key: 'reservations', label: 'Réservations', icon: '📋' },
+        { key: 'equipment', label: 'Équipements', icon: '🛶' },
         { key: 'calendar', label: 'Calendrier', icon: '📅' },
         { key: 'payments', label: 'Paiements', icon: '💳' }
     ];
 
+    const edgeFunctionHeaders = (accessToken) => ({
+        'Content-Type': 'application/json',
+        ...(import.meta.env.VITE_SUPABASE_ANON_KEY ? { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY } : {}),
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+    });
+
     useEffect(() => {
         if (isEtablissementOpen) {
             setSelectedEstablishment(null);
-            setActiveEstablishmentSection('overview');
+            setActiveEstablishmentSection('demarrage');
             fetchEstablishment();
 
             // Check if we're returning from Google OAuth
@@ -428,20 +477,26 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
         }
     }, [establishments, pendingEstablishmentSelect]);
 
+    /** Clé stable : évite refetch + flash quand selectedEstablishment est remplacé (Stripe, optimistic merge). */
     useEffect(() => {
-        if (selectedEstablishment) {
-            // Use 'key' if it exists, otherwise fall back to 'id'
-            const establishmentKey = selectedEstablishment.key || selectedEstablishment.id;
-            fetchChalets(establishmentKey);
-        }
-    }, [selectedEstablishment]);
+        if (!selectedEstablishmentKey) return;
+        fetchChalets(selectedEstablishmentKey);
+        fetchInventory(selectedEstablishmentKey);
+    }, [selectedEstablishmentKey]);
 
+    /** Revenir à l’aperçu seulement quand on change d’établissement — pas après chaque mise à jour d’objet. */
     useEffect(() => {
-        if (selectedEstablishment) {
-            setActiveEstablishmentSection('overview');
+        if (!selectedEstablishmentKey) {
+            prevSelectedEstablishmentKeyRef.current = null;
+            return;
+        }
+        const prev = prevSelectedEstablishmentKeyRef.current;
+        if (prev !== null && prev !== selectedEstablishmentKey) {
+            setActiveEstablishmentSection('demarrage');
             setSelectedChaletCategory('all');
         }
-    }, [selectedEstablishment?.key, selectedEstablishment?.id]);
+        prevSelectedEstablishmentKeyRef.current = selectedEstablishmentKey;
+    }, [selectedEstablishmentKey]);
 
     useEffect(() => {
         const syncChaletFormViewport = () => {
@@ -525,8 +580,10 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             }
 
             if (!data || data.length === 0) {
+                // First-time users can legitimately have no establishment yet.
+                // Keep this as a non-error state so the creation UI is shown.
                 setEstablishments([]);
-                setError("Aucun établissement trouvé pour cet utilisateur");
+                setError(null);
             } else {
                 setEstablishments(data);
             }
@@ -613,6 +670,239 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             setChaletError(`Erreur lors du chargement des chalets: ${err.message || 'Erreur inconnue'}`);
         } finally {
             setLoadingChalets(false);
+        }
+    };
+
+    const fetchInventory = async (establishmentKey, opts = {}) => {
+        const silent = opts.silent === true;
+        if (!establishmentKey) {
+            setEquipmentKinds([]);
+            setInventoryUnits([]);
+            return;
+        }
+        try {
+            if (!silent) setLoadingInventory(true);
+            setInventoryError(null);
+
+            const [{ data: kinds, error: kindsError }, { data: units, error: unitsError }] = await Promise.all([
+                supabase
+                    .from('equipment_kind')
+                    .select('*')
+                    .eq('establishment_id', establishmentKey)
+                    .order('label', { ascending: true }),
+                supabase
+                    .from('inventory_unit')
+                    .select(`
+                        *,
+                        equipment_kind:equipment_kind_id (
+                            id,
+                            label,
+                            slug
+                        )
+                    `)
+                    .eq('establishment_id', establishmentKey)
+                    .eq('is_active', true)
+                    .is('deleted_at', null)
+                    .order('sort_order', { ascending: true })
+                    .order('unit_code', { ascending: true })
+            ]);
+
+            if (kindsError) throw kindsError;
+            if (unitsError) throw unitsError;
+
+            setEquipmentKinds(kinds || []);
+            setInventoryUnits(units || []);
+            if (!newUnitForm.equipmentKindId && kinds?.length > 0) {
+                setNewUnitForm((prev) => ({ ...prev, equipmentKindId: kinds[0].id }));
+            }
+        } catch (err) {
+            console.error('Error fetching inventory:', err);
+            setInventoryError(err.message || "Erreur lors du chargement de l'inventaire.");
+        } finally {
+            if (!silent) setLoadingInventory(false);
+        }
+    };
+
+    const handleCreateEquipmentKind = async (e) => {
+        e?.preventDefault?.();
+        if (!selectedEstablishment) return;
+
+        const establishmentKey = selectedEstablishment.key || selectedEstablishment.id;
+        const slug = newKindForm.slug.trim().toLowerCase();
+        const label = newKindForm.label.trim();
+        if (!slug || !label) {
+            toast.error('Le code interne et le nom du type sont requis.');
+            return;
+        }
+
+        const metadata = {};
+        if (newKindForm.addonPricePerStay !== '') {
+            metadata.addon_price_per_stay = Number(newKindForm.addonPricePerStay);
+        }
+        if (newKindForm.addonPricePerNight !== '') {
+            metadata.addon_price_per_night = Number(newKindForm.addonPricePerNight);
+        }
+
+        try {
+            setSavingInventory(true);
+            const { error: insertError } = await supabase
+                .from('equipment_kind')
+                .insert({
+                    establishment_id: establishmentKey,
+                    slug,
+                    label,
+                    metadata
+                });
+
+            if (insertError) throw insertError;
+            toast.success('Type d’équipement créé.');
+            setNewKindForm({
+                slug: '',
+                label: '',
+                addonPricePerStay: '',
+                addonPricePerNight: ''
+            });
+            await fetchInventory(establishmentKey, { silent: true });
+        } catch (err) {
+            console.error('Error creating equipment kind:', err);
+            toast.error(err.message || "Impossible de créer le type d'équipement.");
+        } finally {
+            setSavingInventory(false);
+        }
+    };
+
+    const handleCreateInventoryUnit = async (e) => {
+        e?.preventDefault?.();
+        if (!selectedEstablishment) return;
+
+        const establishmentKey = selectedEstablishment.key || selectedEstablishment.id;
+        const displayName = newUnitForm.displayName.trim();
+        const unitCode = newUnitForm.unitCode.trim().toUpperCase();
+        if (!newUnitForm.equipmentKindId || !displayName || !unitCode) {
+            toast.error('Type, nom et code unité sont requis.');
+            return;
+        }
+        if (!selectedEstablishment?.google_calendar_id) {
+            toast.error('Connectez Google Calendar (onglet Calendrier) avant d’ajouter une unité avec agenda.');
+            setActiveEstablishmentSection('calendar');
+            return;
+        }
+
+        try {
+            setSavingInventory(true);
+            const session = (await supabase.auth.getSession()).data.session;
+            const accessToken = session?.access_token;
+
+            const response = await fetch(
+                `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-inventory-calendar`,
+                {
+                    method: 'POST',
+                    headers: edgeFunctionHeaders(accessToken),
+                    body: JSON.stringify({
+                        establishment_id: establishmentKey,
+                        equipment_kind_id: newUnitForm.equipmentKindId,
+                        display_name: displayName,
+                        unit_code: unitCode,
+                        chalet_id: newUnitForm.chaletId || null,
+                        calendar_name: displayName
+                    })
+                }
+            );
+
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                if (isGoogleCalendarConnectionError(response.status, payload)) {
+                    toast.error('Connectez Google Calendar dans l’onglet Calendrier avant d’ajouter une unité.');
+                    setActiveEstablishmentSection('calendar');
+                    return;
+                }
+                throw new Error(payload.error || payload.message || "Impossible d’ajouter l’unité.");
+            }
+
+            toast.success('Unité créée avec son agenda Google.');
+            setNewUnitForm((prev) => ({
+                ...prev,
+                displayName: '',
+                unitCode: ''
+            }));
+            await fetchInventory(establishmentKey, { silent: true });
+        } catch (err) {
+            console.error('Error creating inventory unit:', err);
+            toast.error(err.message || "Impossible d'ajouter l'unité.");
+        } finally {
+            setSavingInventory(false);
+        }
+    };
+
+    const handleRequestDeactivateInventoryUnit = (unit) => {
+        if (!unit?.id) return;
+        setInventoryUnitPendingDeactivate(unit);
+    };
+
+    const handleConfirmDeactivateInventoryUnit = async () => {
+        const unit = inventoryUnitPendingDeactivate;
+        if (!selectedEstablishment || !unit?.id) {
+            setInventoryUnitPendingDeactivate(null);
+            return;
+        }
+        const establishmentKey = selectedEstablishment.key || selectedEstablishment.id;
+
+        try {
+            setDeactivatingUnitId(unit.id);
+            const { error } = await supabase
+                .from('inventory_unit')
+                .update({ is_active: false, deleted_at: new Date().toISOString() })
+                .eq('id', unit.id);
+            if (error) throw error;
+            toast.success('Unité retirée. Elle ne figure plus dans la liste.');
+            setInventoryUnitPendingDeactivate(null);
+            await fetchInventory(establishmentKey, { silent: true });
+        } catch (err) {
+            console.error('Error deactivating unit:', err);
+            toast.error(err.message || 'Impossible de retirer cette unité.');
+        } finally {
+            setDeactivatingUnitId(null);
+        }
+    };
+
+    const handleCreateInventoryCalendar = async (unit) => {
+        if (!selectedEstablishment || !unit?.id) return;
+        const establishmentKey = selectedEstablishment.key || selectedEstablishment.id;
+
+        try {
+            setCreatingUnitCalendarId(unit.id);
+            const session = (await supabase.auth.getSession()).data.session;
+            const accessToken = session?.access_token;
+
+            const response = await fetch(
+                `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-inventory-calendar`,
+                {
+                    method: 'POST',
+                    headers: edgeFunctionHeaders(accessToken),
+                    body: JSON.stringify({
+                        inventory_unit_id: unit.id,
+                        calendar_name: unit.display_name
+                    })
+                }
+            );
+
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                if (isGoogleCalendarConnectionError(response.status, payload)) {
+                    toast.error('Connectez Google Calendar dans l’onglet Calendrier avant de créer un agenda unité.');
+                    setActiveEstablishmentSection('calendar');
+                    return;
+                }
+                throw new Error(payload.error || payload.message || "Erreur de création d'agenda.");
+            }
+
+            toast.success(`Agenda créé pour ${unit.display_name}.`);
+            await fetchInventory(establishmentKey, { silent: true });
+        } catch (err) {
+            console.error('Error creating inventory calendar:', err);
+            toast.error(err.message || "Impossible de créer l'agenda de cette unité.");
+        } finally {
+            setCreatingUnitCalendarId(null);
         }
     };
 
@@ -1026,7 +1316,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             setImageOrder((prev) => prev.filter((id) => id !== `existing-${imageId}`));
         } catch (error) {
             console.error('Error removing image:', error);
-            alert('Erreur lors de la suppression de l\'image');
+            toast.error('Erreur lors de la suppression de l\'image.');
         }
     };
 
@@ -1469,21 +1759,57 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                 handleCloseEstablishmentForm();
                 await fetchEstablishment();
             } else {
-                // Create new establishment
-                const { data, error: insertError } = await supabase
-                    .from('Etablissement')
-                    .insert([
-                        {
-                            Name: establishmentForm.name,
-                            Description: establishmentForm.adresse || '',
-                            telephone: establishmentForm.telephone || null,
-                            email: establishmentForm.email || null,
-                            owner_id: user.id
-                        }
-                    ])
-                    .select();
+                // Create new establishment.
+                // Different environments use different owner column conventions/policies,
+                // so we try safe variants and keep the first successful insert.
+                const basePayload = {
+                    Name: establishmentForm.name,
+                    Description: establishmentForm.adresse || '',
+                    telephone: establishmentForm.telephone || null,
+                    email: establishmentForm.email || null
+                };
 
-                if (insertError) throw insertError;
+                const insertAttempts = [
+                    { table: 'Etablissement', payload: { ...basePayload, owner_id: user.id } },
+                    { table: 'Etablissement', payload: { ...basePayload, ownerId: user.id } },
+                    { table: 'Etablissement', payload: { ...basePayload } },
+                    { table: 'etablissement', payload: { ...basePayload, owner_id: user.id } },
+                    { table: 'etablissement', payload: { ...basePayload, ownerId: user.id } },
+                    { table: 'etablissement', payload: { ...basePayload } }
+                ];
+
+                let data = null;
+                let insertError = null;
+                let preferredInsertError = null;
+
+                for (const attempt of insertAttempts) {
+                    const response = await supabase
+                        .from(attempt.table)
+                        .insert([attempt.payload])
+                        .select();
+
+                    if (!response.error) {
+                        data = response.data;
+                        insertError = null;
+                        break;
+                    }
+
+                    insertError = response.error;
+
+                    const errorMessage = String(response.error?.message || '').toLowerCase();
+                    const isMissingLowercaseTable = (
+                        errorMessage.includes("could not find the table 'public.etablissement'")
+                        || errorMessage.includes('schema cache')
+                    );
+
+                    // Keep the most actionable error (e.g. RLS violation) instead of
+                    // surfacing fallback noise when lowercase table does not exist.
+                    if (!isMissingLowercaseTable && !preferredInsertError) {
+                        preferredInsertError = response.error;
+                    }
+                }
+
+                if (insertError) throw (preferredInsertError || insertError);
 
                 // Close form and refresh list
                 handleCloseEstablishmentForm();
@@ -1643,7 +1969,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
             <div className="guide-profile-content">
                 {/* Loading State */}
                 {loading && establishments.length === 0 && (
-                    <div style={{ textAlign: 'center', padding: '60px', color: '#64748b' }}>
+                    <div style={{ textAlign: 'center', padding: '60px', color: '#64748b', gridColumn: '1 / -1' }}>
                         <div style={{ fontSize: '2rem', marginBottom: '16px' }}>⏳</div>
                         <p style={{ fontSize: '1.1rem' }}>Chargement de vos établissements...</p>
                     </div>
@@ -1651,7 +1977,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                 {/* Error State */}
                 {error && !loading && (
-                    <div style={{ textAlign: 'center', padding: '60px' }}>
+                    <div style={{ textAlign: 'center', padding: '60px', gridColumn: '1 / -1' }}>
                         <div style={{ fontSize: '2rem', marginBottom: '16px' }}>⚠️</div>
                         <p style={{ color: '#ef4444', marginBottom: '20px', fontSize: '1.05rem' }}>{error}</p>
                         <button 
@@ -1675,7 +2001,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                 {/* No establishments state */}
                 {!loading && !error && establishments.length === 0 && (
-                    <div style={{ textAlign: 'center', padding: '60px' }}>
+                    <div style={{ textAlign: 'center', padding: '60px', gridColumn: '1 / -1' }}>
                         <div style={{ fontSize: '3rem', marginBottom: '20px' }}>🏕️</div>
                         <h2 style={{ fontSize: '1.5rem', color: '#334155', marginBottom: '12px' }}>Aucun établissement encore</h2>
                         <p style={{ color: '#64748b', marginBottom: '28px', fontSize: '1.05rem' }}>
@@ -1706,7 +2032,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                 {/* Display Establishments List */}
                 {!error && establishments.length > 0 && !selectedEstablishment && (
-                    <div style={{ padding: '20px' }}>
+                    <div style={{ padding: '20px', gridColumn: '1 / -1' }}>
                         <h2 style={{ fontSize: '1.3rem', color: '#334155', marginBottom: '8px' }}>Vos lieux de réservation</h2>
                         <p style={{ color: '#64748b', marginBottom: '24px' }}>
                             Sélectionnez un établissement pour le gérer
@@ -1845,6 +2171,16 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                         </div>
 
                         <div style={{ gridColumn: '1 / -1', padding: '20px', paddingTop: '16px' }}>
+                            {activeEstablishmentSection === 'demarrage' && (
+                                <EstablishmentOnboardingChecklist
+                                    establishment={selectedEstablishment}
+                                    chalets={chalets}
+                                    equipmentKinds={equipmentKinds}
+                                    inventoryUnits={inventoryUnits}
+                                    onNavigate={setActiveEstablishmentSection}
+                                />
+                            )}
+
                             {activeEstablishmentSection === 'overview' && (
                                 <div className="guide-section guide-card" style={{
                                     border: '1px solid #e2e8f0',
@@ -1937,6 +2273,17 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                 </div>
                             )}
 
+                            {activeEstablishmentSection === 'clients' && selectedEstablishmentKey && (
+                                <EstablishmentClientsPanel establishmentId={selectedEstablishmentKey} />
+                            )}
+
+                            {activeEstablishmentSection === 'reservations' && selectedEstablishmentKey && (
+                                <EstablishmentBookingsPanel
+                                    establishmentId={selectedEstablishmentKey}
+                                    chalets={chalets}
+                                />
+                            )}
+
                             {activeEstablishmentSection === 'payments' && (
                                 <div className="guide-section guide-card" style={{
                                     border: '1px solid #e2e8f0',
@@ -1944,18 +2291,305 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                     backgroundColor: 'white',
                                     padding: '20px'
                                 }}>
-                                    <StripeOnboarding
-                                        establishment={selectedEstablishment}
-                                        onStatusUpdate={(status) => {
-                                            // Update the local state with the new Stripe status
-                                            setSelectedEstablishment(prev => ({
-                                                ...prev,
-                                                stripe_charges_enabled: status.chargesEnabled,
-                                                stripe_payouts_enabled: status.payoutsEnabled,
-                                                stripe_onboarding_complete: status.onboardingComplete,
-                                            }));
-                                        }}
-                                    />
+                                    <h2 className="guide-section-title" style={{ padding: 0, marginBottom: '4px' }}>
+                                        💳 Paiements & Revenus
+                                    </h2>
+                                    <p style={{ color: '#64748b', fontSize: '0.875rem', marginBottom: '20px', marginTop: '4px' }}>
+                                        Analytique Stripe pour votre hébergement
+                                    </p>
+
+                                    {selectedEstablishment?.stripe_onboarding_complete ? (
+                                        <>
+                                            <StripeAnalyticsDashboard
+                                                establishment={selectedEstablishment}
+                                            />
+                                            <div style={{ marginTop: '16px', borderTop: '1px solid #F1F5F9', paddingTop: '16px' }}>
+                                                <StripeOnboarding
+                                                    establishment={selectedEstablishment}
+                                                    onStatusUpdate={(status) => {
+                                                        setSelectedEstablishment(prev => ({
+                                                            ...prev,
+                                                            stripe_charges_enabled: status.chargesEnabled,
+                                                            stripe_payouts_enabled: status.payoutsEnabled,
+                                                            stripe_onboarding_complete: status.onboardingComplete,
+                                                        }));
+                                                    }}
+                                                />
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <StripeOnboarding
+                                            establishment={selectedEstablishment}
+                                            onStatusUpdate={(status) => {
+                                                setSelectedEstablishment(prev => ({
+                                                    ...prev,
+                                                    stripe_charges_enabled: status.chargesEnabled,
+                                                    stripe_payouts_enabled: status.payoutsEnabled,
+                                                    stripe_onboarding_complete: status.onboardingComplete,
+                                                }));
+                                            }}
+                                        />
+                                    )}
+                                </div>
+                            )}
+
+                            {activeEstablishmentSection === 'equipment' && (
+                                <div className="guide-section guide-card" style={{
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '12px',
+                                    backgroundColor: 'white',
+                                    padding: '20px'
+                                }}>
+                                    <h2 className="guide-section-title" style={{ padding: 0 }}>🛶 Inventaire & Add-ons</h2>
+                                    <p style={{ color: '#64748b', fontSize: '0.95rem', marginTop: '8px', marginBottom: '18px' }}>
+                                        Créez vos types d’équipements, ajoutez des unités physiques, puis assignez un agenda Google à chaque unité.
+                                    </p>
+
+                                    {inventoryError && (
+                                        <div style={{
+                                            padding: '10px 12px',
+                                            borderRadius: 8,
+                                            background: '#fee2e2',
+                                            color: '#991b1b',
+                                            marginBottom: 12,
+                                            fontSize: '0.9rem'
+                                        }}>
+                                            {inventoryError}
+                                        </div>
+                                    )}
+
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 16 }}>
+                                        <form onSubmit={handleCreateEquipmentKind} style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
+                                            <h3 style={{ margin: 0, marginBottom: 10, fontSize: '1rem', color: '#1f2937' }}>Nouveau type d’équipement</h3>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Code interne (ex: chaloupe)"
+                                                    value={newKindForm.slug}
+                                                    onChange={(e) => setNewKindForm((prev) => ({ ...prev, slug: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                />
+                                                <input
+                                                    type="text"
+                                                    placeholder="Nom (ex: Chaloupe aluminium)"
+                                                    value={newKindForm.label}
+                                                    onChange={(e) => setNewKindForm((prev) => ({ ...prev, label: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                />
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    min="0"
+                                                    placeholder="Prix / séjour (optionnel)"
+                                                    value={newKindForm.addonPricePerStay}
+                                                    onChange={(e) => setNewKindForm((prev) => ({ ...prev, addonPricePerStay: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                />
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    min="0"
+                                                    placeholder="Prix / nuit (optionnel)"
+                                                    value={newKindForm.addonPricePerNight}
+                                                    onChange={(e) => setNewKindForm((prev) => ({ ...prev, addonPricePerNight: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                />
+                                                <button
+                                                    type="submit"
+                                                    disabled={savingInventory}
+                                                    style={{
+                                                        marginTop: 2,
+                                                        padding: '8px 12px',
+                                                        borderRadius: 6,
+                                                        border: 'none',
+                                                        background: '#2563eb',
+                                                        color: 'white',
+                                                        fontWeight: 600,
+                                                        cursor: savingInventory ? 'not-allowed' : 'pointer',
+                                                        opacity: savingInventory ? 0.7 : 1
+                                                    }}
+                                                >
+                                                    + Ajouter type
+                                                </button>
+                                            </div>
+                                        </form>
+
+                                        <form onSubmit={handleCreateInventoryUnit} style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
+                                            <h3 style={{ margin: 0, marginBottom: 10, fontSize: '1rem', color: '#1f2937' }}>Nouvelle unité physique</h3>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                                <select
+                                                    value={newUnitForm.equipmentKindId}
+                                                    onChange={(e) => setNewUnitForm((prev) => ({ ...prev, equipmentKindId: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                >
+                                                    <option value="">Sélectionner un type</option>
+                                                    {equipmentKinds.map((kind) => (
+                                                        <option key={kind.id} value={kind.id}>
+                                                            {kind.label} ({kind.slug})
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Nom affiché (ex: Chaloupe #2)"
+                                                    value={newUnitForm.displayName}
+                                                    onChange={(e) => setNewUnitForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                />
+                                                <input
+                                                    type="text"
+                                                    placeholder="Code unité (ex: BOAT-02)"
+                                                    value={newUnitForm.unitCode}
+                                                    onChange={(e) => setNewUnitForm((prev) => ({ ...prev, unitCode: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                />
+                                                <select
+                                                    value={newUnitForm.chaletId}
+                                                    onChange={(e) => setNewUnitForm((prev) => ({ ...prev, chaletId: e.target.value }))}
+                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+                                                >
+                                                    <option value="">Partagé entre tous les chalets (réserve globale)</option>
+                                                    {chalets.map((ch) => (
+                                                        <option key={ch.key ?? ch.id} value={ch.key ?? ch.id}>
+                                                            {ch.Name || ch.name || `Chalet ${ch.key ?? ch.id}`}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <button
+                                                    type="submit"
+                                                    disabled={savingInventory || equipmentKinds.length === 0}
+                                                    style={{
+                                                        marginTop: 2,
+                                                        padding: '8px 12px',
+                                                        borderRadius: 6,
+                                                        border: 'none',
+                                                        background: '#059669',
+                                                        color: 'white',
+                                                        fontWeight: 600,
+                                                        cursor: savingInventory ? 'not-allowed' : 'pointer',
+                                                        opacity: savingInventory || equipmentKinds.length === 0 ? 0.7 : 1
+                                                    }}
+                                                >
+                                                    + Ajouter unité (agenda Google)
+                                                </button>
+                                            </div>
+                                        </form>
+                                    </div>
+
+                                    <div style={{ marginBottom: 10 }}>
+                                        <h3 style={{ margin: 0, marginBottom: 6, fontSize: '1rem', color: '#334155' }}>
+                                            Types ({equipmentKinds.length})
+                                        </h3>
+                                        {equipmentKinds.length === 0 ? (
+                                            <p style={{ color: '#64748b', margin: 0, fontSize: '0.9rem' }}>Aucun type d’équipement.</p>
+                                        ) : (
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                                {equipmentKinds.map((kind) => (
+                                                    <div key={kind.id} style={{ border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 999, padding: '6px 10px', fontSize: '0.82rem', color: '#1e3a8a' }}>
+                                                        {kind.label} ({kind.slug})
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div style={{ marginTop: 14 }}>
+                                        <h3 style={{ margin: 0, marginBottom: 8, fontSize: '1rem', color: '#334155' }}>
+                                            Unités ({inventoryUnits.length})
+                                        </h3>
+                                        {loadingInventory ? (
+                                            <p style={{ color: '#64748b', margin: 0, fontSize: '0.9rem' }}>Chargement inventaire...</p>
+                                        ) : inventoryUnits.length === 0 ? (
+                                            <p style={{ color: '#64748b', margin: 0, fontSize: '0.9rem' }}>Aucune unité physique créée.</p>
+                                        ) : (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                                {[...inventoryUnits].sort((a, b) => {
+                                                    const so = (a.sort_order ?? 0) - (b.sort_order ?? 0);
+                                                    if (so !== 0) return so;
+                                                    return String(a.unit_code || '').localeCompare(String(b.unit_code || ''));
+                                                }).map((unit) => {
+                                                    const assigned = chaletLabelForUnit(unit);
+                                                    return (
+                                                    <div
+                                                        key={unit.id}
+                                                        style={{
+                                                            border: '1px solid #e5e7eb',
+                                                            borderRadius: 8,
+                                                            padding: '10px 12px',
+                                                            display: 'flex',
+                                                            justifyContent: 'space-between',
+                                                            alignItems: 'flex-start',
+                                                            gap: 10,
+                                                            background: 'white'
+                                                        }}
+                                                    >
+                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                            <div style={{ fontWeight: 600, color: '#1f2937', fontSize: '0.92rem' }}>
+                                                                {unit.display_name} <span style={{ color: '#64748b', fontWeight: 500 }}>({unit.unit_code})</span>
+                                                            </div>
+                                                            <div style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 2 }}>
+                                                                {unit.equipment_kind?.label || 'Type inconnu'}
+                                                                {assigned ? (
+                                                                    <span style={{ marginLeft: 6, color: '#1d4ed8' }}>
+                                                                        · Dédiée : {assigned}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span style={{ marginLeft: 6 }}>· Réserve partagée (tous les chalets)</span>
+                                                                )}
+                                                            </div>
+                                                            <div style={{ color: unit.google_calendar_id ? '#065f46' : '#92400e', fontSize: '0.8rem', marginTop: 2 }}>
+                                                                {unit.google_calendar_id ? `📅 ${unit.google_calendar_id}` : 'Sans agenda Google'}
+                                                            </div>
+                                                        </div>
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}>
+                                                            <button
+                                                                type="button"
+                                                                disabled={!!unit.google_calendar_id || creatingUnitCalendarId === unit.id || !selectedEstablishment?.google_calendar_id}
+                                                                onClick={() => handleCreateInventoryCalendar(unit)}
+                                                                style={{
+                                                                    padding: '7px 10px',
+                                                                    borderRadius: 6,
+                                                                    border: 'none',
+                                                                    background: unit.google_calendar_id ? '#d1fae5' : '#4f46e5',
+                                                                    color: unit.google_calendar_id ? '#065f46' : 'white',
+                                                                    fontSize: '0.8rem',
+                                                                    fontWeight: 600,
+                                                                    cursor: (unit.google_calendar_id || creatingUnitCalendarId === unit.id) ? 'not-allowed' : 'pointer',
+                                                                    opacity: creatingUnitCalendarId === unit.id ? 0.7 : 1,
+                                                                    whiteSpace: 'nowrap'
+                                                                }}
+                                                            >
+                                                                {unit.google_calendar_id
+                                                                    ? 'Agenda OK'
+                                                                    : creatingUnitCalendarId === unit.id
+                                                                        ? 'Création...'
+                                                                        : 'Créer agenda'}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                disabled={deactivatingUnitId === unit.id}
+                                                                onClick={() => handleRequestDeactivateInventoryUnit(unit)}
+                                                                style={{
+                                                                    padding: '7px 10px',
+                                                                    borderRadius: 6,
+                                                                    border: '1px solid #fecaca',
+                                                                    background: '#fef2f2',
+                                                                    color: '#991b1b',
+                                                                    fontSize: '0.8rem',
+                                                                    fontWeight: 600,
+                                                                    cursor: deactivatingUnitId === unit.id ? 'not-allowed' : 'pointer',
+                                                                    whiteSpace: 'nowrap'
+                                                                }}
+                                                            >
+                                                                {deactivatingUnitId === unit.id ? '…' : 'Retirer'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             )}
 
@@ -1966,123 +2600,110 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                     backgroundColor: 'white',
                                     padding: '20px'
                                 }}>
-                                    <h2 className="guide-section-title" style={{ padding: 0 }}>📅 Calendrier de réservations</h2>
-                                    <p style={{ color: '#64748b', fontSize: '0.95rem', marginBottom: '16px', marginTop: '8px' }}>
-                                        Synchronisez vos réservations avec Google Calendar
-                                    </p>
+                                    <h2 className="guide-section-title" style={{ padding: 0, marginBottom: '12px' }}>📅 Calendrier</h2>
+                                    <div
+                                        style={{
+                                            marginBottom: 16,
+                                            padding: '14px 16px',
+                                            borderRadius: 10,
+                                            background: '#f0fdf4',
+                                            border: '1px solid #bbf7d0',
+                                            fontSize: '0.9rem',
+                                            color: '#14532d',
+                                            lineHeight: 1.55,
+                                        }}
+                                    >
+                                        <strong style={{ display: 'block', marginBottom: 6 }}>Employés et Google Agenda</strong>
+                                        Ce lieu utilise <strong>un compte Google</strong> connecté ci‑dessous. Chaque chalet ou chaloupe peut avoir son
+                                        <strong> sous-agenda</strong> : votre équipe voit les mêmes réservations en ouvrant Google Calendar avec ce compte, ou
+                                        vous pouvez <strong>partager chaque sous-agenda</strong> avec des courriels employés (dans Google Calendar :
+                                        Paramètres de l’agenda → Partager avec des personnes spécifiques). Ainsi personne n’a besoin de toucher au code.
+                                    </div>
                                     <div className="guide-section-content" style={{ padding: 0 }}>
-                                        {googleConnectionSuccess && (
-                                            <div style={{
-                                                padding: '12px',
-                                                backgroundColor: '#d1fae5',
-                                                color: '#065f46',
-                                                borderRadius: '6px',
-                                                marginBottom: '16px',
-                                                fontSize: '0.9rem',
-                                                border: '1px solid #10b981',
+                                        <EstablishmentCalendar
+                                            establishmentKey={
+                                                selectedEstablishment.key || selectedEstablishment.id
+                                            }
+                                            chalets={chalets}
+                                        />
+
+                                        <div
+                                            style={{
+                                                marginTop: 12,
+                                                paddingTop: 10,
+                                                borderTop: '1px solid #e2e8f0',
                                                 display: 'flex',
+                                                flexWrap: 'wrap',
                                                 alignItems: 'center',
-                                                gap: '8px'
-                                            }}>
-                                                <span>✅</span>
-                                                <span>Google Calendar connecté avec succès!</span>
-                                            </div>
-                                        )}
-                                        {selectedEstablishment.google_calendar_id ? (
-                                            <div>
-                                                <div style={{
-                                                    padding: '16px',
-                                                    backgroundColor: '#f0fdf4',
-                                                    borderRadius: '8px',
-                                                    marginBottom: '16px',
-                                                    border: '1px solid #86efac'
-                                                }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                                                        <span style={{ fontSize: '1.2rem' }}>✅</span>
-                                                        <span style={{ color: '#059669', fontWeight: '600' }}>
-                                                            Calendrier connecté
-                                                        </span>
-                                                    </div>
-                                                    <p style={{ color: '#64748b', fontSize: '0.95rem', marginLeft: '28px' }}>
-                                                        Vos chalets peuvent synchroniser leurs réservations automatiquement.
-                                                    </p>
-                                                </div>
+                                                justifyContent: 'space-between',
+                                                gap: 8,
+                                                fontSize: '11px',
+                                                color: '#94a3b8'
+                                            }}
+                                        >
+                                            <span>
+                                                Google Agenda (agendas unités)&nbsp;:{' '}
+                                                {selectedEstablishment.google_calendar_id ? (
+                                                    <span style={{ color: '#059669' }}>connecté</span>
+                                                ) : (
+                                                    <span style={{ color: '#cbd5e1' }}>non connecté</span>
+                                                )}
+                                                {googleConnectionSuccess ? (
+                                                    <span style={{ marginLeft: 8, color: '#059669' }}>✓ synchro récente</span>
+                                                ) : null}
+                                            </span>
+                                            {selectedEstablishment.google_calendar_id ? (
                                                 <button
                                                     type="button"
                                                     onClick={handleDisconnectGoogleCalendar}
                                                     disabled={isConnectingGoogle}
+                                                    title="Révoquer l’accès Google pour cet établissement"
                                                     style={{
-                                                        padding: '10px 20px',
-                                                        backgroundColor: '#ef4444',
-                                                        color: 'white',
                                                         border: 'none',
-                                                        borderRadius: '6px',
+                                                        background: 'transparent',
+                                                        padding: 0,
+                                                        fontSize: '11px',
+                                                        color: isConnectingGoogle ? '#94a3b8' : '#f87171',
                                                         cursor: isConnectingGoogle ? 'not-allowed' : 'pointer',
-                                                        fontWeight: '500',
-                                                        fontSize: '0.9rem',
+                                                        textDecoration: 'underline',
+                                                        textUnderlineOffset: 2,
                                                         opacity: isConnectingGoogle ? 0.6 : 1
                                                     }}
                                                 >
-                                                    {isConnectingGoogle ? 'Déconnexion...' : 'Déconnecter le calendrier'}
+                                                    {isConnectingGoogle ? 'Déconnexion…' : 'Déconnecter Google'}
                                                 </button>
-                                            </div>
-                                        ) : (
-                                            <div>
-                                                <div style={{
-                                                    padding: '16px',
-                                                    backgroundColor: '#fef3c7',
-                                                    borderRadius: '8px',
-                                                    marginBottom: '16px',
-                                                    border: '1px solid #fbbf24'
-                                                }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                                                        <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-                                                        <span style={{ color: '#92400e', fontWeight: '600' }}>
-                                                            Calendrier non connecté
-                                                        </span>
-                                                    </div>
-                                                    <p style={{ color: '#92400e', fontSize: '0.95rem', marginLeft: '28px' }}>
-                                                        Connectez Google Calendar pour gérer automatiquement les réservations de vos chalets.
-                                                    </p>
-                                                </div>
-
-                                                {googleConnectionError && (
-                                                    <div style={{
-                                                        padding: '12px',
-                                                        backgroundColor: '#fee2e2',
-                                                        color: '#991b1b',
-                                                        borderRadius: '6px',
-                                                        marginBottom: '16px',
-                                                        fontSize: '0.9rem'
-                                                    }}>
-                                                        {googleConnectionError}
-                                                    </div>
-                                                )}
-
+                                            ) : (
                                                 <button
                                                     type="button"
                                                     onClick={handleConnectGoogleCalendar}
                                                     disabled={isConnectingGoogle}
                                                     style={{
-                                                        padding: '10px 20px',
-                                                        backgroundColor: '#3b82f6',
-                                                        color: 'white',
                                                         border: 'none',
-                                                        borderRadius: '6px',
+                                                        background: 'transparent',
+                                                        padding: 0,
+                                                        fontSize: '11px',
+                                                        color: '#93c5fd',
                                                         cursor: isConnectingGoogle ? 'not-allowed' : 'pointer',
-                                                        fontWeight: '500',
-                                                        fontSize: '0.9rem',
-                                                        opacity: isConnectingGoogle ? 0.6 : 1,
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        gap: '8px'
+                                                        textDecoration: 'underline',
+                                                        textUnderlineOffset: 2,
+                                                        opacity: isConnectingGoogle ? 0.6 : 1
                                                     }}
                                                 >
-                                                    <span>📅</span>
-                                                    <span>{isConnectingGoogle ? 'Connexion...' : 'Connecter mon calendrier'}</span>
+                                                    {isConnectingGoogle ? 'Connexion…' : 'Connecter Google'}
                                                 </button>
-                                            </div>
-                                        )}
+                                            )}
+                                        </div>
+
+                                        {googleConnectionError ? (
+                                            <p style={{
+                                                margin: '6px 0 0',
+                                                fontSize: '11px',
+                                                color: '#f87171',
+                                                lineHeight: 1.35
+                                            }}>
+                                                {googleConnectionError}
+                                            </p>
+                                        ) : null}
                                     </div>
                                 </div>
                             )}
@@ -3329,6 +3950,111 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                 </div>
             )}
             
+            {/* Confirmation retrait unité d’équipement */}
+            {inventoryUnitPendingDeactivate && (
+                <div
+                    role="presentation"
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        backgroundColor: 'rgba(15,23,42,0.55)',
+                        zIndex: 10000,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '16px'
+                    }}
+                    onClick={() => !deactivatingUnitId && setInventoryUnitPendingDeactivate(null)}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="inventory-deactivate-title"
+                        style={{
+                            background: '#fff',
+                            borderRadius: '14px',
+                            padding: '22px 24px',
+                            maxWidth: '400px',
+                            width: '100%',
+                            boxShadow: '0 20px 50px rgba(0,0,0,0.22)',
+                            border: '1px solid #e2e8f0'
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                            <div
+                                style={{
+                                    flexShrink: 0,
+                                    width: '40px',
+                                    height: '40px',
+                                    borderRadius: '10px',
+                                    background: '#fef2f2',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '1.25rem'
+                                }}
+                                aria-hidden
+                            >
+                                ⚠️
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <h3
+                                    id="inventory-deactivate-title"
+                                    style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#1e293b' }}
+                                >
+                                    Retirer cette unité ?
+                                </h3>
+                                <p style={{ margin: '10px 0 0', fontSize: '0.93rem', color: '#475569', lineHeight: 1.55 }}>
+                                    <strong>Êtes-vous sûr de vouloir procéder ?</strong>
+                                </p>
+                                <p style={{ margin: '10px 0 0', fontSize: '0.88rem', color: '#64748b', lineHeight: 1.5 }}>
+                                    « {inventoryUnitPendingDeactivate.display_name} » ({inventoryUnitPendingDeactivate.unit_code}) disparaîtra de cette liste et ne sera plus proposée aux nouvelles réservations. Les réservations passées avec cette unité ne sont pas supprimées.
+                                </p>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '22px', flexWrap: 'wrap' }}>
+                            <button
+                                type="button"
+                                disabled={!!deactivatingUnitId}
+                                onClick={() => setInventoryUnitPendingDeactivate(null)}
+                                style={{
+                                    padding: '10px 16px',
+                                    borderRadius: '8px',
+                                    border: '1px solid #e2e8f0',
+                                    background: '#fff',
+                                    color: '#374151',
+                                    fontWeight: 600,
+                                    fontSize: '0.875rem',
+                                    cursor: deactivatingUnitId ? 'not-allowed' : 'pointer',
+                                    opacity: deactivatingUnitId ? 0.6 : 1
+                                }}
+                            >
+                                Annuler
+                            </button>
+                            <button
+                                type="button"
+                                disabled={deactivatingUnitId === inventoryUnitPendingDeactivate?.id}
+                                onClick={() => handleConfirmDeactivateInventoryUnit()}
+                                style={{
+                                    padding: '10px 16px',
+                                    borderRadius: '8px',
+                                    border: 'none',
+                                    background: '#b91c1c',
+                                    color: '#fff',
+                                    fontWeight: 600,
+                                    fontSize: '0.875rem',
+                                    cursor: deactivatingUnitId === inventoryUnitPendingDeactivate?.id ? 'not-allowed' : 'pointer',
+                                    opacity: deactivatingUnitId === inventoryUnitPendingDeactivate?.id ? 0.75 : 1
+                                }}
+                            >
+                                {deactivatingUnitId === inventoryUnitPendingDeactivate?.id ? 'Traitement…' : 'Oui, retirer'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Google Calendar Connection Required Modal */}
             {showGoogleConnectModal && (
                 <div

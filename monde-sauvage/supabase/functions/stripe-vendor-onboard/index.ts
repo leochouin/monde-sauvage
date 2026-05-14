@@ -78,10 +78,13 @@ Deno.serve(async (req: Request) => {
           country: "CA",
           email: entityEmail,
           capabilities: {
-            card_payments: { requested: "true" },
-            transfers: { requested: "true" },
+            transfers: { requested: true },
           },
           business_type: "individual",
+          business_profile: {
+            url: FRONTEND_URL,
+            mcc: "7999",
+          },
           metadata: {
             guide_id: guideId,
             user_id: user.id,

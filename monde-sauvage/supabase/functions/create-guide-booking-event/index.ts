@@ -116,13 +116,13 @@ Deno.serve(async (req: Request) => {
 
     // Check if start_time is just a date (YYYY-MM-DD format)
     if (/^\d{4}-\d{2}-\d{2}$/.test(start_time)) {
-      normalizedStartTime = `${start_time}T09:00:00`;
+      normalizedStartTime = `${start_time}T08:00:00`;
       console.log(`📅 Converted date-only start_time to: ${normalizedStartTime} (will use tz=${GUIDE_TIMEZONE})`);
     }
 
     // Check if end_time is just a date (YYYY-MM-DD format)
     if (/^\d{4}-\d{2}-\d{2}$/.test(end_time)) {
-      normalizedEndTime = `${end_time}T17:00:00`;
+      normalizedEndTime = `${end_time}T16:00:00`;
       console.log(`📅 Converted date-only end_time to: ${normalizedEndTime} (will use tz=${GUIDE_TIMEZONE})`);
     }
 

@@ -8,6 +8,8 @@ import { getGuideBookings } from "../utils/guideBookingService.js";
 import { startGuideOnboarding, checkGuideOnboardingStatus, createGuideDashboardLink } from "../utils/stripeService.js";
 import useAvatarSource from "../utils/useAvatarSource.js";
 import QuickbooksTestButton from "../components/QuickbooksTestButton.jsx";
+import { syncGuideQuickbooksInvoices, listGuideQuickbooksInvoices } from "../utils/quickbooksService.js";
+import { toast } from "../utils/toast.js";
 
 // Fish types - shared constant
 const FISH_TYPES = [
@@ -43,9 +45,23 @@ const isMissingGuideServiceLocationsTableError = (error) => {
   );
 };
 
+const SS_TAB_KEY = 'ms_settings_tab';
+const SS_SECTION_KEY = 'ms_settings_section';
+
+const ssGet = (key, fallback) => {
+  try { return sessionStorage.getItem(key) || fallback; } catch { return fallback; }
+};
+const ssSet = (key, value) => {
+  try { sessionStorage.setItem(key, value); } catch {}
+};
+
 export default function AccountSettingsModal({ isOpen, onClose, user, profile, guide, onOpenClients, onOpenHelp }) {
-  const [activeTab, setActiveTab] = useState('profile');
-  const [activeGuideSection, setActiveGuideSection] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => ssGet(SS_TAB_KEY, 'profile'));
+  const [activeGuideSection, setActiveGuideSection] = useState(() => ssGet(SS_SECTION_KEY, 'dashboard'));
+
+  useEffect(() => { ssSet(SS_TAB_KEY, activeTab); }, [activeTab]);
+  useEffect(() => { ssSet(SS_SECTION_KEY, activeGuideSection); }, [activeGuideSection]);
+
   const { avatarSrc, handleAvatarError } = useAvatarSource(user);
   const [isCompactLayout, setIsCompactLayout] = useState(
     typeof globalThis !== 'undefined' && globalThis.innerWidth < 1100
@@ -102,6 +118,13 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
     hasAccount: false,
   });
 
+  // QuickBooks accounting state
+  const [qbInvoices, setQbInvoices] = useState(null);
+  const [qbInvoicesLoading, setQbInvoicesLoading] = useState(false);
+  const [qbInvoicesError, setQbInvoicesError] = useState(null);
+  const [qbSyncing, setQbSyncing] = useState(false);
+  const [qbSyncResult, setQbSyncResult] = useState(null);
+
   // Initialize profile data
   useEffect(() => {
     if (user) {
@@ -141,6 +164,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
       handleCheckStripeStatus();
     }
   }, [guide?.stripe_account_id]);
+
 
   useEffect(() => {
     const handleResize = () => {
@@ -208,6 +232,47 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
       setStripeError('Impossible d\'ouvrir le tableau de bord Stripe. ' + err.message);
     } finally {
       setStripeDashboardLoading(false);
+    }
+  };
+
+  const handleLoadQbInvoices = async () => {
+    setQbInvoicesLoading(true);
+    setQbInvoicesError(null);
+    try {
+      const result = await listGuideQuickbooksInvoices(20);
+      setQbInvoices(result.invoices || []);
+    } catch (err) {
+      const msg = err.message || '';
+      const friendlyMsg = msg === 'Edge function error: 404'
+        ? 'Fonction non déployée. Exécutez : supabase functions deploy quickbooks-list-invoices'
+        : msg || 'Erreur lors du chargement des factures';
+      setQbInvoicesError(friendlyMsg);
+    } finally {
+      setQbInvoicesLoading(false);
+    }
+  };
+
+  const handleQbSync = async () => {
+    setQbSyncing(true);
+    setQbSyncResult(null);
+    try {
+      const result = await syncGuideQuickbooksInvoices();
+      setQbSyncResult(result);
+      if (result.synced > 0) {
+        toast.success(`${result.synced} réservation(s) synchronisée(s) vers QuickBooks`);
+        await handleLoadQbInvoices();
+      } else {
+        toast.success('Aucune nouvelle réservation à synchroniser');
+      }
+    } catch (err) {
+      const msg = err.message || '';
+      const friendlyMsg = msg === 'Edge function error: 404'
+        ? 'Fonction non déployée. Exécutez : supabase functions deploy quickbooks-sync-invoices'
+        : msg || 'Erreur de synchronisation QuickBooks';
+      toast.error(friendlyMsg);
+      setQbSyncResult({ error: friendlyMsg });
+    } finally {
+      setQbSyncing(false);
     }
   };
 
@@ -550,7 +615,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
       console.log('Guide profile saved successfully');
     } catch (err) {
       console.error('Error saving guide:', err);
-      alert('Erreur lors de la sauvegarde: ' + err.message);
+      toast.error('Erreur lors de la sauvegarde : ' + err.message);
     } finally {
       setIsSavingGuide(false);
     }
@@ -1507,65 +1572,201 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
                 borderRadius: '12px',
                 border: '1px solid #E5E7EB',
               }}>
-                <h3 style={{ margin: '0 0 8px', fontSize: '16px', color: '#1F3A2E' }}>
-                  📒 Comptabilité
+                <h3 style={{ margin: '0 0 4px', fontSize: '16px', color: '#1F3A2E' }}>
+                  📒 Comptabilité QuickBooks
                 </h3>
                 <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#5A7766' }}>
-                  Connectez votre compte QuickBooks Online pour synchroniser vos revenus de guide.
+                  Synchronisez vos réservations payées vers QuickBooks Online en un clic.
                 </p>
 
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                {/* Connection badge */}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '16px' }}>
                   {guide?.quickbooks_connected ? (
                     <span style={{ padding: '4px 12px', borderRadius: '12px', background: '#dcfce7', color: '#166534', fontSize: '13px', fontWeight: '500' }}>
-                      ✅ QuickBooks connecté{guide?.quickbooks_realm_id ? ` (Entreprise ${guide.quickbooks_realm_id})` : ''}
+                      ✅ QuickBooks connecté
                     </span>
                   ) : (
                     <span style={{ padding: '4px 12px', borderRadius: '12px', background: '#f1f5f9', color: '#64748b', fontSize: '13px' }}>
                       Non connecté
                     </span>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!guide?.id) return;
+                      const redirectTo = encodeURIComponent(globalThis.location.href);
+                      globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/quickbooks-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
+                    }}
+                    style={{
+                      padding: '4px 12px',
+                      backgroundColor: guide?.quickbooks_connected ? '#f1f5f9' : '#2CA01C',
+                      color: guide?.quickbooks_connected ? '#64748b' : 'white',
+                      border: `1px solid ${guide?.quickbooks_connected ? '#e2e8f0' : '#2CA01C'}`,
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                      fontWeight: '500',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {guide?.quickbooks_connected ? '🔄 Reconnecter' : 'Connecter QuickBooks'}
+                  </button>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!guide?.id) return;
-                    const redirectTo = encodeURIComponent(globalThis.location.href);
-                    globalThis.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/quickbooks-oauth?guideId=${guide.id}&redirect_to=${redirectTo}`;
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    backgroundColor: '#2CA01C',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                  }}
-                >
-                  {guide?.quickbooks_connected ? '🔄 Reconnecter QuickBooks' : 'Connecter QuickBooks'}
-                </button>
 
                 {guide?.quickbooks_connected && (
-                  <div style={{ marginTop: '16px' }}>
-                    <QuickbooksTestButton />
-                  </div>
+                  <>
+                    {/* Sync action */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={handleQbSync}
+                        disabled={qbSyncing}
+                        style={{
+                          flex: '1 1 auto',
+                          padding: '10px 16px',
+                          backgroundColor: qbSyncing ? '#94a3b8' : '#1F3A2E',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '10px',
+                          fontSize: '13px',
+                          fontWeight: '600',
+                          cursor: qbSyncing ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {qbSyncing ? '⏳ Synchronisation...' : '⬆️ Synchroniser vers QuickBooks'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleLoadQbInvoices}
+                        disabled={qbInvoicesLoading}
+                        style={{
+                          padding: '10px 14px',
+                          backgroundColor: 'white',
+                          color: '#1F3A2E',
+                          border: '1px solid #E5E7EB',
+                          borderRadius: '10px',
+                          fontSize: '13px',
+                          cursor: qbInvoicesLoading ? 'not-allowed' : 'pointer',
+                        }}
+                        title="Actualiser la liste"
+                      >
+                        {qbInvoicesLoading ? '⏳' : '↺'}
+                      </button>
+                    </div>
+
+                    {/* Sync result */}
+                    {qbSyncResult && !qbSyncing && (
+                      <div style={{
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        marginBottom: '12px',
+                        fontSize: '12px',
+                        background: qbSyncResult.error ? '#FEF2F2' : '#F0FDF4',
+                        color: qbSyncResult.error ? '#991B1B' : '#166534',
+                        border: `1px solid ${qbSyncResult.error ? '#FECACA' : '#BBF7D0'}`,
+                      }}>
+                        {qbSyncResult.error
+                          ? `⚠️ ${qbSyncResult.error}`
+                          : `✅ ${qbSyncResult.synced} synchronisée(s)${qbSyncResult.skipped > 0 ? `, ${qbSyncResult.skipped} ignorée(s)` : ''}${qbSyncResult.errors?.length > 0 ? ` — ${qbSyncResult.errors.length} erreur(s)` : ''}`
+                        }
+                      </div>
+                    )}
+
+                    {/* Invoices list */}
+                    <div style={{ borderTop: '1px solid #F1F5F9', paddingTop: '14px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: '600', color: '#1F3A2E', marginBottom: '10px' }}>
+                        Factures récentes
+                      </div>
+
+                      {qbInvoicesLoading && (
+                        <div style={{ color: '#9CA3AF', fontSize: '13px', textAlign: 'center', padding: '16px' }}>
+                          Chargement...
+                        </div>
+                      )}
+
+                      {qbInvoicesError && !qbInvoicesLoading && (
+                        <div style={{
+                          padding: '10px 14px',
+                          background: '#FEF2F2',
+                          border: '1px solid #FECACA',
+                          borderRadius: '8px',
+                          fontSize: '12px',
+                          color: '#991B1B',
+                          marginBottom: '8px',
+                        }}>
+                          ⚠️ {qbInvoicesError}
+                        </div>
+                      )}
+
+                      {!qbInvoicesLoading && !qbInvoicesError && qbInvoices !== null && (
+                        qbInvoices.length === 0 ? (
+                          <div style={{ color: '#9CA3AF', fontSize: '13px', textAlign: 'center', padding: '12px' }}>
+                            Aucune facture trouvée dans QuickBooks
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {qbInvoices.map((inv) => (
+                              <div key={inv.id} style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '10px 12px',
+                                background: '#F8FAF9',
+                                borderRadius: '8px',
+                                border: '1px solid #E5E7EB',
+                                gap: '8px',
+                                flexWrap: 'wrap',
+                              }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: '12px', fontWeight: '600', color: '#1F3A2E' }}>
+                                    #{inv.docNumber || inv.id} — {inv.customerName}
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#9CA3AF', marginTop: '2px' }}>
+                                    {inv.date}
+                                  </div>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                  <span style={{ fontSize: '13px', fontWeight: '700', color: '#1F3A2E' }}>
+                                    {new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(inv.total)}
+                                  </span>
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '10px',
+                                    fontSize: '11px',
+                                    fontWeight: '500',
+                                    background: inv.isPaid ? '#dcfce7' : '#fef9c3',
+                                    color: inv.isPaid ? '#166534' : '#92400e',
+                                  }}>
+                                    {inv.isPaid ? 'Payée' : 'En attente'}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      )}
+
+                      {!qbInvoicesLoading && qbInvoices === null && !qbInvoicesError && (
+                        <div style={{ color: '#9CA3AF', fontSize: '13px', textAlign: 'center', padding: '12px' }}>
+                          Cliquez sur ↺ pour charger les factures
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
 
-                <div style={{
-                  marginTop: '12px',
-                  padding: '10px 14px',
-                  background: '#f8fafc',
-                  borderRadius: '10px',
-                  border: '1px solid #e2e8f0',
-                  fontSize: '12px',
-                  color: '#64748b',
-                }}>
-                  ℹ️ L&apos;autorisation se fait via Intuit. Aucune synchronisation n&apos;est encore active — seule la connexion est enregistrée.
-                </div>
+                {!guide?.quickbooks_connected && (
+                  <div style={{
+                    marginTop: '4px',
+                    padding: '10px 14px',
+                    background: '#f8fafc',
+                    borderRadius: '10px',
+                    border: '1px solid #e2e8f0',
+                    fontSize: '12px',
+                    color: '#64748b',
+                  }}>
+                    ℹ️ Connectez votre compte QuickBooks Online via le bouton ci-dessus pour activer la synchronisation automatique des factures.
+                  </div>
+                )}
               </div>}
 
               {/* Statistics / Avis */}

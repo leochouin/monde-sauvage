@@ -23,3 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 public/map.png
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/

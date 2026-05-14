@@ -144,7 +144,7 @@ async function markCalendarSyncFailed(bookingId, errorMessage) {
             .update({
                 calendar_sync_failed: true,
                 calendar_sync_error: errorMessage,
-                calendar_sync_attempts: supabase.rpc ? undefined : 1, // Incremented server-side ideally
+                calendar_sync_attempts: 1,
             })
             .eq('id', bookingId);
         console.warn(`⚠️ Marked booking ${bookingId} as calendar_sync_failed: ${errorMessage}`);
@@ -723,11 +723,16 @@ export const getGuideBookings = async (guideId, options = {}) => {
             query = query.is('deleted_at', null);
         }
 
-        // Filter by date range (for calendar views)
+        // Filter by date range (for calendar views).
+        // Use OVERLAP semantics rather than containment: any booking whose
+        // [start_time, end_time] interval intersects the requested window
+        // should show up. Containment would silently drop multi-day bookings
+        // that span the window edges (e.g. a Mar 31 → Apr 2 booking would
+        // disappear from both the March and April calendar views).
         if (options.startDate && options.endDate) {
             query = query
-                .gte('start_time', options.startDate)
-                .lte('end_time', options.endDate);
+                .lt('start_time', options.endDate)
+                .gt('end_time', options.startDate);
         } else if (!options.includeHistorical) {
             // Filter by historical (past bookings) only if no date range specified
             query = query.gte('end_time', new Date().toISOString());

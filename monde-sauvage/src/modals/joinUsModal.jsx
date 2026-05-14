@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { toast } from "../utils/toast.js";
 
 export default function JoinUsModal({ isRejoindreOpen, onClose }) {
     const [role, setRole] = useState(null); // "guide" or "entreprise"
@@ -50,7 +51,7 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
         // Simple validation example
         if (role === "guide") {
             if (!guide.fullName || !guide.email) {
-                alert("Please fill name and email for Guide application.");
+                toast.error("Veuillez renseigner votre nom et votre courriel.");
                 setSubmitting(false);
                 return;
             }
@@ -58,7 +59,7 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
             console.log("Submitting Guide application:", guide);
         } else if (role === "entreprise") {
             if (!entreprise.companyName || !entreprise.email) {
-                alert("Please fill company name and email for Entreprise application.");
+                toast.error("Veuillez renseigner le nom de l'entreprise et le courriel.");
                 setSubmitting(false);
                 return;
             }
@@ -67,7 +68,7 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
 
         // Simulate network latency
         await new Promise((r) => setTimeout(r, 800));
-        alert("Application submitted. Thank you!");
+        toast.success("Candidature envoyée. Merci !");
         closeForm();
     }
 
@@ -75,8 +76,8 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
 
     return (
         <div className="modal">
-            <div className="modal-content">
-                <h1 className="modal-title">Rejoignez-nous!</h1>
+            <div className="modal-content" style={{ background: 'linear-gradient(165deg, #f8f4ea 0%, #f4efe3 48%, #f2ede2 100%)', color: '#1F3A2E' }}>
+                <h1 className="modal-title" style={{ color: '#173428', fontSize: '26px', fontFamily: '"Iowan Old Style", "Palatino Linotype", serif' }}>Rejoignez-nous!</h1>
                 <button type="button" className="modal-close-trip" onClick={onClose}>X</button>
 
                 {!role ? (
@@ -88,17 +89,59 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
                         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16 }}>
                             <button
                                 type="button"
-                                className="chalet-select-button"
                                 onClick={() => openForm("guide")}
-                                style={{ width: "100%", padding: "12px" }}
+                                style={{
+                                  width: "100%",
+                                  padding: "14px 15px",
+                                  border: 'none',
+                                  borderRadius: '14px',
+                                  background: 'linear-gradient(145deg, #214537, #2F5C49)',
+                                  color: '#FFFCF7',
+                                  cursor: 'pointer',
+                                  fontWeight: '600',
+                                  fontSize: '15px',
+                                  letterSpacing: '0.02em',
+                                  textAlign: 'left',
+                                  boxShadow: '0 10px 20px rgba(22, 43, 34, 0.24)',
+                                  transition: 'transform 0.2s ease, box-shadow 0.2s ease'
+                                }}
+                                onMouseOver={(e) => {
+                                  e.currentTarget.style.transform = 'translateY(-1px)';
+                                  e.currentTarget.style.boxShadow = '0 14px 24px rgba(22, 43, 34, 0.3)';
+                                }}
+                                onMouseOut={(e) => {
+                                  e.currentTarget.style.transform = 'translateY(0)';
+                                  e.currentTarget.style.boxShadow = '0 10px 20px rgba(22, 43, 34, 0.24)';
+                                }}
                             >
                                 Je suis un Guide
                             </button>
                             <button
                                 type="button"
-                                className="chalet-select-button"
                                 onClick={() => openForm("entreprise")}
-                                style={{ width: "100%", padding: "12px" }}
+                                style={{
+                                  width: "100%",
+                                  padding: "14px 15px",
+                                  border: 'none',
+                                  borderRadius: '14px',
+                                  background: 'linear-gradient(145deg, #214537, #2F5C49)',
+                                  color: '#FFFCF7',
+                                  cursor: 'pointer',
+                                  fontWeight: '600',
+                                  fontSize: '15px',
+                                  letterSpacing: '0.02em',
+                                  textAlign: 'left',
+                                  boxShadow: '0 10px 20px rgba(22, 43, 34, 0.24)',
+                                  transition: 'transform 0.2s ease, box-shadow 0.2s ease'
+                                }}
+                                onMouseOver={(e) => {
+                                  e.currentTarget.style.transform = 'translateY(-1px)';
+                                  e.currentTarget.style.boxShadow = '0 14px 24px rgba(22, 43, 34, 0.3)';
+                                }}
+                                onMouseOut={(e) => {
+                                  e.currentTarget.style.transform = 'translateY(0)';
+                                  e.currentTarget.style.boxShadow = '0 10px 20px rgba(22, 43, 34, 0.24)';
+                                }}
                             >
                                 Je suis une Entreprise
                             </button>
@@ -286,8 +329,31 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
                                 <button
                                     type="submit"
                                     disabled={submitting}
-                                    className="chalet-select-button"
-                                    style={{ flex: 1 }}
+                                    style={{
+                                      flex: 1,
+                                      padding: "14px 15px",
+                                      border: 'none',
+                                      borderRadius: '14px',
+                                      background: 'linear-gradient(145deg, #214537, #2F5C49)',
+                                      color: '#FFFCF7',
+                                      cursor: submitting ? 'not-allowed' : 'pointer',
+                                      fontWeight: '600',
+                                      fontSize: '15px',
+                                      letterSpacing: '0.02em',
+                                      boxShadow: '0 10px 20px rgba(22, 43, 34, 0.24)',
+                                      transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                                      opacity: submitting ? 0.7 : 1
+                                    }}
+                                    onMouseOver={(e) => {
+                                      if (!submitting) {
+                                        e.currentTarget.style.transform = 'translateY(-1px)';
+                                        e.currentTarget.style.boxShadow = '0 14px 24px rgba(22, 43, 34, 0.3)';
+                                      }
+                                    }}
+                                    onMouseOut={(e) => {
+                                      e.currentTarget.style.transform = 'translateY(0)';
+                                      e.currentTarget.style.boxShadow = '0 10px 20px rgba(22, 43, 34, 0.24)';
+                                    }}
                                 >
                                     {submitting ? "Envoi..." : "Soumettre"}
                                 </button>
@@ -296,11 +362,23 @@ export default function JoinUsModal({ isRejoindreOpen, onClose }) {
                                     onClick={closeForm}
                                     style={{
                                         flex: 1,
-                                        padding: "10px 14px",
-                                        borderRadius: 6,
-                                        border: "1px solid #ccc",
-                                        background: "white",
-                                        cursor: "pointer",
+                                        padding: "14px 15px",
+                                        borderRadius: '14px',
+                                        border: '1px solid rgba(74, 117, 98, 0.32)',
+                                        background: 'rgba(255, 252, 247, 0.72)',
+                                        color: '#214337',
+                                        cursor: 'pointer',
+                                        fontWeight: '600',
+                                        fontSize: '15px',
+                                        transition: 'background-color 0.2s ease, border-color 0.2s ease'
+                                    }}
+                                    onMouseOver={(e) => {
+                                      e.currentTarget.style.backgroundColor = 'rgba(250, 245, 234, 0.9)';
+                                      e.currentTarget.style.borderColor = '#2D5F4C';
+                                    }}
+                                    onMouseOut={(e) => {
+                                      e.currentTarget.style.backgroundColor = 'rgba(255, 252, 247, 0.72)';
+                                      e.currentTarget.style.borderColor = 'rgba(74, 117, 98, 0.32)';
                                     }}
                                 >
                                     Annuler

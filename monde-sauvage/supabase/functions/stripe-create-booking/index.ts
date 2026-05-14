@@ -46,6 +46,110 @@ function stripFeeOriginColumns(payload: Record<string, unknown>): Record<string,
   return legacy;
 }
 
+/** Lignes d’addons inventaire passées depuis le frontend (Étape 2). */
+type ParsedInventoryAddonLine = {
+  slug?: string;
+  equipment_kind_id?: string;
+  quantity: number;
+};
+
+type EquipmentKindRow = {
+  id: string;
+  slug: string;
+  metadata: Record<string, unknown> | null;
+};
+
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Valide inventoryAddons du body POST chalet → lignes utilisables par la RPC Postgres. */
+function normalizeInventoryAddons(raw: unknown): ParsedInventoryAddonLine[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+
+  const out: ParsedInventoryAddonLine[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const quantity = typeof o.quantity === "number" ? Math.floor(o.quantity) : NaN;
+    if (!Number.isFinite(quantity) || quantity < 1 || quantity > 50) continue;
+
+    const slug = typeof o.slug === "string" && o.slug.trim().length > 0
+      ? o.slug.trim()
+      : undefined;
+    const equipment_kind_id = typeof o.equipment_kind_id === "string" && o.equipment_kind_id.trim().length > 0
+      ? o.equipment_kind_id.trim()
+      : typeof o.equipmentKindId === "string" && o.equipmentKindId.trim().length > 0
+      ? o.equipmentKindId.trim()
+      : undefined;
+
+    if (!slug && !equipment_kind_id) continue;
+    out.push({ slug, equipment_kind_id, quantity });
+
+    if (out.length >= 40) break; // garde-fou
+  }
+  return out;
+}
+
+function addonLineSubtotalFromMetadata(
+  metadata: Record<string, unknown>,
+  nights: number,
+  quantity: number,
+): number {
+  const perStayRaw = metadata["addon_price_per_stay"];
+  const perNightRaw = metadata["addon_price_per_night"];
+  let line = 0;
+
+  const perStay = typeof perStayRaw === "number" ? perStayRaw : Number(perStayRaw);
+  if (!Number.isNaN(perStay) && perStay >= 0) {
+    line = perStay * quantity;
+    return roundMoney(line);
+  }
+
+  const perNight = typeof perNightRaw === "number" ? perNightRaw : Number(perNightRaw);
+  const n = Math.max(1, nights);
+  if (!Number.isNaN(perNight) && perNight >= 0) {
+    line = perNight * n * quantity;
+    return roundMoney(line);
+  }
+
+  return 0;
+}
+
+/** Sous-total inventaire avant frais plateforme, à partir de equipment_kind.metadata. */
+function computeInventoryAddonsSubtotal(
+  kinds: EquipmentKindRow[],
+  lines: ParsedInventoryAddonLine[],
+  nights: number,
+): number {
+  if (lines.length === 0 || kinds.length === 0) return 0;
+
+  const byId = new Map(kinds.map((k) => [k.id, k]));
+  const bySlug = new Map(kinds.map((k) => [k.slug, k]));
+
+  let sum = 0;
+  for (const line of lines) {
+    const kind =
+      (line.equipment_kind_id ? byId.get(line.equipment_kind_id) : undefined) ??
+      (line.slug ? bySlug.get(line.slug) : undefined);
+
+    const meta = (kind?.metadata ?? {}) as Record<string, unknown>;
+    sum += addonLineSubtotalFromMetadata(meta, nights, line.quantity);
+  }
+  return roundMoney(sum);
+}
+
+function inventoryRpcPayload(lines: ParsedInventoryAddonLine[]): Array<
+  Record<string, string | number | undefined>
+> {
+  return lines.map((line) => {
+    const base: Record<string, string | number | undefined> = { quantity: line.quantity };
+    if (line.slug) base.slug = line.slug;
+    if (line.equipment_kind_id) base.equipment_kind_id = line.equipment_kind_id;
+    return base;
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -102,6 +206,7 @@ async function handleChaletBooking(
     customerName,
     customerEmail,
     notes,
+    inventoryAddons: rawInventoryAddons,
   } = body as {
     chaletId: string;
     startDate: string;
@@ -109,7 +214,12 @@ async function handleChaletBooking(
     customerName: string;
     customerEmail: string;
     notes?: string;
+    /** Lignes `{ slug | equipment_kind_id, quantity }` — auto-allocation côté RPC. */
+    inventoryAddons?: unknown;
   };
+
+  const inventoryAddonLines = normalizeInventoryAddons(rawInventoryAddons);
+  const hasInventoryAddons = inventoryAddonLines.length > 0;
 
   // Validate required fields
   if (!chaletId || !startDate || !endDate || !customerName || !customerEmail) {
@@ -173,7 +283,7 @@ async function handleChaletBooking(
     );
   }
 
-  // ── IDEMPOTENCY: reuse existing pending booking with same parameters ──
+  // ── IDEMPOTENCY: reuse existing pending booking avec PI (sans inventaire add-ons) ──
   const { data: existingChaletBooking } = await supabase
     .from("bookings")
     .select("id, stripe_payment_intent_id")
@@ -185,7 +295,10 @@ async function handleChaletBooking(
     .not("stripe_payment_intent_id", "is", null)
     .maybeSingle();
 
-  if (existingChaletBooking?.stripe_payment_intent_id) {
+  if (
+    !hasInventoryAddons &&
+    existingChaletBooking?.stripe_payment_intent_id
+  ) {
     console.log(`⏩ Reusing existing pending chalet booking ${existingChaletBooking.id}`);
     const existingPI = await stripeRequest("GET", `/payment_intents/${existingChaletBooking.stripe_payment_intent_id}`);
 
@@ -246,7 +359,7 @@ async function handleChaletBooking(
     .eq("chalet_id", chaletId)
     .eq("is_active", true);
 
-  // 6. Calculate total price
+  // 6. Calculate lodging price (+ inventaire si demandé)
   const pricing = calculateTotalPrice(
     chalet.price_per_night,
     startDate,
@@ -258,18 +371,42 @@ async function handleChaletBooking(
     return errorResponse("Calculated price is invalid");
   }
 
-  // Fee is added ON TOP of the chalet price (customer pays 110%)
   const chaletSubtotal = pricing.totalPrice;
-  const chaletApplicationFee = calculatePlatformFeeAmount(
-    chaletSubtotal,
+
+  let inventorySubtotalCad = 0;
+  let equipmentKindsForAddons: EquipmentKindRow[] = [];
+  if (hasInventoryAddons) {
+    const { data: kindsData, error: kindsErr } = await supabase
+      .from("equipment_kind")
+      .select("id, slug, metadata")
+      .eq("establishment_id", establishment.key)
+      .eq("is_active", true);
+
+    if (kindsErr) {
+      console.error("equipment_kind fetch error:", kindsErr);
+      return errorResponse("Impossible de charger les types d'équipement.", 500);
+    }
+    equipmentKindsForAddons = (kindsData || []) as EquipmentKindRow[];
+
+    inventorySubtotalCad = computeInventoryAddonsSubtotal(
+      equipmentKindsForAddons,
+      inventoryAddonLines,
+      pricing.nights,
+    );
+  }
+
+  const combinedBeforeFeeCad = roundMoney(chaletSubtotal + inventorySubtotalCad);
+
+  // Frais plateforme sur tout le sous-total (hébergement + addons)
+  const applicationFeeCad = calculatePlatformFeeAmount(
+    combinedBeforeFeeCad,
     { booking_origin: BOOKING_ORIGIN_PLATFORM },
     APPLICATION_FEE_PERCENT,
   );
-  const chaletTotal = Math.round((chaletSubtotal + chaletApplicationFee) * 100) / 100;
+  const grandTotalCad = roundMoney(combinedBeforeFeeCad + applicationFeeCad);
 
-  // Convert to cents for Stripe (CAD)
-  const amountInCents = Math.round(chaletTotal * 100);
-  const applicationFeeInCents = Math.round(chaletApplicationFee * 100);
+  const amountInCents = Math.round(grandTotalCad * 100);
+  const applicationFeeInCents = Math.round(applicationFeeCad * 100);
 
   // 7. Create the booking record (pending payment)
   const bookingInsertPayload = {
@@ -284,12 +421,12 @@ async function handleChaletBooking(
     customer_email: customerEmail,
     notes: notes || null,
     user_id: userId,
-    total_price: chaletTotal,
+    total_price: grandTotalCad,
     nights: pricing.nights,
     price_per_night: pricing.pricePerNight,
-    application_fee: chaletApplicationFee,
-    platform_fee_amount: chaletApplicationFee,
-    platform_fee_waived: chaletApplicationFee === 0,
+    application_fee: applicationFeeCad,
+    platform_fee_amount: applicationFeeCad,
+    platform_fee_waived: applicationFeeCad === 0,
   };
 
   let { data: booking, error: bookingError } = await supabase
@@ -318,19 +455,48 @@ async function handleChaletBooking(
     return errorResponse(`Failed to create booking: ${bookingError.message || bookingError.code || JSON.stringify(bookingError)}`, 500);
   }
 
+  // 7b. Réserver les unités physiques (bloquées en pending avant paiement Stripe)
+  let inventoryAllocCount = 0;
+  if (hasInventoryAddons) {
+    const { data: allocateResult, error: allocateError } = await supabase.rpc(
+      "allocate_inventory_for_booking",
+      {
+        p_booking_id: booking.id,
+        p_lines: inventoryRpcPayload(inventoryAddonLines),
+      },
+    );
+
+    if (allocateError) {
+      console.error("allocate_inventory_for_booking error:", allocateError);
+      await supabase.from("bookings").delete().eq("id", booking.id);
+      const msg = allocateError.message || String(allocateError.code);
+      if (/insufficient_inventory/i.test(msg || "")) {
+        return errorResponse(
+          "Stock d'équipement insuffisant pour ces dates. Réduisez les quantités ou choisissez d'autres créneaux.",
+          409,
+        );
+      }
+      return errorResponse(
+        allocateError.message || "Allocation d'inventaire impossible",
+        500,
+      );
+    }
+
+    const cnt = (allocateResult as { count_allocations?: number })?.count_allocations;
+    inventoryAllocCount =
+      typeof cnt === "number" ? cnt : inventoryAddonLines.reduce((s, l) => s + l.quantity, 0);
+
+    console.log(
+      `📦 Inventory allocated for booking ${booking.id}: ${inventoryAllocCount} row(s)`,
+    );
+  }
+
   // 8. Create Stripe PaymentIntent (DESTINATION CHARGE — payment on platform,
   //    automatic transfer to connected account. This ensures webhook events
   //    fire on the platform account so stripe-webhook receives them.)
-  const paymentIntent = await stripeRequest("POST", "/payment_intents", {
-    amount: String(amountInCents),
-    currency: "cad",
-    payment_method_types: ["card"],
-    application_fee_amount: String(applicationFeeInCents),
-    transfer_data: {
-      destination: establishment.stripe_account_id,
-    },
-    on_behalf_of: establishment.stripe_account_id,
-    metadata: {
+  let paymentIntent: Record<string, unknown>;
+  try {
+    const stripeMetadata: Record<string, string> = {
       booking_type: "chalet",
       booking_id: booking.id,
       chalet_id: chaletId,
@@ -343,19 +509,60 @@ async function handleChaletBooking(
       end_date: endDate,
       nights: String(pricing.nights),
       booking_origin: BOOKING_ORIGIN_PLATFORM,
-    },
-    receipt_email: customerEmail,
-    description: `Réservation: ${chalet.Name || "Chalet"} — ${pricing.nights} nuit(s) du ${startDate} au ${endDate}`,
-  });
+    };
+    if (inventorySubtotalCad > 0) {
+      stripeMetadata.inventory_subtotal_cad = String(inventorySubtotalCad);
+    }
+    if (inventoryAllocCount > 0) {
+      stripeMetadata.inventory_allocations_count = String(inventoryAllocCount);
+    }
 
-  // 9. Save PaymentIntent ID to booking
+    paymentIntent = await stripeRequest("POST", "/payment_intents", {
+      amount: String(amountInCents),
+      currency: "cad",
+      payment_method_types: ["card"],
+      application_fee_amount: String(applicationFeeInCents),
+      transfer_data: {
+        destination: establishment.stripe_account_id,
+      },
+      on_behalf_of: establishment.stripe_account_id,
+      metadata: stripeMetadata,
+      receipt_email: customerEmail,
+      description: hasInventoryAddons
+        ? `Réservation: ${chalet.Name || "Chalet"} (${pricing.nights} nuits) + équipements — ${grandTotalCad} CAD`
+        : `Réservation: ${chalet.Name || "Chalet"} — ${pricing.nights} nuit(s) du ${startDate} au ${endDate}`,
+    });
+
+  } catch (piErr: unknown) {
+    console.error("Stripe PaymentIntent chalet booking failed:", piErr);
+    await supabase.from("bookings").delete().eq("id", booking.id);
+    const msg = piErr instanceof Error ? piErr.message : String(piErr);
+    return errorResponse(
+      msg || "Impossible de créer le paiement Stripe",
+      500,
+    );
+  }
+
+  // 9. Save PaymentIntent ID to booking (+ allocations équipements)
   await supabase
     .from("bookings")
     .update({ stripe_payment_intent_id: paymentIntent.id })
     .eq("id", booking.id);
 
+  if (hasInventoryAddons && inventoryAllocCount > 0) {
+    await supabase
+      .from("booking_inventory_allocation")
+      .update({
+        stripe_payment_intent_id: paymentIntent.id as string,
+      })
+      .eq("chalet_booking_id", booking.id)
+      .in("status", ["pending"]);
+  }
+
   console.log(`✅ Chalet booking ${booking.id} created with PaymentIntent ${paymentIntent.id}`);
-  console.log(`   Subtotal: $${chaletSubtotal} | Fee: $${chaletApplicationFee} | Total: $${chaletTotal} CAD`);
+  console.log(
+    `   Lodging subtotal $${chaletSubtotal}${hasInventoryAddons ? ` + inventory $${inventorySubtotalCad}` : ""} | Fee $${applicationFeeCad} | Total $${grandTotalCad} CAD`,
+  );
 
   // 10. Return client_secret + booking info to frontend
   return jsonResponse({
@@ -367,8 +574,16 @@ async function handleChaletBooking(
       nights: pricing.nights,
       pricePerNight: pricing.pricePerNight,
       subtotal: chaletSubtotal,
-      applicationFee: chaletApplicationFee,
-      total: chaletTotal,
+      lodgingSubtotal: chaletSubtotal,
+      ...(hasInventoryAddons
+        ? {
+          inventorySubtotal: inventorySubtotalCad,
+          combinedSubtotalBeforeFee: combinedBeforeFeeCad,
+          inventoryAddonLinesCount: inventoryAllocCount,
+        }
+        : {}),
+      applicationFee: applicationFeeCad,
+      total: grandTotalCad,
       breakdown: pricing.breakdown,
     },
   });
@@ -426,18 +641,44 @@ async function handleGuideBooking(
       ? rawAllSlots
       : [{ startTime, endTime }];
 
-  // Validate every slot
+  // Validate every slot.
+  // Reject date-only strings ("2026-05-12") and zero-length intervals because
+  // they break the availability subtraction algorithm (a booking with
+  // start_time == end_time at midnight UTC sits exactly on the search-range
+  // boundary and gets excluded by `.gt("end_time", startISO)`).
+  const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
   for (const slot of slots) {
     if (!slot.startTime || !slot.endTime) {
+      console.error(`❌ [DATE GUARD] Missing time on slot: ${JSON.stringify(slot)}`);
       return errorResponse("Each slot must have startTime and endTime");
+    }
+    if (DATE_ONLY_REGEX.test(slot.startTime) || DATE_ONLY_REGEX.test(slot.endTime)) {
+      console.error(`❌ [DATE GUARD] Date-only slot rejected: ${slot.startTime} → ${slot.endTime}`);
+      return errorResponse(
+        `Slot must include time-of-day (full ISO 8601 datetime), got date-only: ${slot.startTime} / ${slot.endTime}`,
+        400,
+      );
     }
     const s = new Date(slot.startTime);
     const e = new Date(slot.endTime);
     if (isNaN(s.getTime()) || isNaN(e.getTime())) {
+      console.error(`❌ [DATE GUARD] Unparseable slot: ${slot.startTime} → ${slot.endTime}`);
       return errorResponse(`Invalid date format in slot: ${slot.startTime} / ${slot.endTime}`);
     }
     if (e <= s) {
+      console.error(`❌ [DATE GUARD] Zero/negative slot: ${slot.startTime} → ${slot.endTime}`);
       return errorResponse(`endTime must be after startTime in slot: ${slot.startTime} / ${slot.endTime}`);
+    }
+    // Catch slots that happen to be exactly midnight UTC on both ends — they
+    // technically parse but always indicate a lost time-of-day upstream.
+    if (
+      s.getTime() % 86400000 === 0 &&
+      e.getTime() % 86400000 === 0 &&
+      (e.getTime() - s.getTime()) % 86400000 === 0
+    ) {
+      console.warn(
+        `⚠️ [DATE GUARD] Suspicious all-midnight-UTC slot (likely lost time-of-day): ${slot.startTime} → ${slot.endTime}`,
+      );
     }
   }
 

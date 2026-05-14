@@ -93,6 +93,21 @@ Deno.serve(async (req: Request) => {
     if (!abandonedChaletErr && abandonedChalet?.length) {
       totalExpired += abandonedChalet.length;
       console.log(`🗑️ Cancelled ${abandonedChalet.length} abandoned chalet checkout(s)`);
+
+      const abandonedIds = abandonedChalet.map((b) => b.id).filter(Boolean);
+      if (abandonedIds.length > 0) {
+        const { error: biaExpireErr } = await supabase
+          .from("booking_inventory_allocation")
+          .update({
+            status: "cancelled",
+            payment_status: "abandoned",
+          })
+          .in("chalet_booking_id", abandonedIds)
+          .in("status", ["pending", "pending_payment"]);
+        if (biaExpireErr) {
+          console.warn("expire-unpaid-bookings: allocations cleanup:", biaExpireErr);
+        }
+      }
     }
 
     console.log(`✅ Cleanup complete: ${totalExpired} booking(s) expired/cancelled`);

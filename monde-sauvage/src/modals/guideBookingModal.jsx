@@ -806,7 +806,7 @@ const GuideBookingModal = ({ guide, isOpen, onClose, onBookingCreated }) => {
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={loading || !availability?.available || checking || calendarStatus === 'disconnected' || calendarStatus === 'never_connected'}
+                  disabled={loading || !availability?.available || checking || calendarStatus === null || calendarStatus === 'disconnected' || calendarStatus === 'never_connected'}
                 >
                   {loading ? (
                     <>

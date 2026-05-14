@@ -7,7 +7,8 @@ const DateRangePicker = ({
     minDate = new Date(),
     initialCheckIn = null,
     initialCheckOut = null,
-    monthsToShow = 2
+    monthsToShow = 2,
+    readOnly = false
 }) => {
     const [currentMonth, setCurrentMonth] = useState(new Date());
     const [checkIn, setCheckIn] = useState(initialCheckIn);
@@ -107,6 +108,8 @@ const DateRangePicker = ({
     };
 
     const handleDateClick = (date) => {
+        if (readOnly) return;
+
         // Create a new date object using the year, month, and day to avoid timezone issues
         const clickedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
 
@@ -119,14 +122,14 @@ const DateRangePicker = ({
         if (checkIn && checkOut) {
             setCheckIn(clickedDate);
             setCheckOut(null);
-            onDateChange(clickedDate, null);
+            if (onDateChange) onDateChange(clickedDate, null);
             return;
         }
 
         // Set check-in
         if (!checkIn) {
             setCheckIn(clickedDate);
-            onDateChange(clickedDate, null);
+            if (onDateChange) onDateChange(clickedDate, null);
             return;
         }
 
@@ -135,7 +138,7 @@ const DateRangePicker = ({
             // If clicked date is before check-in, reset and set as new check-in
             setCheckIn(clickedDate);
             setCheckOut(null);
-            onDateChange(clickedDate, null);
+            if (onDateChange) onDateChange(clickedDate, null);
         } else if (isSameDay(clickedDate, checkIn)) {
             // If same day, do nothing
             return;
@@ -145,15 +148,20 @@ const DateRangePicker = ({
                 // Reset and set new check-in
                 setCheckIn(clickedDate);
                 setCheckOut(null);
-                onDateChange(clickedDate, null);
+                if (onDateChange) onDateChange(clickedDate, null);
             } else {
                 setCheckOut(clickedDate);
-                onDateChange(checkIn, clickedDate);
+                if (onDateChange) onDateChange(checkIn, clickedDate);
             }
         }
     };
 
     const handleDateHover = (date) => {
+        if (readOnly) {
+            setHoveredDate(null);
+            return;
+        }
+
         if (!checkIn || checkOut) {
             setHoveredDate(null);
             return;
@@ -198,7 +206,7 @@ const DateRangePicker = ({
         setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1));
     };
 
-    const renderMonth = (monthOffset = 0) => {
+    const renderMonth = (monthOffset = 0, showNavigation = false) => {
         const month = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + monthOffset);
         const days = getDaysInMonth(month.getMonth(), month.getFullYear());
 
@@ -208,6 +216,26 @@ const DateRangePicker = ({
                     <h3 className="date-picker-month-title">
                         {monthNames[month.getMonth()]} {month.getFullYear()}
                     </h3>
+                    {showNavigation && (
+                        <div className="date-picker-controls">
+                            <button
+                                type="button"
+                                onClick={previousMonth}
+                                className="date-picker-nav"
+                                aria-label="Previous month"
+                            >
+                                ‹
+                            </button>
+                            <button
+                                type="button"
+                                onClick={nextMonth}
+                                className="date-picker-nav"
+                                aria-label="Next month"
+                            >
+                                ›
+                            </button>
+                        </div>
+                    )}
                 </div>
                 <div className="date-picker-day-names">
                     {dayNames.map(day => (
@@ -251,7 +279,7 @@ const DateRangePicker = ({
                                 onClick={() => handleDateClick(date)}
                                 onMouseEnter={() => handleDateHover(date)}
                                 onMouseLeave={() => setHoveredDate(null)}
-                                disabled={isDisabled}
+                                disabled={isDisabled || readOnly}
                             >
                                 <span className="date-picker-day-number">
                                     {date.getDate()}
@@ -269,26 +297,8 @@ const DateRangePicker = ({
 
     return (
         <div className={`date-range-picker ${normalizedMonthsToShow === 1 ? 'single-month' : ''}`}>
-            <div className="date-picker-controls">
-                <button
-                    type="button"
-                    onClick={previousMonth}
-                    className="date-picker-nav"
-                    aria-label="Previous month"
-                >
-                    ‹
-                </button>
-                <button
-                    type="button"
-                    onClick={nextMonth}
-                    className="date-picker-nav"
-                    aria-label="Next month"
-                >
-                    ›
-                </button>
-            </div>
             <div className={`date-picker-months ${normalizedMonthsToShow === 1 ? 'single-month' : ''}`}>
-                {renderMonth(0)}
+                {renderMonth(0, true)}
                 {normalizedMonthsToShow === 2 && renderMonth(1)}
             </div>
         </div>
