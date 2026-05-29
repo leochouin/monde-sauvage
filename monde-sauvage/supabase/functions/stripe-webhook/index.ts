@@ -24,7 +24,7 @@ import {
   getBookingOrigin,
   shouldApplyPlatformFee,
 } from "../_shared/bookingRules.ts";
-import { createQuickbooksInvoice } from "../_shared/quickbooksUtils.ts";
+import { createQuickbooksInvoice, ensureFreshQboToken } from "../_shared/quickbooksUtils.ts";
 
 // ─── Helper: handle a combined (guide + chalet) PaymentIntent success ──────
 // In combined mode the PI is created on the platform with no transfer_data.
@@ -238,7 +238,7 @@ async function syncQuickbooksInvoice(
 
       const { data: vendor, error: vendorErr } = await supabase
         .from("Etablissement")
-        .select("key, quickbooks_connected, quickbooks_access_token, quickbooks_realm_id")
+        .select("key, quickbooks_connected, quickbooks_access_token, quickbooks_refresh_token, quickbooks_realm_id, quickbooks_access_token_expires_at, quickbooks_refresh_token_expires_at")
         .eq("key", establishmentId)
         .single();
 
@@ -251,15 +251,12 @@ async function syncQuickbooksInvoice(
         return;
       }
 
-      const invoice = await createQuickbooksInvoice(
-        {
-          id: vendor.key,
-          quickbooks_connected: vendor.quickbooks_connected,
-          quickbooks_access_token: vendor.quickbooks_access_token,
-          quickbooks_realm_id: vendor.quickbooks_realm_id,
-        },
-        amountDollars
+      const freshEstablishment = await ensureFreshQboToken(
+        supabase,
+        { id: vendor.key, ...vendor },
+        "establishment"
       );
+      const invoice = await createQuickbooksInvoice(freshEstablishment, amountDollars);
       const invoiceId = String(((invoice as Record<string, unknown>)?.Invoice as Record<string, unknown>)?.Id || "");
       console.log(`[QBO] ✅ Owner invoice synced: establishment=${establishmentId} amount=${amountDollars} invoice=${invoiceId || "?"}`);
 
@@ -285,7 +282,7 @@ async function syncQuickbooksInvoice(
 
     const baseQuery = supabase
       .from("guide")
-      .select("id, user_id, quickbooks_connected, quickbooks_access_token, quickbooks_realm_id");
+      .select("id, user_id, quickbooks_connected, quickbooks_access_token, quickbooks_refresh_token, quickbooks_realm_id, quickbooks_access_token_expires_at, quickbooks_refresh_token_expires_at");
     const { data: vendor, error: vendorErr } = qbGuideId
       ? await baseQuery.eq("id", qbGuideId).single()
       : await baseQuery.eq("user_id", qbUserId).single();
@@ -299,7 +296,8 @@ async function syncQuickbooksInvoice(
       return;
     }
 
-    const invoice = await createQuickbooksInvoice(vendor, amountDollars);
+    const freshGuide = await ensureFreshQboToken(supabase, vendor, "guide");
+    const invoice = await createQuickbooksInvoice(freshGuide, amountDollars);
     const invoiceId = String(((invoice as Record<string, unknown>)?.Invoice as Record<string, unknown>)?.Id || "");
     console.log(`[QBO] ✅ Guide invoice synced: guide=${vendor.id} amount=${amountDollars} invoice=${invoiceId || "?"}`);
 
@@ -546,7 +544,7 @@ Deno.serve(async (req: Request) => {
               platform_fee_waived: platformFeeWaived,
             })
             .eq("id", bookingId)
-            .select("id, status, payment_status")
+            .select("id, status, payment_status, chalet_id, start_date, end_date, customer_name, customer_email, notes, google_event_id")
             .single();
 
           if (error) {
@@ -575,10 +573,115 @@ Deno.serve(async (req: Request) => {
               console.log(
                 `✅ Confirmed ${biaUpdated.length} equipment allocation row(s) for booking ${bookingId}`,
               );
+
+              // Sync inventory unit Google Calendars
+              const allocationIds = biaUpdated.map((a: { id: string }) => a.id);
+              const { data: allocsWithUnits } = await supabase
+                .from("booking_inventory_allocation")
+                .select("id, start_at, end_at, inventory_unit:inventory_unit_id(google_calendar_id, display_name, establishment_id)")
+                .in("id", allocationIds);
+
+              if (allocsWithUnits?.length) {
+                const firstUnit = (allocsWithUnits[0] as any)?.inventory_unit;
+                const estId = firstUnit?.establishment_id;
+
+                if (estId) {
+                  const tokenRes = await fetch(
+                    `${SUPABASE_URL}/functions/v1/refresh-google-token?establishmentId=${encodeURIComponent(estId)}`,
+                    { headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } },
+                  );
+                  const tokenPayload = await tokenRes.json().catch(() => ({}));
+                  const googleToken = tokenPayload?.access_token;
+
+                  if (googleToken) {
+                    for (const alloc of allocsWithUnits as any[]) {
+                      const unit = alloc.inventory_unit;
+                      if (!unit?.google_calendar_id) continue;
+
+                      const startDay = String(alloc.start_at).slice(0, 10);
+                      const endDay = String(alloc.end_at).slice(0, 10);
+
+                      try {
+                        const evRes = await fetch(
+                          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(unit.google_calendar_id)}/events?sendUpdates=none`,
+                          {
+                            method: "POST",
+                            headers: {
+                              Authorization: `Bearer ${googleToken}`,
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              summary: `${unit.display_name} - ${updated.customer_name}`,
+                              description: [
+                                `Réservé : ${updated.customer_name}`,
+                                updated.customer_email ? `Courriel : ${updated.customer_email}` : null,
+                              ].filter(Boolean).join("\n"),
+                              start: { date: startDay },
+                              end: { date: endDay },
+                              transparency: "opaque",
+                              extendedProperties: {
+                                private: { booking_id: String(bookingId), source: "monde_sauvage_website" },
+                              },
+                            }),
+                          },
+                        );
+                        if (evRes.ok) {
+                          const evData = await evRes.json();
+                          console.log(`📅 Inventory calendar event created for unit "${unit.display_name}": ${evData.id}`);
+                        } else {
+                          console.warn(`⚠️ Inventory calendar event failed for unit "${unit.display_name}":`, await evRes.text());
+                        }
+                      } catch (evErr: any) {
+                        console.warn(`⚠️ Inventory calendar event error for unit "${unit.display_name}":`, evErr.message);
+                      }
+                    }
+                  }
+                }
+              }
             }
 
             // Send confirmation email (fire-and-forget)
             fireConfirmationEmail(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, bookingId, "chalet");
+
+            // Sync to Google Calendar if not already done
+            if (updated && !updated.google_event_id) {
+              const { data: chalet } = await supabase
+                .from("chalets")
+                .select("google_calendar, Name")
+                .eq("key", updated.chalet_id)
+                .single();
+
+              if (chalet?.google_calendar) {
+                try {
+                  const calRes = await fetch(`${SUPABASE_URL}/functions/v1/create-booking-calendar-event`, {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      booking_id: updated.id,
+                      calendar_id: chalet.google_calendar,
+                      chalet_name: chalet.Name,
+                      start_date: updated.start_date,
+                      end_date: updated.end_date,
+                      customer_name: updated.customer_name,
+                      customer_email: updated.customer_email,
+                      notes: updated.notes,
+                    }),
+                  });
+                  if (calRes.ok) {
+                    const calData = await calRes.json();
+                    console.log(`📅 Google Calendar event created for chalet booking ${bookingId}: ${calData.event_id}`);
+                  } else {
+                    const calErrText = await calRes.text();
+                    console.warn(`⚠️ Google Calendar sync failed for chalet booking ${bookingId}:`, calErrText);
+                  }
+                } catch (calErr: any) {
+                  console.warn(`⚠️ Google Calendar sync error for chalet booking ${bookingId}:`, calErr.message);
+                }
+              }
+            }
           }
         }
 
