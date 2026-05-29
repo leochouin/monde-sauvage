@@ -9,6 +9,8 @@ import EstablishmentClientsPanel from '../components/EstablishmentClientsPanel.j
 import EstablishmentBookingsPanel from '../components/EstablishmentBookingsPanel.jsx';
 import { isInGaspesieBounds, toCoordinateInputValue, searchAddressesInGaspesie } from '../utils/locationService.js';
 import { toast } from '../utils/toast.js';
+import './etablissementModal.css';
+import '../pages/dashboard/establishment-dashboard.css';
 import {
     DndContext,
     DragOverlay,
@@ -1920,80 +1922,49 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
     }
 
     return (
-        <div className="guide-profile-fullscreen">
-            {/* Header */}
-            <div className="guide-profile-header">
-                <div style={{ display: "flex", alignItems: "center", gap: 16, justifyContent: "space-between", width: "100%" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                        <button
-                            type="button"
-                            className="etablissement-close-button"
-                            onClick={onClose}
-                            aria-label="Fermer la fenêtre établissements"
-                            title="Fermer"
-                        >
-                            X
-                        </button>
-                        <div>
-                            <h1 className="guide-profile-title" style={{ marginBottom: '4px' }}>Mes Établissements</h1>
-                            <p style={{ fontSize: '0.9rem', color: '#64748b', margin: 0 }}>Gérez vos lieux de réservation</p>
-                        </div>
+        <div className="esbl-modal-shell">
+            <header className="esbl-modal-header">
+                <div className="esbl-modal-header-left">
+                    <button
+                        type="button"
+                        className="esbl-icon-btn"
+                        onClick={onClose}
+                        aria-label="Fermer la fenêtre établissements"
+                        title="Fermer"
+                    >
+                        ✕
+                    </button>
+                    <div>
+                        <h1 className="esbl-modal-title">Mes Établissements</h1>
+                        <p className="esbl-modal-subtitle">Gérez vos lieux de réservation</p>
                     </div>
-                    {!loading && !error && (
-                        <button
-                            type="button"
-                            onClick={handleOpenCreateEstablishment}
-                            style={{
-                                padding: '10px 20px',
-                                backgroundColor: '#059669',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontWeight: '600',
-                                fontSize: '0.95rem',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '8px',
-                                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                            }}
-                        >
-                            <span style={{ fontSize: '1.2rem' }}>+</span>
-                            <span>Ajouter un lieu</span>
-                        </button>
-                    )}
                 </div>
-            </div>
+                {!loading && !error && (
+                    <button
+                        type="button"
+                        onClick={handleOpenCreateEstablishment}
+                        className="esbl-btn esbl-btn--emerald"
+                    >
+                        + Ajouter un lieu
+                    </button>
+                )}
+            </header>
 
-            {/* Main Content */}
-            <div className="guide-profile-content">
+            <div className="esbl-modal-content">
                 {/* Loading State */}
                 {loading && establishments.length === 0 && (
-                    <div style={{ textAlign: 'center', padding: '60px', color: '#64748b', gridColumn: '1 / -1' }}>
-                        <div style={{ fontSize: '2rem', marginBottom: '16px' }}>⏳</div>
-                        <p style={{ fontSize: '1.1rem' }}>Chargement de vos établissements...</p>
+                    <div className="esbl-loading-state">
+                        <div style={{ fontSize: '2rem' }}>⏳</div>
+                        <p style={{ fontSize: '1.1rem', margin: 0 }}>Chargement de vos établissements...</p>
                     </div>
                 )}
 
                 {/* Error State */}
                 {error && !loading && (
-                    <div style={{ textAlign: 'center', padding: '60px', gridColumn: '1 / -1' }}>
-                        <div style={{ fontSize: '2rem', marginBottom: '16px' }}>⚠️</div>
-                        <p style={{ color: '#ef4444', marginBottom: '20px', fontSize: '1.05rem' }}>{error}</p>
-                        <button 
-                            type="button"
-                            onClick={fetchEstablishment}
-                            style={{
-                                padding: '12px 24px',
-                                backgroundColor: '#059669',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontSize: '1rem',
-                                fontWeight: '600'
-                            }}
-                        >
+                    <div className="esbl-error-card">
+                        <div style={{ fontSize: '2rem' }}>⚠️</div>
+                        <p style={{ margin: '12px 0' }}>{error}</p>
+                        <button type="button" onClick={fetchEstablishment} className="esbl-btn esbl-btn--emerald">
                             Réessayer
                         </button>
                     </div>
@@ -2001,124 +1972,81 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
 
                 {/* No establishments state */}
                 {!loading && !error && establishments.length === 0 && (
-                    <div style={{ textAlign: 'center', padding: '60px', gridColumn: '1 / -1' }}>
-                        <div style={{ fontSize: '3rem', marginBottom: '20px' }}>🏕️</div>
-                        <h2 style={{ fontSize: '1.5rem', color: '#334155', marginBottom: '12px' }}>Aucun établissement encore</h2>
-                        <p style={{ color: '#64748b', marginBottom: '28px', fontSize: '1.05rem' }}>
+                    <div className="esbl-empty-state">
+                        <div style={{ fontSize: '3rem' }}>🏕️</div>
+                        <h2 style={{ fontSize: '1.5rem', margin: 0 }}>Aucun établissement encore</h2>
+                        <p style={{ margin: 0 }}>
                             Commencez par ajouter votre premier lieu de réservation
                         </p>
-                        <button
-                            type="button"
-                            onClick={handleOpenCreateEstablishment}
-                            style={{
-                                padding: '14px 28px',
-                                backgroundColor: '#059669',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                fontWeight: '600',
-                                fontSize: '1.05rem',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '10px'
-                            }}
-                        >
-                            <span style={{ fontSize: '1.3rem' }}>+</span>
-                            <span>Ajouter mon premier lieu</span>
+                        <button type="button" onClick={handleOpenCreateEstablishment} className="esbl-btn esbl-btn--emerald">
+                            + Ajouter mon premier lieu
                         </button>
                     </div>
                 )}
 
                 {/* Display Establishments List */}
                 {!error && establishments.length > 0 && !selectedEstablishment && (
-                    <div style={{ padding: '20px', gridColumn: '1 / -1' }}>
-                        <h2 style={{ fontSize: '1.3rem', color: '#334155', marginBottom: '8px' }}>Vos lieux de réservation</h2>
-                        <p style={{ color: '#64748b', marginBottom: '24px' }}>
+                    <div className="esbl-section-card esbl-estab-card-shell">
+                        <h2 className="esbl-section-title">Vos lieux de réservation</h2>
+                        <p className="esbl-page-subtitle">
                             Sélectionnez un établissement pour le gérer
                             {loading ? ' • Mise à jour en arrière-plan...' : ''}
                         </p>
-                        
-                        <div style={{ display: 'grid', gap: '16px' }}>
+                        <div className="esbl-estab-list">
                             {establishments.map((est) => (
-                                <div
-                                    key={est.id}
-                                    style={{
-                                        padding: '20px',
-                                        backgroundColor: 'white',
-                                        borderRadius: '10px',
-                                        border: '2px solid #e2e8f0',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s',
-                                        position: 'relative'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        e.currentTarget.style.borderColor = '#059669';
-                                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(5, 150, 105, 0.15)';
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        e.currentTarget.style.borderColor = '#e2e8f0';
-                                        e.currentTarget.style.boxShadow = 'none';
-                                    }}
-                                >
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                                        <div 
-                                            style={{ flex: 1 }}
-                                            onClick={() => setSelectedEstablishment(est)}
-                                        >
-                                            <h3 style={{ fontSize: '1.2rem', color: '#059669', marginBottom: '12px', fontWeight: '600' }}>
+                                <div key={est.id} className="esbl-estab-card">
+                                    <div className="esbl-estab-main" onClick={() => setSelectedEstablishment(est)}>
+                                        <div className="esbl-estab-logo" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" className="esbl-estab-logo-icon">
+                                                <path
+                                                    d="M4 10.5l8-6 8 6"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                />
+                                                <path
+                                                    d="M6.5 9.5h11v10H6.5z"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                />
+                                                <path
+                                                    d="M10 19v-4h4v4"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.5"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                />
+                                            </svg>
+                                        </div>
+                                        <div className="esbl-estab-body">
+                                            <h3 className="esbl-estab-name">
                                                 {est.Name || est.name || `Établissement ${est.key || est.id}`}
                                             </h3>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                            <div className="esbl-estab-meta">
                                                 {(est.Description || est.adresse) && (
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#64748b' }}>
-                                                        <span>📍</span>
-                                                        <span>{est.Description || est.adresse}</span>
-                                                    </div>
+                                                    <div>📍 {est.Description || est.adresse}</div>
                                                 )}
-                                                {est.telephone && (
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#64748b' }}>
-                                                        <span>📞</span>
-                                                        <span>{est.telephone}</span>
-                                                    </div>
-                                                )}
-                                                {est.email && (
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#64748b' }}>
-                                                        <span>✉️</span>
-                                                        <span>{est.email}</span>
-                                                    </div>
-                                                )}
+                                                {est.telephone && <div>📞 {est.telephone}</div>}
+                                                {est.email && <div>✉️ {est.email}</div>}
                                             </div>
                                         </div>
-                                        <button
-                                            type="button"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteEstablishment(est.key || est.id);
-                                            }}
-                                            style={{
-                                                padding: '8px 16px',
-                                                backgroundColor: '#fee2e2',
-                                                color: '#dc2626',
-                                                border: '1px solid #fecaca',
-                                                borderRadius: '6px',
-                                                cursor: 'pointer',
-                                                fontSize: '0.9rem',
-                                                fontWeight: '500',
-                                                transition: 'all 0.2s'
-                                            }}
-                                            onMouseEnter={(e) => {
-                                                e.currentTarget.style.backgroundColor = '#dc2626';
-                                                e.currentTarget.style.color = 'white';
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                e.currentTarget.style.backgroundColor = '#fee2e2';
-                                                e.currentTarget.style.color = '#dc2626';
-                                            }}
-                                        >
-                                            Supprimer
-                                        </button>
                                     </div>
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteEstablishment(est.key || est.id);
+                                        }}
+                                        className="esbl-btn esbl-btn--danger"
+                                    >
+                                        Supprimer
+                                    </button>
                                 </div>
                             ))}
                         </div>
@@ -2129,31 +2057,18 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                 {!error && selectedEstablishment && (
                     <>
                         {/* Back to list button */}
-                        <div style={{ padding: '20px', paddingBottom: '0' }}>
+                        <div style={{ paddingBottom: '0' }}>
                             <button
                                 type="button"
                                 onClick={() => setSelectedEstablishment(null)}
-                                style={{
-                                    padding: '8px 16px',
-                                    backgroundColor: '#f1f5f9',
-                                    color: '#475569',
-                                    border: '1px solid #cbd5e1',
-                                    borderRadius: '6px',
-                                    cursor: 'pointer',
-                                    fontSize: '0.9rem',
-                                    fontWeight: '500',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px'
-                                }}
+                                className="esbl-btn esbl-btn--ghost"
                             >
-                                <span>←</span>
-                                <span>Retour à la liste</span>
+                                ← Retour à la liste
                             </button>
                         </div>
 
-                        <div style={{ padding: '20px', paddingTop: '14px', paddingBottom: 0 }}>
-                            <div className="etablissement-section-tabs" role="tablist" aria-label="Sections établissement">
+                        <div style={{ paddingTop: '14px', paddingBottom: 0 }}>
+                            <div className="esbl-tabs" role="tablist" aria-label="Sections établissement">
                                 {establishmentSections.map((section) => (
                                     <button
                                         key={section.key}
@@ -2161,7 +2076,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                         role="tab"
                                         aria-selected={activeEstablishmentSection === section.key}
                                         onClick={() => setActiveEstablishmentSection(section.key)}
-                                        className={`etablissement-section-tab ${activeEstablishmentSection === section.key ? 'active' : ''}`}
+                                        className={`esbl-tab ${activeEstablishmentSection === section.key ? 'active' : ''}`}
                                     >
                                         <span>{section.icon}</span>
                                         <span>{section.label}</span>
@@ -2182,92 +2097,60 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                             )}
 
                             {activeEstablishmentSection === 'overview' && (
-                                <div className="guide-section guide-card" style={{
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: '12px',
-                                    backgroundColor: 'white',
-                                    padding: '20px'
-                                }}>
+                                <div className="esbl-section-card">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', gap: '8px', flexWrap: 'wrap' }}>
-                                        <h2 className="guide-section-title" style={{ marginBottom: 0, padding: 0 }}>📋 Informations du lieu</h2>
-                                        <div style={{ display: 'flex', gap: '8px' }}>
+                                        <h2 className="esbl-section-title" style={{ marginBottom: 0 }}>Informations du lieu</h2>
+                                        <div className="esbl-modal-actions">
                                             <button
                                                 type="button"
                                                 onClick={() => handleOpenEditEstablishment(selectedEstablishment)}
-                                                style={{
-                                                    padding: '6px 14px',
-                                                    backgroundColor: '#dbeafe',
-                                                    color: '#1e40af',
-                                                    border: '1px solid #93c5fd',
-                                                    borderRadius: '6px',
-                                                    cursor: 'pointer',
-                                                    fontSize: '0.85rem',
-                                                    fontWeight: '500'
-                                                }}
+                                                className="esbl-btn esbl-btn--ghost"
                                             >
                                                 ✏️ Modifier
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => handleDeleteEstablishment(selectedEstablishment.key || selectedEstablishment.id)}
-                                                style={{
-                                                    padding: '6px 14px',
-                                                    backgroundColor: '#fee2e2',
-                                                    color: '#dc2626',
-                                                    border: '1px solid #fecaca',
-                                                    borderRadius: '6px',
-                                                    cursor: 'pointer',
-                                                    fontSize: '0.85rem',
-                                                    fontWeight: '500'
-                                                }}
+                                                className="esbl-btn esbl-btn--danger"
                                             >
                                                 🗑️ Supprimer
                                             </button>
                                         </div>
                                     </div>
-                                    <div className="guide-section-content" style={{ padding: 0 }}>
-                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
-                                            <div>
-                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Nom du lieu</label>
-                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                    {selectedEstablishment.Name || selectedEstablishment.name || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                                </p>
-                                            </div>
-
-                                            <div>
-                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Téléphone</label>
-                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                    {selectedEstablishment.telephone || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                                </p>
-                                            </div>
-
-                                            <div style={{ gridColumn: '1 / -1' }}>
-                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Description / Adresse</label>
-                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                    {selectedEstablishment.Description || selectedEstablishment.adresse || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                                </p>
-                                            </div>
-
-                                            <div>
-                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Courriel</label>
-                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                    {selectedEstablishment.email || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Non renseigné</span>}
-                                                </p>
-                                            </div>
-
-                                            <div>
-                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Statut calendrier</label>
-                                                <p style={{ color: selectedEstablishment.google_calendar_id ? '#059669' : '#92400e', marginTop: '6px', fontSize: '1.05rem', fontWeight: '600' }}>
-                                                    {selectedEstablishment.google_calendar_id ? 'Connecté' : 'Non connecté'}
-                                                </p>
-                                            </div>
-
-                                            <div>
-                                                <label style={{ fontWeight: '600', color: '#334155', fontSize: '0.9rem' }}>Nombre de chalets</label>
-                                                <p style={{ color: '#64748b', marginTop: '6px', fontSize: '1.05rem' }}>
-                                                    {chalets.length}
-                                                </p>
-                                            </div>
+                                    <div className="esbl-info-grid">
+                                        <div className="esbl-info-row">
+                                            <span className="esbl-info-label">Nom du lieu</span>
+                                            <span className="esbl-info-value">
+                                                {selectedEstablishment.Name || selectedEstablishment.name || <span className="esbl-info-empty">Non renseigné</span>}
+                                            </span>
+                                        </div>
+                                        <div className="esbl-info-row">
+                                            <span className="esbl-info-label">Téléphone</span>
+                                            <span className="esbl-info-value">
+                                                {selectedEstablishment.telephone || <span className="esbl-info-empty">Non renseigné</span>}
+                                            </span>
+                                        </div>
+                                        <div className="esbl-info-row" style={{ gridColumn: '1 / -1' }}>
+                                            <span className="esbl-info-label">Description / Adresse</span>
+                                            <span className="esbl-info-value">
+                                                {selectedEstablishment.Description || selectedEstablishment.adresse || <span className="esbl-info-empty">Non renseigné</span>}
+                                            </span>
+                                        </div>
+                                        <div className="esbl-info-row">
+                                            <span className="esbl-info-label">Courriel</span>
+                                            <span className="esbl-info-value">
+                                                {selectedEstablishment.email || <span className="esbl-info-empty">Non renseigné</span>}
+                                            </span>
+                                        </div>
+                                        <div className="esbl-info-row">
+                                            <span className="esbl-info-label">Statut calendrier</span>
+                                            <span className="esbl-info-value" style={{ color: selectedEstablishment.google_calendar_id ? '#059669' : '#92400e' }}>
+                                                {selectedEstablishment.google_calendar_id ? 'Connecté' : 'Non connecté'}
+                                            </span>
+                                        </div>
+                                        <div className="esbl-info-row">
+                                            <span className="esbl-info-label">Nombre de chalets</span>
+                                            <span className="esbl-info-value">{chalets.length}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -2285,18 +2168,9 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                             )}
 
                             {activeEstablishmentSection === 'payments' && (
-                                <div className="guide-section guide-card" style={{
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: '12px',
-                                    backgroundColor: 'white',
-                                    padding: '20px'
-                                }}>
-                                    <h2 className="guide-section-title" style={{ padding: 0, marginBottom: '4px' }}>
-                                        💳 Paiements & Revenus
-                                    </h2>
-                                    <p style={{ color: '#64748b', fontSize: '0.875rem', marginBottom: '20px', marginTop: '4px' }}>
-                                        Analytique Stripe pour votre hébergement
-                                    </p>
+                                <div className="esbl-section-card">
+                                    <h2 className="esbl-section-title">💳 Paiements & Revenus</h2>
+                                    <p className="esbl-page-subtitle">Analytique Stripe pour votre hébergement</p>
 
                                     {selectedEstablishment?.stripe_onboarding_complete ? (
                                         <>
@@ -2334,93 +2208,67 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                             )}
 
                             {activeEstablishmentSection === 'equipment' && (
-                                <div className="guide-section guide-card" style={{
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: '12px',
-                                    backgroundColor: 'white',
-                                    padding: '20px'
-                                }}>
-                                    <h2 className="guide-section-title" style={{ padding: 0 }}>🛶 Inventaire & Add-ons</h2>
-                                    <p style={{ color: '#64748b', fontSize: '0.95rem', marginTop: '8px', marginBottom: '18px' }}>
+                                <div className="esbl-section-card">
+                                    <h2 className="esbl-section-title">🛶 Inventaire & Add-ons</h2>
+                                    <p className="esbl-page-subtitle">
                                         Créez vos types d’équipements, ajoutez des unités physiques, puis assignez un agenda Google à chaque unité.
                                     </p>
 
                                     {inventoryError && (
-                                        <div style={{
-                                            padding: '10px 12px',
-                                            borderRadius: 8,
-                                            background: '#fee2e2',
-                                            color: '#991b1b',
-                                            marginBottom: 12,
-                                            fontSize: '0.9rem'
-                                        }}>
+                                        <div className="esbl-alert esbl-alert--error">
                                             {inventoryError}
                                         </div>
                                     )}
 
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 16 }}>
-                                        <form onSubmit={handleCreateEquipmentKind} style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
-                                            <h3 style={{ margin: 0, marginBottom: 10, fontSize: '1rem', color: '#1f2937' }}>Nouveau type d’équipement</h3>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    <div className="esbl-form-grid" style={{ marginBottom: 16 }}>
+                                        <form onSubmit={handleCreateEquipmentKind} className="esbl-form-card">
+                                            <h3 className="esbl-form-title">Nouveau type d’équipement</h3>
+                                            <div className="esbl-form-stack">
                                                 <input
+                                                    className="esbl-input"
                                                     type="text"
                                                     placeholder="Code interne (ex: chaloupe)"
                                                     value={newKindForm.slug}
                                                     onChange={(e) => setNewKindForm((prev) => ({ ...prev, slug: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 />
                                                 <input
+                                                    className="esbl-input"
                                                     type="text"
                                                     placeholder="Nom (ex: Chaloupe aluminium)"
                                                     value={newKindForm.label}
                                                     onChange={(e) => setNewKindForm((prev) => ({ ...prev, label: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 />
                                                 <input
+                                                    className="esbl-input"
                                                     type="number"
                                                     step="0.01"
                                                     min="0"
                                                     placeholder="Prix / séjour (optionnel)"
                                                     value={newKindForm.addonPricePerStay}
                                                     onChange={(e) => setNewKindForm((prev) => ({ ...prev, addonPricePerStay: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 />
                                                 <input
+                                                    className="esbl-input"
                                                     type="number"
                                                     step="0.01"
                                                     min="0"
                                                     placeholder="Prix / nuit (optionnel)"
                                                     value={newKindForm.addonPricePerNight}
                                                     onChange={(e) => setNewKindForm((prev) => ({ ...prev, addonPricePerNight: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 />
-                                                <button
-                                                    type="submit"
-                                                    disabled={savingInventory}
-                                                    style={{
-                                                        marginTop: 2,
-                                                        padding: '8px 12px',
-                                                        borderRadius: 6,
-                                                        border: 'none',
-                                                        background: '#2563eb',
-                                                        color: 'white',
-                                                        fontWeight: 600,
-                                                        cursor: savingInventory ? 'not-allowed' : 'pointer',
-                                                        opacity: savingInventory ? 0.7 : 1
-                                                    }}
-                                                >
+                                                <button type="submit" disabled={savingInventory} className="esbl-btn esbl-btn--primary">
                                                     + Ajouter type
                                                 </button>
                                             </div>
                                         </form>
 
-                                        <form onSubmit={handleCreateInventoryUnit} style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
-                                            <h3 style={{ margin: 0, marginBottom: 10, fontSize: '1rem', color: '#1f2937' }}>Nouvelle unité physique</h3>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                        <form onSubmit={handleCreateInventoryUnit} className="esbl-form-card">
+                                            <h3 className="esbl-form-title">Nouvelle unité physique</h3>
+                                            <div className="esbl-form-stack">
                                                 <select
+                                                    className="esbl-input"
                                                     value={newUnitForm.equipmentKindId}
                                                     onChange={(e) => setNewUnitForm((prev) => ({ ...prev, equipmentKindId: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 >
                                                     <option value="">Sélectionner un type</option>
                                                     {equipmentKinds.map((kind) => (
@@ -2430,23 +2278,23 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                                     ))}
                                                 </select>
                                                 <input
+                                                    className="esbl-input"
                                                     type="text"
                                                     placeholder="Nom affiché (ex: Chaloupe #2)"
                                                     value={newUnitForm.displayName}
                                                     onChange={(e) => setNewUnitForm((prev) => ({ ...prev, displayName: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 />
                                                 <input
+                                                    className="esbl-input"
                                                     type="text"
                                                     placeholder="Code unité (ex: BOAT-02)"
                                                     value={newUnitForm.unitCode}
                                                     onChange={(e) => setNewUnitForm((prev) => ({ ...prev, unitCode: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 />
                                                 <select
+                                                    className="esbl-input"
                                                     value={newUnitForm.chaletId}
                                                     onChange={(e) => setNewUnitForm((prev) => ({ ...prev, chaletId: e.target.value }))}
-                                                    style={{ padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
                                                 >
                                                     <option value="">Partagé entre tous les chalets (réserve globale)</option>
                                                     {chalets.map((ch) => (
@@ -2458,17 +2306,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                                 <button
                                                     type="submit"
                                                     disabled={savingInventory || equipmentKinds.length === 0}
-                                                    style={{
-                                                        marginTop: 2,
-                                                        padding: '8px 12px',
-                                                        borderRadius: 6,
-                                                        border: 'none',
-                                                        background: '#059669',
-                                                        color: 'white',
-                                                        fontWeight: 600,
-                                                        cursor: savingInventory ? 'not-allowed' : 'pointer',
-                                                        opacity: savingInventory || equipmentKinds.length === 0 ? 0.7 : 1
-                                                    }}
+                                                    className="esbl-btn esbl-btn--emerald"
                                                 >
                                                     + Ajouter unité (agenda Google)
                                                 </button>
@@ -2476,8 +2314,8 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                         </form>
                                     </div>
 
-                                    <div style={{ marginBottom: 10 }}>
-                                        <h3 style={{ margin: 0, marginBottom: 6, fontSize: '1rem', color: '#334155' }}>
+                                    <div style={{ marginBottom: 14 }}>
+                                        <h3 className="esbl-section-title" style={{ marginBottom: 6 }}>
                                             Types ({equipmentKinds.length})
                                         </h3>
                                         {equipmentKinds.length === 0 ? (
@@ -2485,16 +2323,16 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                         ) : (
                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                                 {equipmentKinds.map((kind) => (
-                                                    <div key={kind.id} style={{ border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 999, padding: '6px 10px', fontSize: '0.82rem', color: '#1e3a8a' }}>
+                                                    <span key={kind.id} className="esbl-pill">
                                                         {kind.label} ({kind.slug})
-                                                    </div>
+                                                    </span>
                                                 ))}
                                             </div>
                                         )}
                                     </div>
 
-                                    <div style={{ marginTop: 14 }}>
-                                        <h3 style={{ margin: 0, marginBottom: 8, fontSize: '1rem', color: '#334155' }}>
+                                    <div>
+                                        <h3 className="esbl-section-title" style={{ marginBottom: 8 }}>
                                             Unités ({inventoryUnits.length})
                                         </h3>
                                         {loadingInventory ? (
@@ -2502,7 +2340,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                         ) : inventoryUnits.length === 0 ? (
                                             <p style={{ color: '#64748b', margin: 0, fontSize: '0.9rem' }}>Aucune unité physique créée.</p>
                                         ) : (
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                                                 {[...inventoryUnits].sort((a, b) => {
                                                     const so = (a.sort_order ?? 0) - (b.sort_order ?? 0);
                                                     if (so !== 0) return so;
@@ -2510,53 +2348,32 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                                 }).map((unit) => {
                                                     const assigned = chaletLabelForUnit(unit);
                                                     return (
-                                                    <div
-                                                        key={unit.id}
-                                                        style={{
-                                                            border: '1px solid #e5e7eb',
-                                                            borderRadius: 8,
-                                                            padding: '10px 12px',
-                                                            display: 'flex',
-                                                            justifyContent: 'space-between',
-                                                            alignItems: 'flex-start',
-                                                            gap: 10,
-                                                            background: 'white'
-                                                        }}
-                                                    >
+                                                    <div key={unit.id} className="esbl-unit-card">
                                                         <div style={{ flex: 1, minWidth: 0 }}>
                                                             <div style={{ fontWeight: 600, color: '#1f2937', fontSize: '0.92rem' }}>
                                                                 {unit.display_name} <span style={{ color: '#64748b', fontWeight: 500 }}>({unit.unit_code})</span>
                                                             </div>
-                                                            <div style={{ color: '#64748b', fontSize: '0.82rem', marginTop: 2 }}>
+                                                            <div className="esbl-unit-meta">
                                                                 {unit.equipment_kind?.label || 'Type inconnu'}
                                                                 {assigned ? (
-                                                                    <span style={{ marginLeft: 6, color: '#1d4ed8' }}>
-                                                                        · Dédiée : {assigned}
-                                                                    </span>
+                                                                    <span style={{ color: '#1d4ed8' }}>· Dédiée : {assigned}</span>
                                                                 ) : (
-                                                                    <span style={{ marginLeft: 6 }}>· Réserve partagée (tous les chalets)</span>
+                                                                    <span>· Réserve partagée (tous les chalets)</span>
                                                                 )}
                                                             </div>
-                                                            <div style={{ color: unit.google_calendar_id ? '#065f46' : '#92400e', fontSize: '0.8rem', marginTop: 2 }}>
+                                                            <div className="esbl-unit-status" style={{ color: unit.google_calendar_id ? '#065f46' : '#92400e' }}>
                                                                 {unit.google_calendar_id ? `📅 ${unit.google_calendar_id}` : 'Sans agenda Google'}
                                                             </div>
                                                         </div>
-                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch' }}>
+                                                        <div className="esbl-unit-actions">
                                                             <button
                                                                 type="button"
                                                                 disabled={!!unit.google_calendar_id || creatingUnitCalendarId === unit.id || !selectedEstablishment?.google_calendar_id}
                                                                 onClick={() => handleCreateInventoryCalendar(unit)}
+                                                                className="esbl-btn esbl-btn--primary"
                                                                 style={{
-                                                                    padding: '7px 10px',
-                                                                    borderRadius: 6,
-                                                                    border: 'none',
-                                                                    background: unit.google_calendar_id ? '#d1fae5' : '#4f46e5',
-                                                                    color: unit.google_calendar_id ? '#065f46' : 'white',
-                                                                    fontSize: '0.8rem',
-                                                                    fontWeight: 600,
-                                                                    cursor: (unit.google_calendar_id || creatingUnitCalendarId === unit.id) ? 'not-allowed' : 'pointer',
-                                                                    opacity: creatingUnitCalendarId === unit.id ? 0.7 : 1,
-                                                                    whiteSpace: 'nowrap'
+                                                                    background: unit.google_calendar_id ? '#d1fae5' : '#1f2937',
+                                                                    color: unit.google_calendar_id ? '#065f46' : 'white'
                                                                 }}
                                                             >
                                                                 {unit.google_calendar_id
@@ -2569,17 +2386,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                                                 type="button"
                                                                 disabled={deactivatingUnitId === unit.id}
                                                                 onClick={() => handleRequestDeactivateInventoryUnit(unit)}
-                                                                style={{
-                                                                    padding: '7px 10px',
-                                                                    borderRadius: 6,
-                                                                    border: '1px solid #fecaca',
-                                                                    background: '#fef2f2',
-                                                                    color: '#991b1b',
-                                                                    fontSize: '0.8rem',
-                                                                    fontWeight: 600,
-                                                                    cursor: deactivatingUnitId === unit.id ? 'not-allowed' : 'pointer',
-                                                                    whiteSpace: 'nowrap'
-                                                                }}
+                                                                className="esbl-btn esbl-btn--danger"
                                                             >
                                                                 {deactivatingUnitId === unit.id ? '…' : 'Retirer'}
                                                             </button>
@@ -2594,13 +2401,8 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                             )}
 
                             {activeEstablishmentSection === 'calendar' && (
-                                <div className="guide-section guide-card" style={{
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: '12px',
-                                    backgroundColor: 'white',
-                                    padding: '20px'
-                                }}>
-                                    <h2 className="guide-section-title" style={{ padding: 0, marginBottom: '12px' }}>📅 Calendrier</h2>
+                                <div className="esbl-section-card">
+                                    <h2 className="esbl-section-title">📅 Calendrier</h2>
                                     <div
                                         style={{
                                             marginBottom: 16,
@@ -2709,73 +2511,42 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                             )}
 
                             {activeEstablishmentSection === 'chalets' && (
-                                <div className="guide-section guide-card" style={{
-                                    border: '1px solid #e2e8f0',
-                                    borderRadius: '12px',
-                                    backgroundColor: 'white',
-                                    padding: '20px'
-                                }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '16px' }}>
+                                <div className="esbl-section-card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '16px', gap: 12, flexWrap: 'wrap' }}>
                                     <div>
-                                        <h2 className="guide-section-title" style={{ marginBottom: '6px', padding: 0 }}>🏠 Vos chalets</h2>
-                                        <p style={{ color: '#64748b', fontSize: '0.95rem', margin: 0 }}>
-                                            Les unités de location disponibles pour vos clients
-                                        </p>
+                                        <h2 className="esbl-section-title" style={{ marginBottom: 6 }}>🏠 Vos chalets</h2>
+                                        <p className="esbl-page-subtitle">Les unités de location disponibles pour vos clients</p>
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={handleOpenCreateChalet}
-                                        style={{
-                                            padding: '10px 18px',
-                                            backgroundColor: '#059669',
-                                            color: 'white',
-                                            border: 'none',
-                                            borderRadius: '8px',
-                                            cursor: 'pointer',
-                                            fontWeight: '600',
-                                            fontSize: '0.95rem',
-                                            whiteSpace: 'nowrap'
-                                        }}
-                                    >
+                                    <button type="button" onClick={handleOpenCreateChalet} className="esbl-btn esbl-btn--emerald">
                                         + Ajouter un chalet
                                     </button>
                                 </div>
-                                <div className="guide-section-content" style={{ padding: 0, marginTop: '16px' }}>
+                                <div style={{ marginTop: 8 }}>
                                     {loadingChalets && (
-                                        <div style={{ textAlign: 'center', padding: '20px' }}>
-                                            <p style={{ color: '#64748b', fontSize: '0.95rem' }}>⏳ Chargement...</p>
-                                        </div>
+                                        <div className="esbl-loading-state">⏳ Chargement...</div>
                                     )}
 
                                     {chaletError && (
-                                        <div style={{ padding: '16px', backgroundColor: '#fee2e2', borderRadius: '8px', marginBottom: '12px' }}>
-                                            <p style={{ color: '#dc2626', fontSize: '0.95rem', margin: 0 }}>
-                                                ⚠️ {chaletError}
-                                            </p>
-                                        </div>
+                                        <div className="esbl-alert esbl-alert--error">⚠️ {chaletError}</div>
                                     )}
 
                                     {!loadingChalets && !chaletError && chalets.length === 0 && (
-                                        <div style={{ textAlign: 'center', padding: '30px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-                                            <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>🏠</div>
-                                            <p style={{ color: '#64748b', fontSize: '1rem', marginBottom: '8px' }}>
-                                                Aucun chalet pour le moment
-                                            </p>
-                                            <p style={{ color: '#94a3b8', fontSize: '0.9rem' }}>
-                                                Cliquez sur "Ajouter un chalet" pour commencer
-                                            </p>
+                                        <div className="esbl-empty-state">
+                                            <div style={{ fontSize: '2.5rem' }}>🏠</div>
+                                            <p style={{ margin: 0 }}>Aucun chalet pour le moment</p>
+                                            <p style={{ margin: 0 }}>Cliquez sur "Ajouter un chalet" pour commencer</p>
                                         </div>
                                     )}
 
                                     {!loadingChalets && !chaletError && chalets.length > 0 && (
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                            <div className="etablissement-chalet-filters">
+                                            <div className="esbl-filter-row">
                                                 {chaletCategories.map((category) => (
                                                     <button
                                                         key={category}
                                                         type="button"
                                                         onClick={() => setSelectedChaletCategory(category)}
-                                                        className={`etablissement-chalet-filter ${selectedChaletCategory === category ? 'active' : ''}`}
+                                                        className={`esbl-filter-pill ${selectedChaletCategory === category ? 'esbl-filter-pill--active' : ''}`}
                                                     >
                                                         {category === 'all' ? 'Tous' : category}
                                                     </button>
@@ -2798,97 +2569,54 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                                                 />
                                                             )}
 
-                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '8px' }}>
-                                                                <h3 style={{
-                                                                    fontSize: '1rem',
-                                                                    fontWeight: '700',
-                                                                    color: '#334155',
-                                                                    marginBottom: '8px',
-                                                                    marginTop: 0,
-                                                                    lineHeight: 1.2
-                                                                }}>
-                                                                    {chalet.Name || `Chalet ${chalet.id}`}
-                                                                </h3>
-                                                                <span className="etablissement-chalet-category-chip">{category}</span>
-                                                            </div>
+                                                            <div className="etablissement-chalet-body">
+                                                                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
+                                                                    <h3 style={{
+                                                                        fontSize: '1rem',
+                                                                        fontWeight: '700',
+                                                                        color: '#1c2b20',
+                                                                        margin: 0,
+                                                                        lineHeight: 1.25,
+                                                                        flex: 1,
+                                                                    }}>
+                                                                        {chalet.Name || `Chalet ${chalet.id}`}
+                                                                    </h3>
+                                                                    <span className="etablissement-chalet-category-chip">{category}</span>
+                                                                </div>
 
-                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '10px' }}>
-                                                                {chalet.nb_personnes && (
-                                                                    <p style={{ color: '#64748b', fontSize: '0.82rem', margin: 0 }}>
-                                                                        <strong>Capacité:</strong> {chalet.nb_personnes} pers.
-                                                                    </p>
-                                                                )}
-                                                                {chalet.price_per_night && (
-                                                                    <p style={{ color: '#64748b', fontSize: '0.82rem', margin: 0 }}>
-                                                                        <strong>Prix:</strong> {chalet.price_per_night}$ / nuit
-                                                                    </p>
-                                                                )}
-                                                                {chalet.Description && (
-                                                                    <p
-                                                                        style={{
-                                                                            color: '#64748b',
-                                                                            fontSize: '0.82rem',
-                                                                            margin: 0,
-                                                                            display: '-webkit-box',
-                                                                            WebkitLineClamp: 2,
-                                                                            WebkitBoxOrient: 'vertical',
-                                                                            overflow: 'hidden'
-                                                                        }}
-                                                                    >
-                                                                        {chalet.Description}
-                                                                    </p>
-                                                                )}
-                                                            </div>
+                                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                                    {chalet.nb_personnes && (
+                                                                        <p style={{ color: '#64748b', fontSize: '0.82rem', margin: 0 }}>
+                                                                            <strong>Capacité:</strong> {chalet.nb_personnes} pers.
+                                                                        </p>
+                                                                    )}
+                                                                    {chalet.price_per_night && (
+                                                                        <p style={{ color: '#64748b', fontSize: '0.82rem', margin: 0 }}>
+                                                                            <strong>Prix:</strong> {chalet.price_per_night}$ / nuit
+                                                                        </p>
+                                                                    )}
+                                                                    {chalet.Description && (
+                                                                        <p
+                                                                            style={{
+                                                                                color: '#64748b',
+                                                                                fontSize: '0.82rem',
+                                                                                margin: 0,
+                                                                                display: '-webkit-box',
+                                                                                WebkitLineClamp: 2,
+                                                                                WebkitBoxOrient: 'vertical',
+                                                                                overflow: 'hidden'
+                                                                            }}
+                                                                        >
+                                                                            {chalet.Description}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
 
-                                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleOpenEditChalet(chalet)}
-                                                                    style={{
-                                                                        padding: '6px 10px',
-                                                                        backgroundColor: '#3b82f6',
-                                                                        color: 'white',
-                                                                        border: 'none',
-                                                                        borderRadius: '4px',
-                                                                        cursor: 'pointer',
-                                                                        fontSize: '0.78rem',
-                                                                        fontWeight: '600'
-                                                                    }}
-                                                                >
-                                                                    Modifier
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleDeleteChalet(chalet.key)}
-                                                                    style={{
-                                                                        padding: '6px 10px',
-                                                                        backgroundColor: '#ef4444',
-                                                                        color: 'white',
-                                                                        border: 'none',
-                                                                        borderRadius: '4px',
-                                                                        cursor: 'pointer',
-                                                                        fontSize: '0.78rem',
-                                                                        fontWeight: '600'
-                                                                    }}
-                                                                >
-                                                                    Supprimer
-                                                                </button>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleOpenHoraireModal(chalet)}
-                                                                    style={{
-                                                                        padding: '6px 10px',
-                                                                        backgroundColor: '#10b981',
-                                                                        color: 'white',
-                                                                        border: 'none',
-                                                                        borderRadius: '4px',
-                                                                        cursor: 'pointer',
-                                                                        fontSize: '0.78rem',
-                                                                        fontWeight: '600'
-                                                                    }}
-                                                                >
-                                                                    Agenda
-                                                                </button>
+                                                                <div className="esbl-chalet-actions" style={{ marginTop: 'auto', paddingTop: 8 }}>
+                                                                    <button type="button" onClick={() => handleOpenEditChalet(chalet)} className="esbl-btn esbl-btn--primary">Modifier</button>
+                                                                    <button type="button" onClick={() => handleDeleteChalet(chalet.key)} className="esbl-btn esbl-btn--danger">Supprimer</button>
+                                                                    <button type="button" onClick={() => handleOpenHoraireModal(chalet)} className="esbl-btn esbl-btn--emerald">Agenda</button>
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     );
@@ -2901,12 +2629,7 @@ const EtablissementModal = ({ isEtablissementOpen, onClose }) => {
                                                 </p>
                                             )}
 
-                                            <p style={{
-                                                color: '#059669',
-                                                fontSize: '0.9rem',
-                                                marginTop: '4px',
-                                                fontWeight: 'bold'
-                                            }}>
+                                            <p style={{ color: '#0f766e', fontSize: '0.9rem', marginTop: '4px', fontWeight: 'bold' }}>
                                                 Affichage: {filteredChalets.length} / {chalets.length}
                                             </p>
                                         </div>

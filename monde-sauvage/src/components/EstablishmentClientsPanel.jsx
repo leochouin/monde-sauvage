@@ -271,89 +271,57 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
   }, [csvRows, headers]);
 
   return (
-    <div className="guide-section guide-card" style={{ border: '1px solid #e2e8f0', borderRadius: 12, background: 'white', padding: 20 }}>
-      <h2 className="guide-section-title" style={{ padding: 0, marginBottom: 8 }}>
+    <div className="guide-section guide-card esbl-card">
+      <h2 className="guide-section-title esbl-card-title">
         Carnet clients
       </h2>
-      <p style={{ color: '#64748b', fontSize: '0.92rem', margin: '0 0 16px' }}>
+      <p className="esbl-card-subtitle">
         Reprenez votre liste depuis un fichier ou ajoutez à la main. Les clients ici sont privés à votre établissement.
       </p>
 
       {error && (
-        <div style={{ padding: 12, background: '#fee2e2', color: '#991b1b', borderRadius: 8, marginBottom: 12, fontSize: '0.9rem' }}>
+        <div className="esbl-alert esbl-alert--error">
           {error}
         </div>
       )}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16, alignItems: 'center' }}>
-        <input
-          type="search"
-          placeholder="Rechercher par nom, courriel ou téléphone..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: '1 1 220px', padding: '8px 12px', borderRadius: 8, border: '1px solid #cbd5e1' }}
-        />
-        <button
-          type="button"
-          onClick={() => setImportOpen((v) => !v)}
-          style={{
-            padding: '8px 14px',
-            borderRadius: 8,
-            border: '1px solid #93c5fd',
-            background: importOpen ? '#dbeafe' : 'white',
-            color: '#1e40af',
-            fontWeight: 600,
-            cursor: 'pointer',
-            fontSize: '0.88rem',
-          }}
-        >
-          {importOpen ? 'Fermer l’import' : 'Importer (fichier ou collage)'}
-        </button>
+      <div className="esbl-toolbar">
+        <div className="esbl-toolbar-left">
+          <input
+            type="search"
+            placeholder="Rechercher par nom, courriel ou téléphone..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="esbl-input"
+          />
+        </div>
+        <div className="esbl-toolbar-actions">
+          <button
+            type="button"
+            onClick={() => setImportOpen((v) => !v)}
+            className={`esbl-btn ${importOpen ? 'esbl-btn--primary' : 'esbl-btn--ghost'}`}
+          >
+            {importOpen ? 'Fermer l’import' : 'Importer (fichier ou collage)'}
+          </button>
+        </div>
       </div>
 
       {importOpen && (
-        <div
-          style={{
-            marginBottom: 20,
-            padding: 16,
-            borderRadius: 10,
-            border: '1px dashed #cbd5e1',
-            background: '#f8fafc',
-          }}
-        >
-          <h3 style={{ margin: '0 0 10px', fontSize: '1rem', color: '#1e293b' }}>Importer depuis un fichier CSV</h3>
-          <p style={{ fontSize: '0.82rem', color: '#64748b', margin: '0 0 10px' }}>
+        <div className="esbl-import-panel">
+          <h3 className="esbl-form-title">Importer depuis un fichier CSV</h3>
+          <p className="esbl-card-subtitle">
             Téléchargez le modèle, ouvrez-le dans Excel / LibreOffice, puis enregistrez en CSV. Colonnes possibles : nom,
             courriel, téléphone, notes.
           </p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+          <div className="esbl-toolbar-actions" style={{ marginBottom: 12 }}>
             <button
               type="button"
               onClick={downloadTemplate}
-              style={{
-                padding: '6px 12px',
-                borderRadius: 6,
-                border: '1px solid #0d9488',
-                background: 'white',
-                color: '#0f766e',
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontSize: '0.85rem',
-              }}
+              className="esbl-btn esbl-btn--ghost"
             >
               Télécharger le modèle CSV
             </button>
-            <label
-              style={{
-                padding: '6px 12px',
-                borderRadius: 6,
-                background: '#0d9488',
-                color: 'white',
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontSize: '0.85rem',
-              }}
-            >
+            <label className="esbl-btn esbl-btn--primary">
               Choisir un fichier…
               <input type="file" accept=".csv,.txt,text/csv" style={{ display: 'none' }} onChange={handleFile} />
             </label>
@@ -370,13 +338,13 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                 La première ligne contient les titres des colonnes
               </label>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 12 }}>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: '#475569' }}>
+              <div className="esbl-import-grid">
+                <label className="esbl-form-stack" style={{ fontSize: '0.8rem', color: '#475569' }}>
                   Nom complet *
                   <select
                     value={mapFullName}
                     onChange={(e) => setMapFullName(e.target.value)}
-                    style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+                    className="esbl-input esbl-input--sm"
                   >
                     <option value="">— Choisir —</option>
                     {colOptions.map((o) => (
@@ -386,12 +354,12 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                     ))}
                   </select>
                 </label>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: '#475569' }}>
+                <label className="esbl-form-stack" style={{ fontSize: '0.8rem', color: '#475569' }}>
                   Courriel
                   <select
                     value={mapEmail}
                     onChange={(e) => setMapEmail(e.target.value)}
-                    style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+                    className="esbl-input esbl-input--sm"
                   >
                     <option value="">— Ignorer —</option>
                     {colOptions.map((o) => (
@@ -401,12 +369,12 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                     ))}
                   </select>
                 </label>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: '#475569' }}>
+                <label className="esbl-form-stack" style={{ fontSize: '0.8rem', color: '#475569' }}>
                   Téléphone
                   <select
                     value={mapPhone}
                     onChange={(e) => setMapPhone(e.target.value)}
-                    style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+                    className="esbl-input esbl-input--sm"
                   >
                     <option value="">— Ignorer —</option>
                     {colOptions.map((o) => (
@@ -416,12 +384,12 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                     ))}
                   </select>
                 </label>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: '#475569' }}>
+                <label className="esbl-form-stack" style={{ fontSize: '0.8rem', color: '#475569' }}>
                   Notes
                   <select
                     value={mapNotes}
                     onChange={(e) => setMapNotes(e.target.value)}
-                    style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+                    className="esbl-input esbl-input--sm"
                   >
                     <option value="">— Ignorer —</option>
                     {colOptions.map((o) => (
@@ -436,15 +404,14 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
               <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '0 0 8px' }}>
                 Aperçu ({dataRows.length} ligne(s) à importer, montre les 10 premières)
               </p>
-              <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 10 }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+              <div style={{ overflowX: 'auto', border: '1px solid #efece4', borderRadius: 8, marginBottom: 10 }}>
+                <table className="esbl-table">
                   <tbody>
                     {previewRows.map((row, ri) => (
                       <tr key={ri}>
                         {row.map((cell, ci) => (
                           <td
                             key={ci}
-                            style={{ borderBottom: '1px solid #f1f5f9', padding: '6px 8px', color: '#334155' }}
                           >
                             {cell}
                           </td>
@@ -459,24 +426,15 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                 type="button"
                 disabled={importing || dataRows.length === 0}
                 onClick={handleImportCsv}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: 8,
-                  border: 'none',
-                  background: '#2563eb',
-                  color: 'white',
-                  fontWeight: 600,
-                  cursor: importing ? 'not-allowed' : 'pointer',
-                  opacity: importing ? 0.7 : 1,
-                }}
+                className="esbl-btn esbl-btn--primary"
               >
                 {importing ? 'Import…' : 'Importer dans le carnet'}
               </button>
             </>
           )}
 
-          <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid #e2e8f0' }}>
-            <h3 style={{ margin: '0 0 8px', fontSize: '0.95rem', color: '#1e293b' }}>Ou coller plusieurs lignes</h3>
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid #efece4' }}>
+            <h3 className="esbl-form-title">Ou coller plusieurs lignes</h3>
             <p style={{ fontSize: '0.78rem', color: '#64748b', margin: '0 0 6px' }}>
               Une ligne par client, champs séparés par une virgule ou une tabulation : nom, courriel, téléphone, notes…
             </p>
@@ -485,37 +443,21 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
               onChange={(e) => setPasteBulk(e.target.value)}
               rows={5}
               placeholder={'Jean Tremblay, jean@exemple.com, 418-555-0101\nMarie Dupont\tmarie@…'}
-              style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: 10,
-                borderRadius: 8,
-                border: '1px solid #cbd5e1',
-                fontSize: '0.85rem',
-                marginBottom: 8,
-              }}
+              className="esbl-input esbl-textarea"
             />
             <button
               type="button"
               disabled={importing || !pasteBulk.trim()}
               onClick={handlePasteImport}
-              style={{
-                padding: '6px 14px',
-                borderRadius: 8,
-                border: '1px solid #059669',
-                background: 'white',
-                color: '#059669',
-                fontWeight: 600,
-                cursor: importing || !pasteBulk.trim() ? 'not-allowed' : 'pointer',
-              }}
+              className="esbl-btn esbl-btn--ghost"
             >
               Ajouter ces lignes
             </button>
           </div>
 
           {importErrors.length > 0 && (
-            <div style={{ marginTop: 12, padding: 10, background: '#fff7ed', borderRadius: 8, fontSize: '0.8rem' }}>
-              <strong style={{ color: '#9a3412' }}>Lignes non importées :</strong>
+            <div style={{ marginTop: 12, padding: 10, background: '#fff5e6', borderRadius: 8, fontSize: '0.8rem' }}>
+              <strong style={{ color: '#9a5b13' }}>Lignes non importées :</strong>
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
                 {importErrors.slice(0, 15).map((err) => (
                   <li key={`${err.row}-${err.message}`}>
@@ -529,49 +471,41 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} style={{ marginBottom: 20, padding: 14, background: '#f8fafc', borderRadius: 10 }}>
-        <h3 style={{ margin: '0 0 10px', fontSize: '0.95rem' }}>{editingId ? 'Modifier le client' : 'Nouveau client'}</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+      <form onSubmit={handleSubmit} className="esbl-form-panel">
+        <h3 className="esbl-form-title">{editingId ? 'Modifier le client' : 'Nouveau client'}</h3>
+        <div className="esbl-form-grid-3">
           <input
             required
             placeholder="Nom complet *"
             value={form.fullName}
             onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))}
-            style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+            className="esbl-input"
           />
           <input
             type="email"
             placeholder="Courriel"
             value={form.email}
             onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-            style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+            className="esbl-input"
           />
           <input
             placeholder="Téléphone"
             value={form.phone}
             onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-            style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1' }}
+            className="esbl-input"
           />
           <input
             placeholder="Notes"
             value={form.notes}
             onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-            style={{ padding: 8, borderRadius: 6, border: '1px solid #cbd5e1', gridColumn: '1 / -1' }}
+            className="esbl-input esbl-field--span-3"
           />
         </div>
-        <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+        <div className="esbl-form-actions">
           <button
             type="submit"
             disabled={saving}
-            style={{
-              padding: '8px 16px',
-              borderRadius: 8,
-              border: 'none',
-              background: '#059669',
-              color: 'white',
-              fontWeight: 600,
-              cursor: saving ? 'not-allowed' : 'pointer',
-            }}
+            className="esbl-btn esbl-btn--primary"
           >
             {saving ? '…' : editingId ? 'Enregistrer' : 'Ajouter'}
           </button>
@@ -582,7 +516,7 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                 setEditingId(null);
                 setForm(EMPTY_FORM);
               }}
-              style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #cbd5e1', background: 'white' }}
+              className="esbl-btn esbl-btn--ghost"
             >
               Annuler
             </button>
@@ -591,29 +525,19 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
       </form>
 
       {loading ? (
-        <p style={{ color: '#64748b' }}>Chargement…</p>
+        <p className="esbl-card-subtitle">Chargement…</p>
       ) : clients.length === 0 ? (
-        <p style={{ color: '#64748b', fontSize: '0.9rem' }}>Aucun client pour l’instant.</p>
+        <p className="esbl-card-subtitle">Aucun client pour l’instant.</p>
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <ul className="esbl-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
           {clients.map((c) => (
             <li
               key={c.id}
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 10,
-                padding: '10px 12px',
-                border: '1px solid #e5e7eb',
-                borderRadius: 8,
-                background: '#fff',
-              }}
+              className="esbl-list-item"
             >
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600, color: '#1f2937' }}>{c.full_name}</div>
-                <div style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                <div className="esbl-list-meta">
                   {[c.email, c.phone].filter(Boolean).join(' · ')}
                   {c.notes ? ` — ${c.notes}` : ''}
                 </div>
@@ -622,30 +546,14 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
                 <button
                   type="button"
                   onClick={() => startEdit(c)}
-                  style={{
-                    fontSize: '0.8rem',
-                    padding: '4px 10px',
-                    borderRadius: 6,
-                    border: '1px solid #93c5fd',
-                    background: '#eff6ff',
-                    color: '#1d4ed8',
-                    cursor: 'pointer',
-                  }}
+                  className="esbl-btn esbl-btn--ghost esbl-btn--tiny"
                 >
                   Modifier
                 </button>
                 <button
                   type="button"
                   onClick={() => setDeleteId(c.id)}
-                  style={{
-                    fontSize: '0.8rem',
-                    padding: '4px 10px',
-                    borderRadius: 6,
-                    border: '1px solid #fecaca',
-                    background: '#fef2f2',
-                    color: '#b91c1c',
-                    cursor: 'pointer',
-                  }}
+                  className="esbl-btn esbl-btn--danger esbl-btn--tiny"
                 >
                   Retirer
                 </button>
@@ -657,34 +565,25 @@ export default function EstablishmentClientsPanel({ establishmentId }) {
 
       {deleteId && (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(15,23,42,0.35)',
-            zIndex: 10000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-          }}
+          className="esbl-modal-backdrop"
           onClick={() => setDeleteId(null)}
           role="presentation"
         >
           <div
             role="dialog"
             aria-modal="true"
-            style={{ background: 'white', borderRadius: 12, padding: 20, maxWidth: 360 }}
+            className="esbl-modal-card"
             onClick={(e) => e.stopPropagation()}
           >
             <p style={{ margin: '0 0 12px', fontWeight: 600 }}>Retirer ce client du carnet ?</p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setDeleteId(null)} style={{ padding: '6px 12px' }}>
+              <button type="button" onClick={() => setDeleteId(null)} className="esbl-btn esbl-btn--ghost">
                 Annuler
               </button>
               <button
                 type="button"
                 onClick={() => handleDelete(deleteId)}
-                style={{ padding: '6px 12px', background: '#dc2626', color: 'white', border: 'none', borderRadius: 6 }}
+                className="esbl-btn esbl-btn--danger"
               >
                 Confirmer
               </button>

@@ -503,10 +503,103 @@ export const getBookingsForChaletIds = async (chaletIds, options = {}) => {
 };
 
 /**
+ * Alloue les unités d'inventaire pour une réservation manuelle pourvoyeur.
+ * Insère directement dans booking_inventory_allocation (pas de RPC — status déjà confirmed).
+ *
+ * @param {number|string} bookingId
+ * @param {string} startIso  — UTC ISO
+ * @param {string} endIso    — UTC ISO
+ * @param {string[]} chaletUnitIds  — UUIDs des unités assignées au chalet (auto-incluses)
+ * @param {{equipment_kind_id: string, quantity: number}[]} poolLines — extras réserve globale
+ */
+// NOTE: 'establishment_manual' sera valide après migration 20260520100000_bia_establishment_manual_origin.sql
+// Workaround temporaire: 'guide_manual' passe la contrainte actuelle CHECK (platform|guide_manual)
+const ALLOC_ORIGIN = 'guide_manual';
+
+const allocateInventoryForManualBooking = async (bookingId, startIso, endIso, chaletUnitIds, poolLines, { skipPendingCheck = false } = {}) => {
+    const allocs = [];
+
+    for (const unitId of chaletUnitIds) {
+        allocs.push({
+            chalet_booking_id: bookingId,
+            inventory_unit_id: unitId,
+            start_at: startIso,
+            end_at: endIso,
+            status: 'confirmed',
+            payment_status: 'paid',
+            booking_origin: ALLOC_ORIGIN,
+        });
+    }
+
+    for (const line of poolLines) {
+        if (!line.quantity || line.quantity < 1) continue;
+
+        const { data: poolUnits, error: puErr } = await supabase
+            .from('inventory_unit')
+            .select('id')
+            .eq('equipment_kind_id', line.equipment_kind_id)
+            .is('chalet_id', null)
+            .eq('is_active', true)
+            .is('deleted_at', null);
+        if (puErr) throw new Error(puErr.message);
+
+        const allUnitIds = (poolUnits || []).map((u) => u.id);
+        if (allUnitIds.length === 0) throw new Error('Aucune unité dans le pool pour cet équipement');
+
+        // Quand skipPendingCheck=true (booking manuel pourvoyeur), on ignore les pending
+        // stales qui bloqueraient l'inventaire sans raison valable.
+        const activeStatuses = skipPendingCheck
+            ? ['confirmed', 'blocked']
+            : ['pending', 'pending_payment', 'confirmed', 'blocked'];
+
+        const { data: takenAllocs, error: taErr } = await supabase
+            .from('booking_inventory_allocation')
+            .select('inventory_unit_id')
+            .in('inventory_unit_id', allUnitIds)
+            .in('status', activeStatuses)
+            .lt('start_at', endIso)
+            .gt('end_at', startIso);
+        if (taErr) throw new Error(taErr.message);
+
+        const takenIds = new Set((takenAllocs || []).map((a) => a.inventory_unit_id));
+        const available = allUnitIds.filter((id) => !takenIds.has(id));
+
+        if (available.length < line.quantity) {
+            throw new Error(
+                `Stock insuffisant : ${available.length} unité(s) disponible(s), ${line.quantity} demandée(s)`,
+            );
+        }
+
+        for (let i = 0; i < line.quantity; i++) {
+            allocs.push({
+                chalet_booking_id: bookingId,
+                inventory_unit_id: available[i],
+                start_at: startIso,
+                end_at: endIso,
+                status: 'confirmed',
+                payment_status: 'paid',
+                booking_origin: ALLOC_ORIGIN,
+            });
+        }
+    }
+
+    if (allocs.length > 0) {
+        const { error } = await supabase.from('booking_inventory_allocation').insert(allocs);
+        if (error) throw new Error(error.message);
+    }
+
+    return allocs.length;
+};
+
+/**
  * Création par le propriétaire (migration / saisie manuelle). Pas de commission plateforme.
  * @param {Object} o
  * @param {boolean} [o.skipOverlapCheck=false] — pour import bulk migration : ignorer dispo
  * @param {boolean} [o.syncToGoogle=true]
+ * @param {string[]} [o.chaletUnitIds=[]] — UUIDs des inventory_unit assignés au chalet
+ * @param {{equipment_kind_id: string, quantity: number}[]} [o.poolLines=[]] — extras pool
+ * @param {number} [o.totalPrice] — prix total calculé côté UI
+ * @param {number} [o.nights] — nombre de nuits
  */
 export const createEstablishmentManualBooking = async (o) => {
     const {
@@ -520,6 +613,11 @@ export const createEstablishmentManualBooking = async (o) => {
         skipOverlapCheck = false,
         syncToGoogle = true,
         source = 'migration',
+        chaletUnitIds = [],
+        poolLines = [],
+        totalPrice,
+        nights,
+        paymentStatus = 'paid',
     } = o;
 
     if (!chaletId) throw new Error('Chalet requis');
@@ -550,7 +648,9 @@ export const createEstablishmentManualBooking = async (o) => {
         booking_origin: 'establishment_manual',
         platform_fee_amount: 0,
         platform_fee_waived: true,
-        payment_status: 'paid',
+        payment_status: paymentStatus,
+        ...(totalPrice != null && { total_price: totalPrice }),
+        ...(nights != null && { nights }),
     };
 
     const { data: booking, error: bookingError } = await supabase
@@ -562,6 +662,16 @@ export const createEstablishmentManualBooking = async (o) => {
     if (bookingError) {
         console.error('createEstablishmentManualBooking:', bookingError);
         throw new Error(bookingError.message || 'Impossible de créer la réservation');
+    }
+
+    if (chaletUnitIds.length > 0 || poolLines.length > 0) {
+        try {
+            await allocateInventoryForManualBooking(booking.id, startIso, endIso, chaletUnitIds, poolLines, { skipPendingCheck: skipOverlapCheck });
+        } catch (allocErr) {
+            // Rollback : annuler la réservation si l'allocation échoue
+            await supabase.from('bookings').update({ status: 'cancelled' }).eq('id', booking.id);
+            throw new Error(`Réservation annulée — allocation impossible : ${allocErr.message}`);
+        }
     }
 
     let googleSync = { ok: true, skipped: syncToGoogle ? undefined : 'sync_disabled' };
@@ -613,4 +723,41 @@ export const importEstablishmentBookingsBatch = async (rows, resolveChaletId, op
     }
 
     return { inserted, errors };
+};
+
+/**
+ * Libère l'inventaire gelé par des paiements jamais finalisés.
+ * Appelé au chargement du panel établissement.
+ */
+export const cancelStalePendingAllocations = async (chaletIds, { timeoutMinutes = 30 } = {}) => {
+    if (!chaletIds?.length) return 0;
+    try {
+        const cutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000).toISOString();
+        const { data: stale } = await supabase
+            .from('bookings')
+            .select('id')
+            .in('chalet_id', chaletIds)
+            .eq('status', 'pending')
+            .lt('created_at', cutoff);
+
+        if (!stale?.length) return 0;
+        const ids = stale.map((b) => b.id);
+
+        await supabase
+            .from('booking_inventory_allocation')
+            .update({ status: 'cancelled' })
+            .in('chalet_booking_id', ids)
+            .in('status', ['pending', 'pending_payment']);
+
+        await supabase
+            .from('bookings')
+            .update({ status: 'cancelled' })
+            .in('id', ids)
+            .eq('status', 'pending');
+
+        return ids.length;
+    } catch (e) {
+        console.warn('cancelStalePendingAllocations:', e.message);
+        return 0;
+    }
 };

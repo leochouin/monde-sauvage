@@ -5,10 +5,20 @@ import { getAvatarRawValueFromSources } from './utils/avatar.js'
 import { installRuntimeTranslation } from './utils/runtimeTranslations.js'
 import IntroSplash from './components/IntroSplash.jsx'
 import ToastContainer from './components/Toast.jsx'
+import ProtectedRoute from './components/auth/ProtectedRoute.jsx'
 import './App.css'
 
 const MapApp = lazy(() => import('./components/MapApp.jsx'))
 const ChaletDetailPage = lazy(() => import('./pages/ChaletDetailPage.jsx'))
+const EstablishmentLayout = lazy(() => import('./components/layout/EstablishmentLayout.jsx'))
+const Overview = lazy(() => import('./pages/dashboard/Overview.jsx'))
+const Onboarding = lazy(() => import('./pages/dashboard/Onboarding.jsx'))
+const Chalets = lazy(() => import('./pages/dashboard/Chalets.jsx'))
+const Equipments = lazy(() => import('./pages/dashboard/Equipments.jsx'))
+const Calendar = lazy(() => import('./pages/dashboard/Calendar.jsx'))
+const Clients = lazy(() => import('./pages/dashboard/Clients.jsx'))
+const Bookings = lazy(() => import('./pages/dashboard/Bookings.jsx'))
+const Payments = lazy(() => import('./pages/dashboard/Payments.jsx'))
 
 const INTRO_SPLASH_COOLDOWN_MS = 12 * 60 * 1000;
 const INTRO_SPLASH_STORAGE_KEY = 'ms_intro_splash_until';
@@ -449,6 +459,23 @@ function App() {
           <Suspense fallback={null}>
             <Routes>
               <Route path="/" element={<Navigate to="/map" />} />
+              <Route
+                path="/dashboard/establishment"
+                element={
+                  <ProtectedRoute>
+                    <EstablishmentLayout />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<Overview />} />
+                <Route path="demarrage" element={<Onboarding />} />
+                <Route path="chalets" element={<Chalets />} />
+                <Route path="equipements" element={<Equipments />} />
+                <Route path="calendrier" element={<Calendar />} />
+                <Route path="clients" element={<Clients />} />
+                <Route path="reservations" element={<Bookings />} />
+                <Route path="paiements" element={<Payments />} />
+              </Route>
               <Route path="/chalet/:id" element={<ChaletDetailPage />} />
               <Route
                 path="/map"

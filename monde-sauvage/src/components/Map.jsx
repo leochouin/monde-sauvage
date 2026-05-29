@@ -684,17 +684,12 @@ const GaspesieMap = ({
     const map = mapRef.current;
     if (!map || isMobile) return;
 
-    const syncResize = () => {
-      if (typeof map.resize === 'function') {
-        map.resize();
-      }
-    };
+    // Fire once after the sidebar CSS transition (300ms) completes.
+    const timer = setTimeout(() => {
+      if (typeof map.resize === 'function') map.resize();
+    }, 320);
 
-    const timers = [0, 160, 320].map((delay) => setTimeout(syncResize, delay));
-
-    return () => {
-      timers.forEach(clearTimeout);
-    };
+    return () => clearTimeout(timer);
   }, [sidebarWidthToken, isMobile]);
 
   // Dimensions du conteneur (flex/menu) peuvent changer sans que le token suive — évite carte / logo coupés à droite
@@ -702,11 +697,21 @@ const GaspesieMap = ({
     const el = mapContainerRef.current;
     const map = mapRef.current;
     if (!el || !map || !mapReady || isMobile) return;
+
+    // Debounce resize calls to avoid flooding Mapbox during CSS transitions,
+    // which causes tile reloads and a brief blank on every step change.
+    let debounceTimer;
     const ro = new ResizeObserver(() => {
-      if (typeof map.resize === 'function') map.resize();
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (typeof map.resize === 'function') map.resize();
+      }, 50);
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      clearTimeout(debounceTimer);
+    };
   }, [mapReady, isMobile]);
 
   const initializeMapRuntime = useCallback(() => {
