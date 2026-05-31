@@ -195,6 +195,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
   }, [guide?.id]);
 
   const handleStartStripeOnboarding = async () => {
+    if (!guide?.id) return;
     setStripeLoading(true);
     setStripeError(null);
     try {
@@ -208,6 +209,7 @@ export default function AccountSettingsModal({ isOpen, onClose, user, profile, g
   };
 
   const handleCheckStripeStatus = async () => {
+    if (!guide?.id) return;
     try {
       const result = await checkGuideOnboardingStatus(guide.id);
       setStripeStatus({

@@ -9,6 +9,7 @@ import { useStep3Markers, PreviewCard, MapLegend } from './MapBrowse.jsx';
 import RiverBioCards from './RiverBioCards.jsx';
 import GuideSlotPickerModal from '../modals/guideSlotPickerModal.jsx';
 import { getRiverByPathId } from '../utils/riverGuideData.js';
+import RiverInfoCard from './RiverInfoCard.jsx';
 
 let mapboxAssetsPromise = null;
 
@@ -269,6 +270,10 @@ const GaspesieMap = ({
   // sync to the parent via `onSelectRiver` so MapApp can use it for chalet search.
   const [selectedRiver, setSelectedRiver] = useState(null);
 
+  // Info card shown when clicking a river in browse mode (step 0).
+  const [infoCardRiver, setInfoCardRiver] = useState(null);
+  const infoCardRiverRef = useRef(null);
+
   // Ref mirror of bookingStep — click handlers registered inside map.on('load')
   // close over the initial value, so we read through a ref instead of the prop.
   const bookingStepRef = useRef(bookingStep);
@@ -277,6 +282,14 @@ const GaspesieMap = ({
   // Ref for the river selection callback, same rationale as bookingStepRef.
   const onSelectRiverRef = useRef(onSelectRiver);
   useEffect(() => { onSelectRiverRef.current = onSelectRiver; }, [onSelectRiver]);
+
+  // Dismiss info card when the user enters the booking flow.
+  useEffect(() => {
+    if (bookingStep !== 0) {
+      setInfoCardRiver(null);
+      infoCardRiverRef.current = null;
+    }
+  }, [bookingStep]);
 
   // Sync parent-provided selectedRiver → local state (e.g. when reset clears it,
   // or when the dropdown selects a river). Also re-applies the map highlight
@@ -1576,34 +1589,52 @@ const GaspesieMap = ({
         const sel = mapRef.current?._riverSelected;
         if (sel) {
           setGlow(sel, SELECT_BLUE);
+        } else if (infoCardRiverRef.current) {
+          // In browse mode, restore glow to the info-card river when cursor leaves.
+          setGlow(infoCardRiverRef.current, SELECT_BLUE);
         } else {
           setGlow(null);
         }
       });
 
-      // Click to select/deselect (étape 1 uniquement — au-delà, la destination rivière est verrouillée).
-      // When in booking step 1 (destination), also sync to parent via
-      // onSelectRiver so MapApp can anchor chalet search to the river.
+      // Click handler — behaviour depends on the current booking step.
+      // Step 0 (browse): toggle the info card popup, no booking state change.
+      // Step 1 (destination): select the river for the booking flow.
+      // Steps 2+ : locked, ignore river clicks.
       map.on('click', 'rivers-hit', (e) => {
-        if (bookingStepRef.current !== 1) return;
-        if (e.features && e.features.length > 0) {
-          const id = e.features[0].properties.id;
-          const prev = mapRef.current?._riverSelected;
+        if (!e.features || e.features.length === 0) return;
+        const id = e.features[0].properties.id;
 
+        if (bookingStepRef.current === 0) {
+          const prev = infoCardRiverRef.current;
           if (prev === id) {
-            mapRef.current._riverSelected = null;
-            setSelectedRiver(null);
+            infoCardRiverRef.current = null;
+            setInfoCardRiver(null);
             setGlow(null);
-            if (onSelectRiverRef.current) {
-              onSelectRiverRef.current(null);
-            }
           } else {
-            mapRef.current._riverSelected = id;
-            setSelectedRiver(id);
+            infoCardRiverRef.current = id;
+            setInfoCardRiver(id);
             setGlow(id, SELECT_BLUE);
-            if (onSelectRiverRef.current) {
-              onSelectRiverRef.current(id);
-            }
+          }
+          return;
+        }
+
+        if (bookingStepRef.current !== 1) return;
+
+        const prev = mapRef.current?._riverSelected;
+        if (prev === id) {
+          mapRef.current._riverSelected = null;
+          setSelectedRiver(null);
+          setGlow(null);
+          if (onSelectRiverRef.current) {
+            onSelectRiverRef.current(null);
+          }
+        } else {
+          mapRef.current._riverSelected = id;
+          setSelectedRiver(id);
+          setGlow(id, SELECT_BLUE);
+          if (onSelectRiverRef.current) {
+            onSelectRiverRef.current(id);
           }
         }
       });
@@ -4406,53 +4437,43 @@ const GaspesieMap = ({
 
         {/* River layers are now rendered natively by Mapbox — no HTML SVG overlay */}
 
+        {/* Browse-mode (step 0) river info card — shown on river click */}
+        {infoCardRiver && bookingStep === 0 && (
+          <RiverInfoCard
+            pathId={infoCardRiver}
+            language={language}
+            onClose={() => {
+              setInfoCardRiver(null);
+              infoCardRiverRef.current = null;
+              if (mapRef.current && typeof mapRef.current._setRiverGlow === "function") {
+                mapRef.current._setRiverGlow(null);
+              }
+            }}
+            onBook={() => {
+              if (isTripOpen) isTripOpen(true);
+            }}
+          />
+        )}
+
         {/* Encart rivière — uniquement à l’étape 1 ; masqué aux étapes suivantes sans désélectionner */}
         {selectedRiver && bookingStep === 1 && (
-          (() => {
-            const title = formatRiverName ? formatRiverName(selectedRiver) : selectedRiver;
-            return (
-          <div style={{
-            position: 'absolute',
-            top: 12,
-            right: 12,
-            zIndex: 20,
-            background: 'rgba(255,252,247,0.96)',
-            border: '1px solid rgba(33,150,243,0.35)',
-            borderRadius: 10,
-            padding: '8px 12px',
-            fontSize: 13,
-            color: '#1a3a2a',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-            minWidth: 120,
-          }}>
-            <div style={{ fontWeight: 600 }}>
-              {title}
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedRiver(null);
-                if (mapRef.current) {
-                  mapRef.current._riverSelected = null;
-                  if (typeof mapRef.current._setRiverGlow === 'function') {
-                    mapRef.current._setRiverGlow(null);
-                  }
+          <RiverInfoCard
+            pathId={selectedRiver}
+            language={language}
+            onClose={() => {
+              setSelectedRiver(null);
+              if (mapRef.current) {
+                mapRef.current._riverSelected = null;
+                if (typeof mapRef.current._setRiverGlow === "function") {
+                  mapRef.current._setRiverGlow(null);
                 }
-                if (onSelectRiver) onSelectRiver(null);
-              }}
-              style={{
-                background: 'none',
-                border: '1px solid #ccc',
-                borderRadius: 6,
-                padding: '3px 10px',
-                cursor: 'pointer',
-                fontSize: 12,
-                color: '#555',
-              }}
-            >Fermer</button>
-          </div>
-            );
-          })()
+              }
+              if (onSelectRiver) onSelectRiver(null);
+            }}
+            onBook={() => {
+              if (isTripOpen) isTripOpen(true);
+            }}
+          />
         )}
 
         {/* Step 3: Preview card on marker click */}

@@ -87,7 +87,7 @@ export const RIVERS = [
       en: 'Smaller but well-known, ideal for a more intimate experience.',
     },
     description: 'A smaller but well-known salmon river valued for its quieter, wild watershed.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1532372576444-dda954194ad0?w=800&q=80',
   },
   {
     id: 4,
@@ -128,7 +128,7 @@ export const RIVERS = [
       en: 'South-shore river with an authentic feel.',
     },
     description: 'South-shore river flowing toward Chaleur Bay in western Gaspesie.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=800&q=80',
   },
   {
     id: 6,
@@ -148,7 +148,7 @@ export const RIVERS = [
       en: 'Major north-coast river, known for its salmon.',
     },
     description: 'Major north-coast salmon river known for rugged terrain and clear water.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1475113548492-b7dada4c4e8c?w=800&q=80',
   },
   {
     id: 7,
@@ -168,7 +168,7 @@ export const RIVERS = [
       en: 'Coastal Upper-Gaspesie river.',
     },
     description: 'Compact but scenic north-coast river descending from the Chic-Choc highlands.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1506748686714-c6f8f20e7869?w=800&q=80',
   },
   {
     id: 9,
@@ -188,7 +188,7 @@ export const RIVERS = [
       en: 'A largely wild northeastern river with memorable mountain scenery.',
     },
     description: 'A largely wild northeastern river with memorable mountain scenery.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=800&q=80',
   },
   {
     id: 10,
@@ -228,7 +228,7 @@ export const RIVERS = [
       en: "Eastern Gaspesie's reference salmon river.",
     },
     description: 'Best-known eastern Gaspesie salmon river with strong sporting heritage.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1455729552865-3658a5d39692?w=800&q=80',
   },
   {
     id: 12,
@@ -247,7 +247,7 @@ export const RIVERS = [
       en: 'Smaller eastern river, flowing to Malbaie Bay.',
     },
     description: 'Smaller eastern Gaspesie river flowing toward La Malbaie Bay.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?w=800&q=80',
   },
   {
     id: 13,
@@ -267,7 +267,7 @@ export const RIVERS = [
       en: 'Prominent south-shore river loved by anglers.',
     },
     description: 'Prominent south-shore river running to Chaleur Bay.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1544551763-46a013bb70d5?w=800&q=80',
   },
   {
     id: 14,
@@ -325,7 +325,7 @@ export const RIVERS = [
       en: 'Completes the Pabos trio.',
     },
     description: 'Completes the Pabos trio in the Chandler area.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1536536982011-87f2f3d78d47?w=800&q=80',
   },
   {
     id: 17,
@@ -345,7 +345,7 @@ export const RIVERS = [
       en: 'Signature Upper-Gaspesie river.',
     },
     description: 'Signature Haute-Gaspesie river linking mountain headwaters to the coast.',
-    image: '',
+    image: 'https://images.unsplash.com/photo-1563592726832-9ea80a7b0b8b?w=800&q=80',
   },
 ];
 
