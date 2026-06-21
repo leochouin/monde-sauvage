@@ -854,6 +854,29 @@ export const getFailedSyncBookings = async (guideId) => {
 };
 
 /**
+ * Get the last automatic (scheduled) Google Calendar sync time for a guide.
+ * Set by the sync-all-guide-calendars cron job.
+ *
+ * @param {string} guideId - Guide UUID
+ * @returns {Promise<string|null>} ISO timestamp of last auto-sync, or null
+ */
+export const getCalendarAutoSyncStatus = async (guideId) => {
+    try {
+        const { data, error } = await supabase
+            .from('guide')
+            .select('calendar_last_auto_synced_at')
+            .eq('id', guideId)
+            .single();
+
+        if (error) throw new Error(error.message);
+        return data?.calendar_last_auto_synced_at || null;
+    } catch (error) {
+        console.error('❌ Error fetching auto-sync status:', error);
+        return null;
+    }
+};
+
+/**
  * Retry calendar sync for a specific booking that previously failed.
  * Uses the create-guide-booking-event edge function (which has its own
  * idempotency check via google_event_id).

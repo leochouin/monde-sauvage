@@ -6,7 +6,7 @@ import startOfWeek from "date-fns/startOfWeek";
 import getDay from "date-fns/getDay";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import { enUS, frCA } from "date-fns/locale";
-import { getGuideBookings, getFailedSyncBookings, retryCalendarSync, syncGuideBookingsWithCalendar } from "../utils/guideBookingService.js";
+import { getGuideBookings, getFailedSyncBookings, retryCalendarSync, syncGuideBookingsWithCalendar, getCalendarAutoSyncStatus } from "../utils/guideBookingService.js";
 import { expandAllDayEvent } from "../utils/guideSchedule.js";
 import { toast } from "../utils/toast.js";
 
@@ -75,6 +75,21 @@ function filterDuplicateGoogleEvents(googleEvents, dbBookings) {
   });
 }
 
+// Human-friendly relative time in French (e.g. "il y a 5 min", "il y a 2 h").
+function formatRelativeTime(iso) {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const diffSec = Math.round((Date.now() - then) / 1000);
+  if (diffSec < 60) return "à l'instant";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `il y a ${diffH} h`;
+  const diffD = Math.round(diffH / 24);
+  return `il y a ${diffD} j`;
+}
+
 export default function GuideCalendar({ guideId, scheduleConfig }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -82,6 +97,7 @@ export default function GuideCalendar({ guideId, scheduleConfig }) {
   const [view, setView] = useState("month");
   const [failedSyncs, setFailedSyncs] = useState([]);
   const [syncing, setSyncing] = useState(false);
+  const [lastAutoSync, setLastAutoSync] = useState(null);
 
   const now = new Date();
   const [range, setRange] = useState({
@@ -201,14 +217,16 @@ export default function GuideCalendar({ guideId, scheduleConfig }) {
       setLoading(true);
       setError(null);
 
-      // Fetch all three sources in parallel
-      const [dbBookings, googleResult, failedSyncBookings] = await Promise.all([
+      // Fetch all sources in parallel
+      const [dbBookings, googleResult, failedSyncBookings, autoSyncAt] = await Promise.all([
         fetchBookingsFromDB(),
         fetchGoogleEvents(),
         getFailedSyncBookings(guideId),
+        getCalendarAutoSyncStatus(guideId),
       ]);
 
       setFailedSyncs(failedSyncBookings);
+      setLastAutoSync(autoSyncAt);
 
       // De-duplicate: strip any Google Calendar event that is already
       // represented by a DB booking (reservation events are copied to
@@ -390,23 +408,30 @@ export default function GuideCalendar({ guideId, scheduleConfig }) {
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={handleSync}
-          disabled={syncing}
-          style={{
-            padding: '6px 14px',
-            backgroundColor: syncing ? '#ccc' : '#4A9B8E',
-            color: 'white',
-            border: 'none',
-            borderRadius: '6px',
-            cursor: syncing ? 'not-allowed' : 'pointer',
-            fontSize: '12px',
-            fontWeight: '500',
-          }}
-        >
-          {syncing ? '🔄 Synchronisation...' : '🔄 Sync Google Calendar'}
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={syncing}
+            style={{
+              padding: '6px 14px',
+              backgroundColor: syncing ? '#ccc' : '#4A9B8E',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: syncing ? 'not-allowed' : 'pointer',
+              fontSize: '12px',
+              fontWeight: '500',
+            }}
+          >
+            {syncing ? '🔄 Synchronisation...' : '🔄 Sync Google Calendar'}
+          </button>
+          <span style={{ fontSize: '11px', color: '#888' }} title={lastAutoSync ? new Date(lastAutoSync).toLocaleString('fr-CA') : undefined}>
+            {lastAutoSync
+              ? `Synchro auto : ${formatRelativeTime(lastAutoSync)}`
+              : 'Synchro auto : en attente'}
+          </span>
+        </div>
       </div>
 
       {/* Failed sync banner */}
