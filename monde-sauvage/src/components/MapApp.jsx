@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, useCallback, useMemo } from "react";
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import GuideOnboardingModal, { shouldShowGuideOnboarding } from "../modals/guideOnboardingModal.jsx";
 import HighlightOverlay from "./HighlightOverlay.jsx";
@@ -126,6 +126,10 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     const [selectedGuideEvent, setSelectedGuideEvent] = useState(null);
     const [dateConflicts, setDateConflicts] = useState(null);
     const [checkingAvailability, setCheckingAvailability] = useState(false);
+
+    // Prefetch cache keys — prevent re-fetching when step 2→3 transition fires effects again
+    const lastFetchedGuideDatesRef = useRef(null);
+    const lastFetchedChaletDatesRef = useRef(null);
     
     // Booking creation state
     const [isCreatingBooking, setIsCreatingBooking] = useState(false);
@@ -329,10 +333,14 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         console.log(e);
     }
 
-    // Fetch guides filtered by fish type AND availability when entering step 3
-    // (in the new flow, destination is step 1, dates are step 2, guide+chalet is step 3)
+    // Fetch guides filtered by fish type AND availability when entering step 3.
+    // Prefetch starts on step 2 so results are ready the moment step 3 renders.
     useEffect(() => {
-        if (bookingStep !== 3 || !startDate || !endDate) return;
+        if ((bookingStep !== 2 && bookingStep !== 3) || !startDate || !endDate) return;
+
+        const datesKey = `${fishType}|${startDate}|${endDate}`;
+        if (lastFetchedGuideDatesRef.current === datesKey) return;
+        lastFetchedGuideDatesRef.current = datesKey;
 
         const fetchGuides = async () => {
             setLoadingGuides(true);
@@ -921,7 +929,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     // Results are merged: each chalet gets is_available=true/false, then sorted available-first,
     // distance-second. This enables an Airbnb-style browse-all UX instead of hard filtering.
     useEffect(() => {
-        if (bookingStep !== 3 || !needsChalet || !startDate || !endDate) return;
+        if ((bookingStep !== 2 && bookingStep !== 3) || !needsChalet || !startDate || !endDate) return;
 
         let anchor = null;
         if (selectedPoint?.lngLat) {
@@ -931,6 +939,10 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         }
 
         if (!anchor) return;
+
+        const datesKey = `${anchor.lng}|${anchor.lat}|${numberOfPeople}|${startDate}|${endDate}`;
+        if (lastFetchedChaletDatesRef.current === datesKey) return;
+        lastFetchedChaletDatesRef.current = datesKey;
 
         const WIDE_RADIUS_M = 500_000; // 500 km — covers all of Quebec
 
@@ -1017,6 +1029,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
 
     const applyAlternativeDateOption = useCallback((option) => {
         if (!option?.startDate || !option?.endDate) return;
+        lastFetchedGuideDatesRef.current = null;
+        lastFetchedChaletDatesRef.current = null;
         setStartDate(option.startDate);
         setEndDate(option.endDate);
         setSelectedGuide(null);
@@ -1122,7 +1136,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     }
 
     function startBookingFlow() {
-        // Clear any previous state when starting a new booking
+        lastFetchedGuideDatesRef.current = null;
+        lastFetchedChaletDatesRef.current = null;
         setBrowseMode('trip');
         setSelectedRiver(null);
         setSelectedPoint(null);
@@ -1146,7 +1161,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     }
 
     function startGuideFlow() {
-        // Guide-only browsing flow (uses same booking steps, chalet disabled)
+        lastFetchedGuideDatesRef.current = null;
+        lastFetchedChaletDatesRef.current = null;
         setBrowseMode('guide');
         setSelectedRiver(null);
         setSelectedPoint(null);
@@ -1170,7 +1186,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     }
 
     function startChaletFlow() {
-        // Chalet-only browsing flow (guide is optional, chalet is required)
+        lastFetchedGuideDatesRef.current = null;
+        lastFetchedChaletDatesRef.current = null;
         setBrowseMode('chalet');
         setSelectedRiver(null);
         setSelectedPoint(null);
@@ -1561,6 +1578,8 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
     }
 
     function resetBookingFlow() {
+        lastFetchedGuideDatesRef.current = null;
+        lastFetchedChaletDatesRef.current = null;
         setBookingStep(0);
         setBrowseMode('trip');
         setStartDate("");

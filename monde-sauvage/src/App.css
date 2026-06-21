@@ -2414,3 +2414,12 @@ body, .guide-text, .chalet-name, .chalet-description {
 .map-picker-pulse {
   animation: mapPickerPulse 1.6s ease-in-out infinite;
 }
+
+/* Force the Mapbox canvas to always fill its container.
+   Mapbox sets inline pixel width/height on the <canvas> element; without this
+   override the canvas lags behind when the flex layout resizes during sidebar
+   open/close transitions, leaving a white gap until map.resize() fires. */
+.mapboxgl-canvas {
+  width: 100% !important;
+  height: 100% !important;
+}

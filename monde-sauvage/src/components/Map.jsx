@@ -10,6 +10,7 @@ import RiverBioCards from './RiverBioCards.jsx';
 import GuideSlotPickerModal from '../modals/guideSlotPickerModal.jsx';
 import { getRiverByPathId } from '../utils/riverGuideData.js';
 import RiverInfoCard from './RiverInfoCard.jsx';
+import { RIVER_IMAGES } from '../utils/riverImages.js';
 
 let mapboxAssetsPromise = null;
 
@@ -711,14 +712,15 @@ const GaspesieMap = ({
     const map = mapRef.current;
     if (!el || !map || !mapReady || isMobile) return;
 
-    // Debounce resize calls to avoid flooding Mapbox during CSS transitions,
-    // which causes tile reloads and a brief blank on every step change.
+    // Debounce at 320ms — matches the longest sidebar CSS transition (300ms) so
+    // map.resize() fires once AFTER the animation finishes, not repeatedly
+    // during it (which caused the map to visually "push" then snap back).
     let debounceTimer;
     const ro = new ResizeObserver(() => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         if (typeof map.resize === 'function') map.resize();
-      }, 50);
+      }, 320);
     });
     ro.observe(el);
     return () => {
@@ -771,6 +773,14 @@ const GaspesieMap = ({
     if (mapRef.current) return;
     return initializeMapRuntime();
   }, [initializeMapRuntime, mapInitAttempt]);
+
+  // Preload all river images so popup cards appear instantly
+  useEffect(() => {
+    Object.values(RIVER_IMAGES).forEach((url) => {
+      const img = new Image();
+      img.src = url;
+    });
+  }, []);
 
   const handleRetryMapInit = () => {
     setMapInitError('');
