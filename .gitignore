@@ -1,4 +1,36 @@
+# Dependencies (never track installed packages)
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Env / secrets
 public/map.png
 monde-sauvage/.env
 monde-sauvage/supabase/.env
 monde-sauvage/supabase/.env.local
+**/.env.local
+
+# Test artifacts
+test-results/
+playwright-report/
+blob-report/
+
+# OS / editor cruft
+.DS_Store
+**/.DS_Store
+*.swp
+
+# Edge-function backups
+**/*.ts.backup
+**/*.ts.v1
+
+# Supabase CLI temp / version files
+**/supabase/.temp/
+
+# Editor / agent tool dirs
+.claude/
+.cursor/
+.vscode/
