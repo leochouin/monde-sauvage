@@ -748,18 +748,18 @@ export const unfollowGuide = async (guideUserId) => {
 export const getGuideByUserId = async (guideUserId) => {
   if (!guideUserId) return null;
 
-  const { data, error } = await supabase
+  const { data: rows, error } = await supabase
     .from('guide')
     .select('*')
     .eq('user_id', guideUserId)
-    .single();
+    .limit(1);
 
   if (error) {
-    if (error.code === 'PGRST116') {
-      return null;
-    }
     throw new Error(`Impossible de charger ce guide: ${error.message}`);
   }
+
+  const data = rows?.[0] ?? null;
+  if (!data) return null;
 
   let linkedUser = null;
   const { data: linkedUserRow, error: linkedUserError } = await supabase
