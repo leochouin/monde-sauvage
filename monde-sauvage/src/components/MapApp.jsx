@@ -283,17 +283,13 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
         return () => window.removeEventListener('storage', handleStorage);
     }, [chalets]);
 
-    // Check URL parameters on mount to reopen establishment modal if needed
+    // The legacy establishment modal is deprecated in favour of the SaaS
+    // dashboard. A lingering ?openEstablishment=true (e.g. OAuth returns from
+    // the old flow) now redirects owners straight to the dashboard.
     useEffect(() => {
         const urlParams = new URLSearchParams(globalThis.location.search);
         if (urlParams.get('openEstablishment') === 'true') {
-            setIsEtablissementOpen(true);
-            // Clean up URL parameter
-            urlParams.delete('openEstablishment');
-            const newUrl = urlParams.toString() 
-                ? `${globalThis.location.pathname}?${urlParams.toString()}`
-                : globalThis.location.pathname;
-            globalThis.history.replaceState({}, document.title, newUrl);
+            navigate('/dashboard/establishment', { replace: true });
         }
     }, []);
 
@@ -1660,7 +1656,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         language={language}
                         setLanguage={setLanguage}
                         isRejoindreOpen={setIsRejoindreOpen}
-                        isEtablissementOpen={setIsEtablissementOpen}
+                        isEtablissementOpen={() => navigate('/dashboard/establishment')}
                         onOpenHelp={openOnboarding}
                         // Pass booking flow state to control the sidebar
                         browseMode={browseMode}
@@ -1761,6 +1757,9 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                     onClose={() => setIsRejoindreOpen(false)}
                 />
 
+                {/* DEPRECATED: establishment management now lives at
+                    /dashboard/establishment. This modal is kept mounted as a
+                    fallback only and is no longer triggered from the UI. */}
                 <EtablissementModal
                     isEtablissementOpen={isEtablissementOpen}
                     onClose={() => setIsEtablissementOpen(false)}
