@@ -112,6 +112,89 @@ export async function ensureFreshQboToken(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Entity resolution (guide vs establishment)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const QBO_TOKEN_COLUMNS =
+  "quickbooks_connected, quickbooks_access_token, quickbooks_refresh_token, quickbooks_realm_id, quickbooks_access_token_expires_at, quickbooks_refresh_token_expires_at";
+
+export interface ResolvedQboEntity {
+  /** Fresh (token-refreshed) QuickBooks credentials. */
+  user: QuickbooksUser;
+  /** guide.id for guides, Etablissement.key for establishments. */
+  entityId: string;
+  kind: QboEntityKind;
+}
+
+export class QboEntityError extends Error {
+  status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/**
+ * Resolves the QuickBooks-connected vendor for the authenticated caller and
+ * returns refreshed credentials. Enforces ownership:
+ *   - guide:         the guide row whose user_id === userId
+ *   - establishment: the Etablissement whose key === establishmentId AND
+ *                    owner_id === userId
+ * Throws QboEntityError (with an HTTP status) on any failure so callers can
+ * translate it directly into a response.
+ */
+export async function resolveQboEntity(
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+  entity: QboEntityKind,
+  establishmentId?: string,
+): Promise<ResolvedQboEntity> {
+  if (entity === "establishment") {
+    if (!establishmentId) {
+      throw new QboEntityError("establishmentId is required when entity=establishment", 400);
+    }
+
+    const { data: est, error } = await admin
+      .from("Etablissement")
+      .select(`key, owner_id, ${QBO_TOKEN_COLUMNS}`)
+      .eq("key", establishmentId)
+      .eq("owner_id", userId)
+      .single();
+
+    if (error || !est) {
+      throw new QboEntityError("Establishment not found or you don't own it", 404);
+    }
+    if (!est.quickbooks_connected || !est.quickbooks_access_token || !est.quickbooks_realm_id) {
+      throw new QboEntityError("QuickBooks is not connected for this establishment", 400);
+    }
+
+    const fresh = await ensureFreshQboToken(
+      admin,
+      { id: est.key as string, ...est } as QuickbooksUser,
+      "establishment",
+    );
+    return { user: fresh, entityId: est.key as string, kind: "establishment" };
+  }
+
+  // Default: guide
+  const { data: guide, error } = await admin
+    .from("guide")
+    .select(`id, user_id, ${QBO_TOKEN_COLUMNS}`)
+    .eq("user_id", userId)
+    .single();
+
+  if (error || !guide) {
+    throw new QboEntityError("Guide not found", 404);
+  }
+  if (!guide.quickbooks_connected || !guide.quickbooks_access_token || !guide.quickbooks_realm_id) {
+    throw new QboEntityError("QuickBooks is not connected for this user", 400);
+  }
+
+  const fresh = await ensureFreshQboToken(admin, guide as QuickbooksUser, "guide");
+  return { user: fresh, entityId: guide.id as string, kind: "guide" };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Company info (connection test)
 // ─────────────────────────────────────────────────────────────────────────────
 

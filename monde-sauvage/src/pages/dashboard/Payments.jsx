@@ -1,6 +1,7 @@
 import { useEstablishment } from '../../components/layout/EstablishmentLayout.jsx';
 import StripeAnalyticsDashboard from '../../components/StripeAnalyticsDashboard.jsx';
 import StripeOnboarding from '../../modals/stripeOnboarding.jsx';
+import EstablishmentQuickbooksPanel from '../../components/EstablishmentQuickbooksPanel.jsx';
 
 export default function Payments() {
   const { selectedEstablishment, setSelectedEstablishment, loading } = useEstablishment();
@@ -58,6 +59,10 @@ export default function Payments() {
             onStatusUpdate={handleStripeStatusUpdate}
           />
         )}
+      </div>
+
+      <div className="esbl-card">
+        <EstablishmentQuickbooksPanel establishment={selectedEstablishment} />
       </div>
     </div>
   );

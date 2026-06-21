@@ -384,6 +384,28 @@ export async function fetchStripeAnalytics(establishmentId, period = '30d', from
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TRANSFER RECONCILIATION (combined bookings)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Replay Stripe Connect transfers that failed during a combined-booking payment.
+ * Scoped to the calling vendor's own leg of each affected PaymentIntent; safe to
+ * call repeatedly (the edge function uses a Stripe Idempotency-Key).
+ *
+ * @param {{ entity?: 'guide' | 'establishment', establishmentId?: string }} [opts]
+ * @returns {Promise<{retried: number, succeeded: number, failed: number, errors: string[]}>}
+ */
+export async function retryFailedTransfers(opts = {}) {
+  const { entity = 'guide', establishmentId } = opts;
+  if (entity === 'establishment' && !establishmentId) {
+    throw new Error('establishmentId is required');
+  }
+  return callEdgeFunction('stripe-reconcile-transfers', {
+    body: entity === 'establishment' ? { entity, establishmentId } : { entity },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 

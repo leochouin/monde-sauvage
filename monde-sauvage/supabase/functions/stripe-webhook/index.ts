@@ -157,7 +157,7 @@ async function handleCombinedPaymentSuccess(
   // that's already been transferred (defensive: webhook may replay).
   if (guideStripeAccount && guideAmountCents > 0) {
     try {
-      await stripeRequest("POST", "/transfers", {
+      const transfer = await stripeRequest("POST", "/transfers", {
         amount: String(guideAmountCents),
         currency: "cad",
         destination: guideStripeAccount,
@@ -170,14 +170,28 @@ async function handleCombinedPaymentSuccess(
         description: `Monde Sauvage — paiement guide pour PI ${paymentIntentId}`,
       });
       console.log(`[COMBINED] ✅ Transferred ${guideAmountCents}¢ to guide account ${guideStripeAccount}`);
+      if (guideBookingIds.length > 0) {
+        await supabase
+          .from("guide_booking")
+          .update({
+            transfer_status: "paid",
+            stripe_transfer_id: (transfer?.id as string) || null,
+            transfer_failed_at: null,
+            transfer_error: null,
+          })
+          .in("id", guideBookingIds);
+      }
     } catch (err) {
       console.error(`[COMBINED] ❌ Guide transfer failed:`, err);
-      // Mark bookings so ops can investigate without breaking the webhook.
+      // Mark bookings as failed so the reconciliation path can replay them.
       if (guideBookingIds.length > 0) {
         await supabase
           .from("guide_booking")
           .update({
             calendar_sync_failed: false,
+            transfer_status: "failed",
+            transfer_failed_at: new Date().toISOString(),
+            transfer_error: (err as Error).message?.substring(0, 500) || "transfer failed",
             notes: `Paiement reçu, transfert guide en attente — PI ${paymentIntentId}`,
           })
           .in("id", guideBookingIds);
@@ -187,7 +201,7 @@ async function handleCombinedPaymentSuccess(
 
   if (chaletStripeAccount && chaletAmountCents > 0) {
     try {
-      await stripeRequest("POST", "/transfers", {
+      const transfer = await stripeRequest("POST", "/transfers", {
         amount: String(chaletAmountCents),
         currency: "cad",
         destination: chaletStripeAccount,
@@ -200,12 +214,26 @@ async function handleCombinedPaymentSuccess(
         description: `Monde Sauvage — paiement chalet pour PI ${paymentIntentId}`,
       });
       console.log(`[COMBINED] ✅ Transferred ${chaletAmountCents}¢ to establishment account ${chaletStripeAccount}`);
+      if (chaletBookingId) {
+        await supabase
+          .from("bookings")
+          .update({
+            transfer_status: "paid",
+            stripe_transfer_id: (transfer?.id as string) || null,
+            transfer_failed_at: null,
+            transfer_error: null,
+          })
+          .eq("id", chaletBookingId);
+      }
     } catch (err) {
       console.error(`[COMBINED] ❌ Chalet transfer failed:`, err);
       if (chaletBookingId) {
         await supabase
           .from("bookings")
           .update({
+            transfer_status: "failed",
+            transfer_failed_at: new Date().toISOString(),
+            transfer_error: (err as Error).message?.substring(0, 500) || "transfer failed",
             notes: `Paiement reçu, transfert établissement en attente — PI ${paymentIntentId}`,
           })
           .eq("id", chaletBookingId);

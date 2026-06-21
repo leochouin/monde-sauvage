@@ -1,16 +1,20 @@
 // =============================================================================
 // Edge Function: quickbooks-list-invoices
 // =============================================================================
-// Returns recent invoices from QuickBooks Online for the authenticated guide.
+// Returns recent invoices from QuickBooks Online for the authenticated vendor
+// (guide or establishment).
 //
-// Query params or body: { limit?: number } (default 20, max 50)
+// Body: { entity?: "guide" | "establishment", establishmentId?: string, limit?: number }
+//   limit defaults to 20, max 50. For "establishment", establishmentId is
+//   required and the caller must own it.
 // Returns: { invoices: QboInvoice[] }
 // =============================================================================
 
 import { createClient } from "@supabase/supabase-js";
 import {
-  ensureFreshQboToken,
-  QuickbooksUser,
+  resolveQboEntity,
+  QboEntityError,
+  QboEntityKind,
 } from "../_shared/quickbooksUtils.ts";
 
 const corsHeaders = {
@@ -50,30 +54,25 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: authError } = await userClient.auth.getUser();
     if (authError || !user) return json({ error: "Unauthorized" }, 401);
 
-    // Parse optional limit
+    // Parse optional params
     let limit = 20;
+    let entity: QboEntityKind = "guide";
+    let establishmentId: string | undefined;
     try {
       const body = await req.json();
       if (body?.limit) limit = Math.min(Number(body.limit) || 20, 50);
+      if (body?.entity === "establishment") entity = "establishment";
+      if (body?.establishmentId) establishmentId = body.establishmentId;
     } catch { /* no body */ }
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    const { data: guide, error: guideErr } = await admin
-      .from("guide")
-      .select("id, user_id, quickbooks_connected, quickbooks_access_token, quickbooks_refresh_token, quickbooks_realm_id, quickbooks_access_token_expires_at, quickbooks_refresh_token_expires_at")
-      .eq("user_id", user.id)
-      .single();
-
-    if (guideErr || !guide) return json({ error: "Guide not found" }, 404);
-    if (!guide.quickbooks_connected || !guide.quickbooks_access_token || !guide.quickbooks_realm_id) {
-      return json({ error: "QuickBooks is not connected" }, 400);
-    }
-
-    let freshGuide: QuickbooksUser = guide as QuickbooksUser;
+    let vendor;
     try {
-      freshGuide = await ensureFreshQboToken(admin, guide as QuickbooksUser, "guide");
+      const resolved = await resolveQboEntity(admin, user.id, entity, establishmentId);
+      vendor = resolved.user;
     } catch (err) {
+      if (err instanceof QboEntityError) return json({ error: err.message }, err.status);
       return json({ error: `Token refresh failed: ${(err as Error).message}` }, 400);
     }
 
@@ -81,11 +80,11 @@ Deno.serve(async (req: Request) => {
     const query = encodeURIComponent(
       `SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef, PrivateNote FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS ${limit}`
     );
-    const url = `${qboBase()}/v3/company/${freshGuide.quickbooks_realm_id}/query?query=${query}&minorversion=65`;
+    const url = `${qboBase()}/v3/company/${vendor.quickbooks_realm_id}/query?query=${query}&minorversion=65`;
 
     const res = await fetch(url, {
       headers: {
-        Authorization: `Bearer ${freshGuide.quickbooks_access_token}`,
+        Authorization: `Bearer ${vendor.quickbooks_access_token}`,
         Accept: "application/json",
       },
     });

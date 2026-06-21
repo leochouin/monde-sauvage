@@ -20,7 +20,8 @@ export async function stripeRequest(
   method: string,
   path: string,
   body?: Record<string, unknown> | URLSearchParams,
-  stripeAccountId?: string
+  stripeAccountId?: string,
+  idempotencyKey?: string
 ): Promise<Record<string, unknown>> {
   const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
   if (!STRIPE_SECRET_KEY) {
@@ -36,6 +37,11 @@ export async function stripeRequest(
   // For connected account requests
   if (stripeAccountId) {
     headers["Stripe-Account"] = stripeAccountId;
+  }
+
+  // Idempotency guards against duplicate side effects (e.g. retried transfers).
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
   }
 
   const options: RequestInit = { method, headers };

@@ -89,7 +89,7 @@ async function callQboFunction(functionName, body) {
  * @returns {Promise<{synced: number, skipped: number, errors: string[]}>}
  */
 export async function syncGuideQuickbooksInvoices() {
-  return callQboFunction('quickbooks-sync-invoices', {});
+  return callQboFunction('quickbooks-sync-invoices', { entity: 'guide' });
 }
 
 /**
@@ -98,7 +98,30 @@ export async function syncGuideQuickbooksInvoices() {
  * @returns {Promise<{invoices: QboInvoice[]}>}
  */
 export async function listGuideQuickbooksInvoices(limit = 20) {
-  return callQboFunction('quickbooks-list-invoices', { limit });
+  return callQboFunction('quickbooks-list-invoices', { entity: 'guide', limit });
+}
+
+/**
+ * Sync paid chalet bookings to QuickBooks Online invoices for an establishment
+ * the current user owns. Only processes bookings without an existing
+ * quickbooks_invoice_id.
+ * @param {string} establishmentId - Etablissement key
+ * @returns {Promise<{synced: number, skipped: number, errors: string[]}>}
+ */
+export async function syncEstablishmentQuickbooksInvoices(establishmentId) {
+  if (!establishmentId) throw new Error('establishmentId is required');
+  return callQboFunction('quickbooks-sync-invoices', { entity: 'establishment', establishmentId });
+}
+
+/**
+ * List recent QuickBooks invoices for an establishment the current user owns.
+ * @param {string} establishmentId - Etablissement key
+ * @param {number} [limit=20]
+ * @returns {Promise<{invoices: QboInvoice[]}>}
+ */
+export async function listEstablishmentQuickbooksInvoices(establishmentId, limit = 20) {
+  if (!establishmentId) throw new Error('establishmentId is required');
+  return callQboFunction('quickbooks-list-invoices', { entity: 'establishment', establishmentId, limit });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
