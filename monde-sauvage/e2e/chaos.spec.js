@@ -19,7 +19,6 @@
 
 import { test, expect } from '@playwright/test';
 import { faker } from '@faker-js/faker';
-import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -112,6 +111,7 @@ const THIRD_PARTY_NOISE = [
   /events\.mapbox\.com/i,
   /mapbox-gl\.js/i,
   /maps\.googleapis\.com/i,
+  /commons\.wikimedia\.org/i,
   /AbortError/i,
   /The operation was aborted/i,
   /Failed to fetch.*mapbox/i,
@@ -331,12 +331,6 @@ function pickWeightedAction() {
 // ──────────────────────────────────────────────────────────────────────────────
 // Test runner.
 //
-// `RESULTS_DIR` is anchored to the project root (this file's parent → e2e →
-// project) so workers always agree on the path regardless of their cwd.
-// ──────────────────────────────────────────────────────────────────────────────
-const RESULTS_DIR = path.resolve(path.dirname(__filename), '..', 'test-results');
-fs.mkdirSync(RESULTS_DIR, { recursive: true });
-
 test.describe(`Chaos monkey (seed=${SEED}, iterations=${ITERATIONS})`, () => {
   // Each route gets its own fresh page/context — keep them independent so one
   // failure doesn't mask bugs on the other routes.
@@ -380,7 +374,7 @@ test.describe(`Chaos monkey (seed=${SEED}, iterations=${ITERATIONS})`, () => {
       // Step 4: write artifacts and assert no anomalies.
       const safeRoute = route.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '') || 'root';
       const artifactBase = `chaos_${safeRoute}_seed${SEED}`;
-      const summaryPath = path.join(RESULTS_DIR, `${artifactBase}.json`);
+      const summaryPath = testInfo.outputPath(`${artifactBase}.json`);
       const summary = {
         route,
         seed: SEED,
@@ -397,8 +391,8 @@ test.describe(`Chaos monkey (seed=${SEED}, iterations=${ITERATIONS})`, () => {
       testInfo.attachments.push({ name: `chaos-summary-${safeRoute}.json`, path: summaryPath, contentType: 'application/json' });
 
       if (hasHardAnomalies(anomalies)) {
-        const screenshotPath = path.join(RESULTS_DIR, `${artifactBase}.png`);
-        const tracePath = path.join(RESULTS_DIR, `${artifactBase}.trace.zip`);
+        const screenshotPath = testInfo.outputPath(`${artifactBase}.png`);
+        const tracePath = testInfo.outputPath(`${artifactBase}.trace.zip`);
         await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
         await context.tracing.stop({ path: tracePath }).catch(() => {});
         testInfo.attachments.push({ name: 'chaos-screenshot', path: screenshotPath, contentType: 'image/png' });
@@ -474,13 +468,13 @@ test.describe(`Chaos monkey (seed=${SEED}, iterations=${ITERATIONS})`, () => {
       await page.waitForTimeout(between(150, 600));
     }
 
-    const summaryPath = path.join(RESULTS_DIR, `chaos_signup_seed${SEED}.json`);
+    const summaryPath = testInfo.outputPath(`chaos_signup_seed${SEED}.json`);
     fs.writeFileSync(summaryPath, JSON.stringify({ seed: SEED, attempts, anomalies }, null, 2));
     testInfo.attachments.push({ name: 'chaos-signup-summary.json', path: summaryPath, contentType: 'application/json' });
 
     if (hasHardAnomalies(anomalies)) {
-      const screenshotPath = path.join(RESULTS_DIR, `chaos_signup_seed${SEED}.png`);
-      const tracePath = path.join(RESULTS_DIR, `chaos_signup_seed${SEED}.trace.zip`);
+      const screenshotPath = testInfo.outputPath(`chaos_signup_seed${SEED}.png`);
+      const tracePath = testInfo.outputPath(`chaos_signup_seed${SEED}.trace.zip`);
       await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
       await context.tracing.stop({ path: tracePath }).catch(() => {});
       testInfo.attachments.push({ name: 'chaos-screenshot', path: screenshotPath, contentType: 'image/png' });

@@ -5,7 +5,9 @@ const submitLogin = (page) => modal(page).locator('.login-submit-btn').first();
 
 test.describe('Login modal', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/map');
+    // Mapbox tiles / long-lived connections can keep the window `load` event
+    // pending, so rely on DOMContentLoaded for deterministic E2E.
+    await page.goto('/map', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: /se connecter/i }).first().click();
     await expect(modal(page).locator('#email')).toBeVisible();
   });
@@ -54,7 +56,7 @@ for (const { name, email, password } of edgeCases) {
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(e));
 
-    await page.goto('/map');
+    await page.goto('/map', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: /se connecter/i }).first().click();
     await modal(page).locator('#email').fill(email);
     await modal(page).locator('#password').fill(password);
@@ -78,7 +80,7 @@ test.describe('Authenticated smoke', () => {
       'Set AUDIT_AUTH_EMAIL and AUDIT_AUTH_PASSWORD to run this test'
     );
 
-    await page.goto('/map');
+  await page.goto('/map', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: /se connecter/i }).first().click();
     await modal(page).locator('#email').fill(email);
     await modal(page).locator('#password').fill(password);
