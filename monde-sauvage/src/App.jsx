@@ -9,6 +9,7 @@ import ProtectedRoute from './components/auth/ProtectedRoute.jsx'
 import './App.css'
 
 const MapApp = lazy(() => import('./components/MapApp.jsx'))
+const Landing = lazy(() => import('./pages/Landing.jsx'))
 const ChaletDetailPage = lazy(() => import('./pages/ChaletDetailPage.jsx'))
 const EstablishmentLayout = lazy(() => import('./components/layout/EstablishmentLayout.jsx'))
 const Overview = lazy(() => import('./pages/dashboard/Overview.jsx'))
@@ -19,6 +20,11 @@ const Calendar = lazy(() => import('./pages/dashboard/Calendar.jsx'))
 const Clients = lazy(() => import('./pages/dashboard/Clients.jsx'))
 const Bookings = lazy(() => import('./pages/dashboard/Bookings.jsx'))
 const Payments = lazy(() => import('./pages/dashboard/Payments.jsx'))
+const Parametres = lazy(() => import('./pages/dashboard/Parametres.jsx'))
+const Integration = lazy(() => import('./pages/dashboard/Integration.jsx'))
+const EstablishmentPublicPage = lazy(() => import('./pages/public/EstablishmentPublicPage.jsx'))
+const GuestBookingPage = lazy(() => import('./pages/public/GuestBookingPage.jsx'))
+const EmbedWidget = lazy(() => import('./pages/embed/EmbedWidget.jsx'))
 
 const INTRO_SPLASH_COOLDOWN_MS = 12 * 60 * 1000;
 const INTRO_SPLASH_STORAGE_KEY = 'ms_intro_splash_until';
@@ -458,7 +464,7 @@ function App() {
         <BrowserRouter>
           <Suspense fallback={null}>
             <Routes>
-              <Route path="/" element={<Navigate to="/map" />} />
+              <Route path="/" element={<Landing />} />
               <Route
                 path="/dashboard/establishment"
                 element={
@@ -475,7 +481,12 @@ function App() {
                 <Route path="clients" element={<Clients />} />
                 <Route path="reservations" element={<Bookings />} />
                 <Route path="paiements" element={<Payments />} />
+                <Route path="parametres" element={<Parametres />} />
+                <Route path="integration" element={<Integration />} />
               </Route>
+              <Route path="/p/:slug" element={<EstablishmentPublicPage />} />
+              <Route path="/p/:slug/book/:chaletId" element={<GuestBookingPage />} />
+              <Route path="/widget/:slug" element={<EmbedWidget />} />
               <Route path="/chalet/:id" element={<ChaletDetailPage />} />
               <Route
                 path="/map"

@@ -311,11 +311,13 @@ export default function Equipments() {
     if (!unit?.id) { setUnitPendingDeactivate(null); return; }
     try {
       setDeactivatingUnitId(unit.id);
-      const { error } = await supabase
+      const { data: updated, error } = await supabase
         .from('inventory_unit')
         .update({ is_active: false, deleted_at: new Date().toISOString() })
-        .eq('id', unit.id);
+        .eq('id', unit.id)
+        .select('id');
       if (error) throw error;
+      if (!updated?.length) throw new Error('Aucune ligne mise à jour — vérifiez vos permissions.');
       toast.success('Unité retirée.');
       setUnitPendingDeactivate(null);
       await fetchInventory(true);

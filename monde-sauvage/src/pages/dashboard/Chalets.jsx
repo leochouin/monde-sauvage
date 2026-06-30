@@ -176,7 +176,6 @@ export default function Chalets() {
         setLocationLookupError('Le point sélectionné est hors de la région cible (Gaspésie).');
         setLocationLookupSuccess(null);
         setLocationSuggestions([]);
-        setIsPickingLocationOnMap(false);
         globalThis.__MS_PICKING_LOCATION__ = false;
         return;
       }

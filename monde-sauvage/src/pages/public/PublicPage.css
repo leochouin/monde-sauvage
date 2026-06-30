@@ -1,0 +1,297 @@
+/* ── Design tokens ───────────────────────────────────────── */
+.pub-shell,
+.pub-book-shell,
+.pub-widget-shell {
+  --pub-bg: #f7f5f0;
+  --pub-surface: #ffffff;
+  --pub-ink: #1c2b20;
+  --pub-muted: #6b7280;
+  --pub-accent: #1f4d2f;
+  --pub-accent-hover: #163d24;
+  --pub-border: rgba(28, 43, 32, 0.1);
+  --pub-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  --pub-radius: 16px;
+  font-family: 'Cabin', 'Plus Jakarta Sans', system-ui, sans-serif;
+  color: var(--pub-ink);
+}
+
+/* ── Public establishment page ───────────────────────────── */
+.pub-shell {
+  min-height: 100vh;
+  background: var(--pub-bg);
+}
+
+.pub-header {
+  background: var(--pub-accent);
+  padding: 16px 24px;
+}
+.pub-header-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.pub-brand {
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.pub-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.pub-hero { margin-bottom: 40px; }
+.pub-title {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--pub-ink);
+  margin: 0 0 10px;
+  font-family: 'Space Grotesk', 'Plus Jakarta Sans', sans-serif;
+}
+.pub-desc {
+  color: var(--pub-muted);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.pub-section-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--pub-ink);
+  margin: 0 0 20px;
+}
+
+.pub-chalet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 24px;
+}
+
+.pub-chalet-card {
+  background: var(--pub-surface);
+  border: 1px solid var(--pub-border);
+  border-radius: var(--pub-radius);
+  overflow: hidden;
+  box-shadow: var(--pub-shadow);
+}
+.pub-chalet-img-wrap { aspect-ratio: 16 / 9; overflow: hidden; }
+.pub-chalet-img { width: 100%; height: 100%; object-fit: cover; }
+.pub-chalet-body { padding: 20px; }
+.pub-chalet-name { font-size: 1.1rem; font-weight: 700; margin: 0 0 8px; }
+.pub-chalet-desc {
+  font-size: 0.9rem;
+  color: var(--pub-muted);
+  margin: 0 0 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pub-chalet-meta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.88rem;
+  color: var(--pub-muted);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.pub-chalet-price { font-weight: 700; color: var(--pub-ink); }
+
+/* ── Booking page & widget shells ───────────────────────── */
+.pub-book-shell {
+  min-height: 100vh;
+  background: var(--pub-bg);
+}
+.pub-widget-shell {
+  background: #fff;
+  border-radius: 12px;
+}
+
+.pub-book-inner {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+}
+@media (max-width: 680px) {
+  .pub-book-inner {
+    grid-template-columns: 1fr;
+    padding: 24px 16px 60px;
+  }
+}
+
+/* Summary sidebar */
+.pub-book-img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+.pub-book-chalet-name { font-size: 1.25rem; font-weight: 700; margin: 0 0 8px; }
+.pub-book-chalet-desc { font-size: 0.9rem; color: var(--pub-muted); margin: 0 0 16px; }
+.pub-book-pricing {
+  background: var(--pub-bg);
+  border: 1px solid var(--pub-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.pub-book-pricing-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.88rem;
+  color: var(--pub-muted);
+  padding: 3px 0;
+}
+.pub-book-pricing-total {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 1rem;
+  border-top: 1px solid var(--pub-border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+/* Form steps */
+.pub-step-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 20px; }
+.pub-field { margin-bottom: 16px; }
+.pub-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pub-label {
+  display: block;
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--pub-ink);
+  margin-bottom: 6px;
+}
+.pub-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1.5px solid var(--pub-border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: var(--pub-ink);
+  background: #fff;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.pub-input:focus { border-color: var(--pub-accent); }
+.pub-nights { font-weight: 600; color: var(--pub-accent); margin: 0 0 16px; font-size: 0.95rem; }
+
+/* Buttons */
+.pub-btn-reserve {
+  display: block;
+  width: 100%;
+  padding: 13px 20px;
+  background: var(--pub-accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+  transition: background 0.2s;
+}
+.pub-btn-reserve:disabled { opacity: 0.5; cursor: not-allowed; }
+.pub-btn-reserve:hover:not(:disabled) { background: var(--pub-accent-hover); }
+.pub-btn-back {
+  padding: 13px 16px;
+  background: transparent;
+  border: 1.5px solid var(--pub-border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--pub-muted);
+}
+.pub-stripe-notice { text-align: center; font-size: 0.8rem; color: var(--pub-muted); margin-top: 12px; }
+
+/* Inline errors */
+.pub-error-inline {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px;
+  color: #dc2626;
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+
+/* States */
+.pub-loading,
+.pub-error-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  font-size: 1rem;
+  font-family: 'Cabin', system-ui, sans-serif;
+}
+.pub-loading { color: #6b7280; }
+.pub-error-page { color: #dc2626; }
+.pub-empty { color: var(--pub-muted); font-size: 0.95rem; }
+
+/* Confirmation */
+.pub-confirm {
+  max-width: 500px;
+  margin: 80px auto;
+  text-align: center;
+  padding: 0 24px;
+}
+.pub-confirm-icon { font-size: 3rem; margin-bottom: 16px; }
+.pub-confirm-title { font-size: 1.6rem; font-weight: 700; margin: 0 0 12px; }
+.pub-confirm-text { font-size: 1rem; color: var(--pub-muted); margin: 0 0 8px; line-height: 1.6; }
+.pub-confirm-id { font-size: 0.85rem; color: var(--pub-muted); font-family: monospace; margin-top: 4px; }
+
+/* Widget chalet list (minimal) */
+.pub-widget-list {
+  padding: 20px;
+}
+.pub-widget-chalet {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--pub-border);
+}
+.pub-widget-chalet:last-child { border-bottom: none; }
+.pub-widget-chalet-thumb {
+  width: 64px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.pub-widget-chalet-info { flex: 1; min-width: 0; }
+.pub-widget-chalet-name { font-weight: 700; font-size: 0.95rem; margin: 0 0 2px; }
+.pub-widget-chalet-price { font-size: 0.85rem; color: var(--pub-muted); }
+.pub-widget-btn {
+  padding: 8px 14px;
+  background: var(--pub-accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pub-widget-btn:hover { background: var(--pub-accent-hover); }
+.pub-widget-header {
+  padding: 14px 20px 10px;
+  border-bottom: 1px solid var(--pub-border);
+  font-weight: 700;
+  font-size: 0.95rem;
+}

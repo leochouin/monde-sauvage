@@ -12,7 +12,25 @@ import { getRiverByPathId } from '../utils/riverGuideData.js';
 import RiverInfoCard from './RiverInfoCard.jsx';
 import { RIVER_IMAGES } from '../utils/riverImages.js';
 
+// Tuned values for the step-1 river "attract" pulse.
+const ATTRACT = {
+  color: '#2ca1a7',
+  gapWidth: 0,
+  edgeWidth: 0.5,
+  edgeBlur: 0,
+  glowWidth: 15,
+  glowBlur: 11,
+  lineOpMin: 0,
+  lineOpMax: 1,
+  glowOpMin: 0,
+  glowOpMax: 1,
+  speed: 2.1,
+};
+
 let mapboxAssetsPromise = null;
+
+// Custom pin-drop cursor for step-1 map interactions (click to place radius circle).
+const PIN_DROP_CURSOR = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='34' viewBox='0 0 26 34'%3E%3Cpath d='M13 0C5.82 0 0 5.82 0 13c0 9.75 13 21 13 21s13-11.25 13-21C26 5.82 20.18 0 13 0z' fill='%232D5F4C'/%3E%3Ccircle cx='13' cy='13' r='4.5' fill='white'/%3E%3C/svg%3E\") 13 34, crosshair";
 
 const escapeHtml = (value = '') => String(value)
   .replace(/&/g, '&amp;')
@@ -698,35 +716,26 @@ const GaspesieMap = ({
     const map = mapRef.current;
     if (!map || isMobile) return;
 
-    // Fire once after the sidebar CSS transition (300ms) completes.
-    const timer = setTimeout(() => {
+    // Sidebar width is now instant (no CSS transition), so resize in the next
+    // frame after the layout has settled.
+    const raf = requestAnimationFrame(() => {
       if (typeof map.resize === 'function') map.resize();
-    }, 320);
+    });
 
-    return () => clearTimeout(timer);
+    return () => cancelAnimationFrame(raf);
   }, [sidebarWidthToken, isMobile]);
 
-  // Dimensions du conteneur (flex/menu) peuvent changer sans que le token suive — évite carte / logo coupés à droite
+  // Keep map canvas in sync with container size (window resize, etc.)
   useEffect(() => {
     const el = mapContainerRef.current;
     const map = mapRef.current;
     if (!el || !map || !mapReady || isMobile) return;
 
-    // Debounce at 320ms — matches the longest sidebar CSS transition (300ms) so
-    // map.resize() fires once AFTER the animation finishes, not repeatedly
-    // during it (which caused the map to visually "push" then snap back).
-    let debounceTimer;
     const ro = new ResizeObserver(() => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (typeof map.resize === 'function') map.resize();
-      }, 320);
+      if (typeof map.resize === 'function') map.resize();
     });
     ro.observe(el);
-    return () => {
-      ro.disconnect();
-      clearTimeout(debounceTimer);
-    };
+    return () => ro.disconnect();
   }, [mapReady, isMobile]);
 
   const initializeMapRuntime = useCallback(() => {
@@ -956,6 +965,27 @@ const GaspesieMap = ({
     drawCircle(map, circleCenter.lngLat, radius);
     highlightNearbyRivers(map, circleCenter.lngLat, radius);
   }, [radius, circleCenter, bookingStep]);
+
+  // Apply pin-drop cursor when entering step 1, reset when leaving
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    map.getCanvas().style.cursor = bookingStep === 1 ? PIN_DROP_CURSOR : '';
+  }, [bookingStep, mapReady]);
+
+  // Pulse all river paths at step 1 so users notice the rivers are clickable.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    if (bookingStep === 1) {
+      if (typeof map._startRiverAttract === 'function') map._startRiverAttract();
+    } else if (typeof map._stopRiverAttract === 'function') {
+      map._stopRiverAttract();
+    }
+    return () => {
+      if (map && typeof map._stopRiverAttract === 'function') map._stopRiverAttract();
+    };
+  }, [bookingStep, mapReady]);
 
   // Fourth useEffect - Display fishing zones on map when fishingZones changes
   useEffect(() => {
@@ -1434,7 +1464,7 @@ const GaspesieMap = ({
       const clearBusinessHoverState = () => {
         hoveredBusinessName = null;
         applyBusinessHoverFilter(null);
-        map.getCanvas().style.cursor = '';
+        map.getCanvas().style.cursor = bookingStepRef.current === 1 ? PIN_DROP_CURSOR : '';
       };
 
       map.on('mousemove', (e) => {
@@ -1489,6 +1519,45 @@ const GaspesieMap = ({
 
       const emptyFilter = ['==', ['get', 'id'], ''];
 
+      // Idle attract pulse — at step 1, gently pulse ALL river paths so users
+      // realise the rivers are clickable. Added before the glow stack so it
+      // renders beneath hover/selection. Colour matches the cyan river core on
+      // the base map, and the core stroke is HOLLOW (line-gap-width draws two
+      // thin edges with the map showing through the middle) so it reads as a
+      // soft outline rather than a strong solid line.
+      map.addLayer({
+        id: 'rivers-attract-glow',
+        type: 'line',
+        source: 'rivers',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ATTRACT.color,
+          'line-width': ATTRACT.glowWidth,
+          'line-blur': ATTRACT.glowBlur,
+          'line-opacity': 0, // driven by the rAF pulse only at step 1
+        },
+      });
+
+      map.addLayer({
+        id: 'rivers-attract',
+        type: 'line',
+        source: 'rivers',
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ATTRACT.color,
+          'line-gap-width': ATTRACT.gapWidth, // hollow centre — the map shows through
+          'line-width': ATTRACT.edgeWidth,    // thickness of each edge stroke
+          'line-blur': ATTRACT.edgeBlur,
+          'line-opacity': 0, // driven by the rAF pulse only at step 1
+        },
+      });
+
       // Layer 1 — wide soft outer aura (feathered edges via line-blur)
       map.addLayer({
         id: 'rivers-glow-outer',
@@ -1542,12 +1611,12 @@ const GaspesieMap = ({
         filter: emptyFilter,
       });
 
-      // Hover cursor
+      // Hover cursor — rivers keep pointer; empty map at step 1 gets pin-drop cursor
       map.on('mouseenter', 'rivers-hit', () => {
         map.getCanvas().style.cursor = 'pointer';
       });
       map.on('mouseleave', 'rivers-hit', () => {
-        map.getCanvas().style.cursor = '';
+        map.getCanvas().style.cursor = bookingStepRef.current === 1 ? PIN_DROP_CURSOR : '';
       });
 
       // Helper: show/hide the glow stack for a given river id (or '' to hide)
@@ -1578,6 +1647,49 @@ const GaspesieMap = ({
           map.setPaintProperty('rivers-glow-outer', 'line-color', GLOW_OUTER);
           map.setPaintProperty('rivers-glow-inner', 'line-color', HOVER_BLUE);
           map.setPaintProperty('rivers-highlight', 'line-color', HOVER_BLUE);
+        }
+      };
+
+      // Start/stop the idle attract pulse on the 'rivers-attract' layer.
+      // A rAF loop eases line-opacity along a sine wave so every river breathes
+      // gently, signalling that the paths are interactive. Capped low so it
+      // never competes with the hover/selection glow.
+      map._startRiverAttract = () => {
+        if (map._attractActive) return;
+        map._attractActive = true;
+        const start = performance.now();
+        const tick = (now) => {
+          // Bail out if the pulse was stopped or the map/style was torn down
+          // (e.g. navigating away to the establishment dashboard). Touching
+          // map.getLayer after rem() throws "getOwnLayer of undefined".
+          if (!map._attractActive || !map.style) return;
+          const elapsed = (now - start) / 1000;
+          // Sine pulse: hollow edges + a softer blurred aura beneath (shadow).
+          const wave = (Math.sin(elapsed * ATTRACT.speed) + 1) / 2; // 0..1
+          const lineOpacity = ATTRACT.lineOpMin + (ATTRACT.lineOpMax - ATTRACT.lineOpMin) * wave;
+          const glowOpacity = ATTRACT.glowOpMin + (ATTRACT.glowOpMax - ATTRACT.glowOpMin) * wave;
+          if (map.getLayer('rivers-attract')) {
+            map.setPaintProperty('rivers-attract', 'line-opacity', lineOpacity);
+          }
+          if (map.getLayer('rivers-attract-glow')) {
+            map.setPaintProperty('rivers-attract-glow', 'line-opacity', glowOpacity);
+          }
+          map._attractRAF = requestAnimationFrame(tick);
+        };
+        map._attractRAF = requestAnimationFrame(tick);
+      };
+      map._stopRiverAttract = () => {
+        map._attractActive = false;
+        if (map._attractRAF) cancelAnimationFrame(map._attractRAF);
+        map._attractRAF = null;
+        // The map may already be removed (style undefined) when this runs from
+        // an unmount cleanup — guarding avoids the getOwnLayer crash.
+        if (!map.style) return;
+        if (map.getLayer('rivers-attract')) {
+          map.setPaintProperty('rivers-attract', 'line-opacity', 0);
+        }
+        if (map.getLayer('rivers-attract-glow')) {
+          map.setPaintProperty('rivers-attract-glow', 'line-opacity', 0);
         }
       };
 
@@ -1720,14 +1832,11 @@ const GaspesieMap = ({
             width: sidebarWidth,
             minWidth: sidebarWidth,
             maxWidth: sidebarWidth,
-            transition: 'flex-basis 300ms ease-in-out, width 300ms ease-in-out, max-width 300ms ease-in-out, min-width 300ms ease-in-out',
-            willChange: 'width, flex-basis',
           } : {
             flex: '0 0 clamp(330px, 34vw, 450px)',
             width: 'clamp(330px, 34vw, 450px)',
             minWidth: 'clamp(330px, 34vw, 450px)',
             maxWidth: 'clamp(330px, 34vw, 450px)',
-            transition: 'flex-basis 220ms ease-in-out, width 220ms ease-in-out',
           }),
           height: '100%',
           minHeight: 0,
@@ -1766,8 +1875,6 @@ const GaspesieMap = ({
           zIndex: 100,
           fontFamily: '"Avenir Next", "Segoe UI", Roboto, sans-serif',
           overflow: 'hidden',
-          transition: 'flex-basis 300ms ease-in-out, width 300ms ease-in-out, max-width 300ms ease-in-out, min-width 300ms ease-in-out',
-          willChange: 'width, flex-basis',
         }}
       >
         {/* Mobile drag handle */}
@@ -4368,7 +4475,7 @@ const GaspesieMap = ({
       >
         <div
           ref={mapContainerRef}
-          style={{ position: 'absolute', inset: 0, cursor: mapPickerActive ? 'crosshair' : undefined }}
+          style={{ position: 'absolute', inset: 0, cursor: mapPickerActive ? 'crosshair' : (bookingStep === 1 ? PIN_DROP_CURSOR : undefined) }}
         />
 
         {/* Map picker overlay — pointer-events:none so clicks reach Mapbox underneath */}

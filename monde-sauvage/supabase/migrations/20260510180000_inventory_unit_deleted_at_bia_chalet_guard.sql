@@ -224,3 +224,5 @@ $$;
 
 COMMENT ON FUNCTION public.allocate_inventory_for_booking(bigint, jsonb) IS
   'Réserve les unités physiques actives (deleted_at NULL) pour un booking chalet pending.';
+
+NOTIFY pgrst, 'reload schema';

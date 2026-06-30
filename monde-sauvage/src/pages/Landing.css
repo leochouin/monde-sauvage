@@ -1,0 +1,377 @@
+/* ─────────────────────────────────────────
+   Landing page
+   Font / color tokens pulled from App.css
+   ───────────────────────────────────────── */
+
+.landing {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color: #0f172a;
+  background: #fff;
+  overflow-x: hidden;
+}
+
+/* ── Shared layout ── */
+.landing-container {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.landing-section {
+  padding: 96px 0;
+}
+
+.landing-section__title {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #0b1220;
+  margin: 0 0 48px;
+  text-align: center;
+  line-height: 1.15;
+}
+
+.landing-section__title--left {
+  text-align: left;
+}
+
+/* ── Buttons ── */
+.landing-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  transition: transform 140ms ease, filter 140ms ease, background 140ms ease;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+.landing-btn:hover {
+  transform: translateY(-2px);
+}
+
+.landing-btn--primary {
+  background: #0b1220;
+  color: #fff;
+}
+
+.landing-btn--primary:hover {
+  filter: brightness(1.12);
+}
+
+.landing-btn--ghost {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  border: 1.5px solid rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(6px);
+}
+
+.landing-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.landing-btn--dark {
+  background: #0b1220;
+  color: #fff;
+}
+
+.landing-btn--dark:hover {
+  filter: brightness(1.14);
+}
+
+.landing-btn--lg {
+  padding: 18px 44px;
+  font-size: 1.1rem;
+  border-radius: 14px;
+}
+
+/* ── HERO ── */
+.landing-hero {
+  position: relative;
+  height: 100svh;
+  min-height: 580px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+}
+
+.landing-hero__bg {
+  position: absolute;
+  inset: 0;
+  background-image: url('/NewMap.png');
+  background-position: center;
+  background-size: cover;
+  transform: scale(1.04);
+}
+
+.landing-hero__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.landing-hero__overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.32) 0%,
+    rgba(0, 0, 0, 0.52) 60%,
+    rgba(0, 0, 0, 0.72) 100%
+  );
+}
+
+.landing-hero__content {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  padding: 0 24px;
+  text-align: center;
+}
+
+.landing-hero__logo {
+  width: clamp(200px, 36vw, 480px);
+  height: auto;
+  filter: drop-shadow(0 16px 32px rgba(0, 0, 0, 0.5));
+  user-select: none;
+}
+
+.landing-hero__tagline {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: clamp(1rem, 2vw, 1.3rem);
+  font-weight: 500;
+  max-width: 560px;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+}
+
+.landing-hero__ctas {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Scroll hint — animated chevron */
+.landing-hero__scroll-hint {
+  position: absolute;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+.landing-hero__scroll-hint span {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-right: 2px solid rgba(255, 255, 255, 0.55);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.55);
+  transform: rotate(45deg);
+  animation: landing-scroll-bounce 1.8s ease-in-out infinite;
+}
+
+@keyframes landing-scroll-bounce {
+  0%, 100% { transform: rotate(45deg) translateY(0); opacity: 0.55; }
+  50%       { transform: rotate(45deg) translateY(6px); opacity: 1; }
+}
+
+/* ── COMMENT ÇA MARCHE ── */
+.landing-how {
+  background: #f8fafc;
+}
+
+.landing-how__steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 40px;
+}
+
+.landing-how__step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.landing-how__num {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #94a3b8;
+}
+
+.landing-how__step-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0b1220;
+  letter-spacing: -0.02em;
+}
+
+.landing-how__step-desc {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #475569;
+  line-height: 1.6;
+}
+
+/* ── EXPÉRIENCES ── */
+.landing-exp {
+  background: #fff;
+}
+
+.landing-exp__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+
+.landing-exp__card {
+  padding: 32px 28px;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.landing-exp__card:hover {
+  border-color: #0b1220;
+  transform: translateY(-3px);
+}
+
+.landing-exp__icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.landing-exp__card-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #0b1220;
+  letter-spacing: -0.02em;
+}
+
+.landing-exp__card-desc {
+  margin: 0;
+  font-size: 0.92rem;
+  color: #475569;
+  line-height: 1.6;
+}
+
+/* ── ÉTABLISSEMENTS ── */
+.landing-biz {
+  background: #0b1220;
+}
+
+.landing-biz .landing-section__title--left,
+.landing-biz__desc {
+  color: #fff;
+}
+
+.landing-biz__inner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 64px;
+  align-items: center;
+}
+
+.landing-biz__text {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.landing-biz__desc {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.landing-biz__visual {
+  border-radius: 16px;
+  overflow: hidden;
+  opacity: 0.85;
+}
+
+.landing-biz__map-preview img {
+  width: 100%;
+  height: 380px;
+  object-fit: cover;
+  display: block;
+  border-radius: 16px;
+}
+
+/* ── FOOTER CTA ── */
+.landing-footer-cta {
+  background: #f8fafc;
+  padding: 80px 0;
+}
+
+.landing-footer-cta__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+.landing-footer-cta__title {
+  margin: 0;
+  font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: #0b1220;
+  text-align: center;
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 860px) {
+  .landing-how__steps,
+  .landing-exp__grid {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .landing-biz__inner {
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+
+  .landing-biz__map-preview img {
+    height: 240px;
+  }
+
+  .landing-section {
+    padding: 64px 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .landing-hero__ctas {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .landing-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

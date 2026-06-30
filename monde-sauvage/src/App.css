@@ -888,20 +888,29 @@
 
 /* Week/day view: ensure calendar doesn't stretch beyond its container */
 .rbc-time-view,
-.rbc-day-slot,
 .rbc-month-view {
   height: 100% !important;
 }
 
-/* Ensure the internal scroll (if any) is inside calendar, not pushing modal height */
-.rbc-time-view .rbc-time-gutter,
-.rbc-time-view .rbc-day-slot {
-  overflow: auto;
+/* Events: Allow custom styling from eventStyleGetter (removed background/color overrides) */
+.rbc-event {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
 }
 
-/* Events: Allow custom styling from eventStyleGetter (removed background/color overrides) */
-.rbc-event { 
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important; 
+/* Scrollbars inside react-big-calendar (week view time content) */
+.rbc-time-content {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #ffffff;
+}
+.rbc-time-content::-webkit-scrollbar {
+  width: 6px;
+}
+.rbc-time-content::-webkit-scrollbar-track {
+  background: #ffffff;
+}
+.rbc-time-content::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 4px;
 }
 
 @media (max-width: 768px) {

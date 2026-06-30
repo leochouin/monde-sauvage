@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useEstablishment } from '../../components/layout/EstablishmentLayout.jsx';
 import './establishment-dashboard.css';
 
@@ -56,8 +57,11 @@ export default function Overview() {
         <div style={{ fontSize: '3rem' }}>🏕️</div>
         <h2 style={{ margin: 0, color: 'var(--esbl-ink)', fontSize: '1.2rem' }}>Aucun établissement trouvé</h2>
         <p style={{ margin: 0, fontSize: '0.9rem' }}>
-          Créez votre premier établissement depuis l'ancienne interface pour commencer.
+          Créez votre premier établissement pour commencer.
         </p>
+        <Link to="/dashboard/establishment/parametres" className="esbl-btn esbl-btn--primary" style={{ marginTop: 8 }}>
+          + Créer un établissement
+        </Link>
       </div>
     );
   }

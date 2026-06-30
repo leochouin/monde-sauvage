@@ -130,34 +130,119 @@
   min-width: 0;
 }
 
-.esbl-estab-select {
-  font-size: 0.9rem;
-  font-weight: 600;
+/* ── Custom establishment switcher ── */
+.esbl-switcher {
+  position: relative;
+  min-width: 0;
+}
+
+.esbl-switcher-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 320px;
+  font-size: 0.95rem;
+  font-weight: 700;
   color: var(--esbl-ink);
   background: #ffffff;
   border: 1px solid var(--esbl-border);
   border-radius: 10px;
   padding: 8px 12px;
   cursor: pointer;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
 }
 
-.esbl-estab-select:focus {
+.esbl-switcher-trigger:hover {
+  border-color: rgba(31, 77, 47, 0.4);
+}
+
+.esbl-switcher-trigger:focus-visible {
   outline: none;
   border-color: #1f4d2f;
   box-shadow: 0 0 0 3px rgba(31, 77, 47, 0.18);
 }
 
-.esbl-estab-name {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--esbl-ink);
-  white-space: nowrap;
+.esbl-switcher-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.esbl-switcher-caret {
+  font-size: 0.7rem;
+  color: var(--esbl-muted);
+  transition: transform 150ms ease;
+}
+
+.esbl-switcher-caret.open {
+  transform: rotate(180deg);
+}
+
+.esbl-switcher-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 200;
+  min-width: 260px;
+  max-width: 340px;
+  padding: 6px;
+  background: var(--esbl-surface);
+  border: 1px solid var(--esbl-border);
+  border-radius: 12px;
+  box-shadow: var(--esbl-shadow);
+}
+
+.esbl-switcher-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--esbl-ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.esbl-switcher-item:hover {
+  background: var(--esbl-accent-soft);
+}
+
+.esbl-switcher-item.active {
+  color: var(--esbl-accent-strong);
+}
+
+.esbl-switcher-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.esbl-switcher-check {
+  flex-shrink: 0;
+  color: var(--esbl-accent-strong);
+  font-weight: 700;
+}
+
+.esbl-switcher-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--esbl-border);
+}
+
+.esbl-switcher-add {
+  color: var(--esbl-accent-strong);
+  font-weight: 700;
+}
+
+.esbl-switcher-add-icon {
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .esbl-header-right {

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Outlet, NavLink, Link, useNavigate } from 'react-router-dom';
 import supabase from '../../utils/supabase.js';
+import EstablishmentSwitcher from './EstablishmentSwitcher.jsx';
 import './EstablishmentLayout.css';
 
 // ─── Context ─────────────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { path: 'clients', label: 'Clients', icon: '👤' },
   { path: 'reservations', label: 'Réservations', icon: '📋' },
   { path: 'paiements', label: 'Paiements', icon: '💳' },
+  { path: 'integration', label: 'Intégration', icon: '🔗' },
   { path: 'parametres', label: 'Paramètres', icon: '⚙️' },
 ];
 
@@ -95,12 +97,6 @@ export default function EstablishmentLayout() {
     navigate('/map');
   };
 
-  // ── Nom d'affichage de l'établissement actif ──
-  const activeEstabName =
-    selectedEstablishment?.Name
-    ?? selectedEstablishment?.name
-    ?? 'Mon établissement';
-
   // ── Contexte partagé avec toutes les pages enfants ──
   const contextValue = {
     authUser,
@@ -146,29 +142,14 @@ export default function EstablishmentLayout() {
           {/* ── Header ── */}
           <header className="esbl-header">
             <div className="esbl-header-left">
-              {establishments.length > 1 ? (
-                <select
-                  className="esbl-estab-select"
-                  value={selectedEstablishment?.key ?? selectedEstablishment?.id ?? ''}
-                  onChange={(e) => {
-                    const found = establishments.find(
-                      (es) => String(es.key ?? es.id) === e.target.value
-                    );
-                    if (found) setSelectedEstablishment(found);
-                  }}
-                >
-                  {establishments.map((es) => {
-                    const k = String(es.key ?? es.id ?? '');
-                    return (
-                      <option key={k} value={k}>
-                        {es.Name ?? es.name ?? `Établissement ${k}`}
-                      </option>
-                    );
-                  })}
-                </select>
-              ) : (
-                <span className="esbl-estab-name">{activeEstabName}</span>
-              )}
+              <EstablishmentSwitcher
+                establishments={establishments}
+                selected={selectedEstablishment}
+                onSelect={setSelectedEstablishment}
+                onAddNew={() =>
+                  navigate('/dashboard/establishment/parametres', { state: { createNew: true } })
+                }
+              />
             </div>
 
             <div className="esbl-header-right">
