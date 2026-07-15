@@ -1,0 +1,273 @@
+/* ─────────────────────────────────────────
+   Page dédiée : Destinations partenaires
+   (Falls Gully & Château Lamontagne)
+   Immersif, plein écran, parallax + reveal.
+   ───────────────────────────────────────── */
+
+.destinations-page {
+  background: #fff;
+}
+
+/* Bouton retour flottant */
+.des-back {
+  position: fixed;
+  top: 22px;
+  left: 22px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(11, 18, 32, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.des-back:hover {
+  background: rgba(11, 18, 32, 0.8);
+  transform: translateY(-1px);
+}
+
+/* ── HÉRO PLEIN ÉCRAN ── */
+.des-hero {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  align-items: flex-end;
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
+}
+
+.des-hero__overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    rgba(8, 13, 24, 0.85) 0%,
+    rgba(8, 13, 24, 0.35) 40%,
+    rgba(8, 13, 24, 0.15) 70%,
+    rgba(8, 13, 24, 0.35) 100%
+  );
+}
+
+.des-hero__inner {
+  position: relative;
+  z-index: 2;
+  padding-bottom: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.des-hero__index {
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.des-hero__kicker {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7dd3a0;
+}
+
+.des-hero__title {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(2.4rem, 6vw, 5rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.02;
+  max-width: 900px;
+  text-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
+}
+
+.des-hero__short {
+  margin: 6px 0 0;
+  max-width: 560px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: clamp(1.05rem, 2vw, 1.35rem);
+  line-height: 1.55;
+  font-weight: 500;
+}
+
+/* ── CONTENU ── */
+.des-content {
+  padding: 88px 24px 96px;
+}
+
+.des-content__head {
+  display: flex;
+  margin-bottom: 56px;
+}
+
+.des-content__text {
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 22px;
+}
+
+.des-content__desc {
+  margin: 0;
+  font-size: clamp(1.1rem, 2vw, 1.4rem);
+  line-height: 1.65;
+  color: #1e293b;
+  letter-spacing: -0.01em;
+}
+
+.des-content__features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 12px 32px;
+}
+
+.des-content__features li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #0b1220;
+}
+
+.des-content__features svg {
+  color: #16a34a;
+  flex-shrink: 0;
+}
+
+/* ── GALERIE ── */
+.des-gallery {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 20px;
+}
+
+.des-gallery__item {
+  margin: 0;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #eef2f6;
+  box-shadow: 0 20px 44px -24px rgba(15, 23, 42, 0.4);
+}
+
+.des-gallery__item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 700ms ease;
+}
+
+.des-gallery__item:hover img {
+  transform: scale(1.05);
+}
+
+/* Disposition éditoriale : grande image + colonnes */
+.des-gallery__item:nth-child(1) {
+  grid-column: span 4;
+  aspect-ratio: 16 / 11;
+}
+
+.des-gallery__item:nth-child(2) {
+  grid-column: span 2;
+  aspect-ratio: 3 / 4;
+}
+
+.des-gallery__item:nth-child(3) {
+  grid-column: span 3;
+  aspect-ratio: 4 / 3;
+}
+
+.des-gallery__item:nth-child(4) {
+  grid-column: span 3;
+  aspect-ratio: 4 / 3;
+}
+
+/* Quand il n'y a que 3 images (Falls Gully) */
+.des-gallery:has(.des-gallery__item:last-child:nth-child(3)) .des-gallery__item:nth-child(2),
+.des-gallery:has(.des-gallery__item:last-child:nth-child(3)) .des-gallery__item:nth-child(3) {
+  grid-column: span 2;
+  aspect-ratio: 3 / 4;
+}
+
+/* ── CTA FINAL ── */
+.des-cta {
+  background: #0b1220;
+  padding: 96px 0;
+}
+
+.des-cta__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+}
+
+.des-cta__title {
+  margin: 0;
+  font-size: clamp(1.8rem, 3.6vw, 2.6rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #fff;
+}
+
+.des-cta__lead {
+  margin: 0 0 8px;
+  max-width: 560px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 1.08rem;
+  line-height: 1.6;
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 860px) {
+  .des-content {
+    padding: 56px 24px 64px;
+  }
+
+  .des-content__head {
+    margin-bottom: 36px;
+  }
+
+  .des-gallery {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+
+  /* Toutes les tuiles repassent en format uniforme */
+  .des-gallery__item:nth-child(1) {
+    grid-column: span 2;
+    aspect-ratio: 16 / 10;
+  }
+
+  .des-gallery__item:nth-child(2),
+  .des-gallery__item:nth-child(3),
+  .des-gallery__item:nth-child(4) {
+    grid-column: span 1;
+    aspect-ratio: 3 / 4;
+  }
+}
+
+@media (max-width: 480px) {
+  .des-content__features {
+    grid-template-columns: 1fr;
+  }
+}

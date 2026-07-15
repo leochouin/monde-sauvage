@@ -10,6 +10,7 @@ import './App.css'
 
 const MapApp = lazy(() => import('./components/MapApp.jsx'))
 const Landing = lazy(() => import('./pages/Landing.jsx'))
+const DestinationsPage = lazy(() => import('./pages/DestinationsPage.jsx'))
 const ChaletDetailPage = lazy(() => import('./pages/ChaletDetailPage.jsx'))
 const EstablishmentLayout = lazy(() => import('./components/layout/EstablishmentLayout.jsx'))
 const Overview = lazy(() => import('./pages/dashboard/Overview.jsx'))
@@ -465,6 +466,7 @@ function App() {
           <Suspense fallback={null}>
             <Routes>
               <Route path="/" element={<Landing />} />
+              <Route path="/destinations" element={<DestinationsPage />} />
               <Route
                 path="/dashboard/establishment"
                 element={
