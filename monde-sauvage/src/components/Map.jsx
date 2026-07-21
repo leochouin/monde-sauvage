@@ -11,6 +11,9 @@ import GuideSlotPickerModal from '../modals/guideSlotPickerModal.jsx';
 import { getRiverByPathId } from '../utils/riverGuideData.js';
 import RiverInfoCard from './RiverInfoCard.jsx';
 import { RIVER_IMAGES } from '../utils/riverImages.js';
+import EnvironmentalDrawer from './EnvironmentalDrawer.jsx';
+import useEnvironmentalData from '../utils/useEnvironmentalData.js';
+import { RIVER_STATIONS, TIDE_STATIONS } from '../utils/environmentalStations.js';
 
 // Tuned values for the step-1 river "attract" pulse.
 const ATTRACT = {
@@ -277,6 +280,12 @@ const GaspesieMap = ({
   const mapRef = useRef(null);
   const mapStyleLoaded = useRef(false);
   const [mapReady, setMapReady] = useState(false);
+
+  // --- Additive environmental layers (river flow + tides). Fully self-contained:
+  // node GeoJSON + lazy per-station fetchers, plus the clicked selection that
+  // drives the bottom-sheet drawer. None of this touches existing map logic.
+  const { riverNodes, tideNodes, fetchRiverDetail, fetchTideDetail } = useEnvironmentalData();
+  const [envSelection, setEnvSelection] = useState(null);
 
   const [circleCenter, setCircleCenter] = useState(null);
   // Rivers within the current circle radius — shown in sidebar + drives multi-glow.
@@ -986,6 +995,84 @@ const GaspesieMap = ({
       if (map && typeof map._stopRiverAttract === 'function') map._stopRiverAttract();
     };
   }, [bookingStep, mapReady]);
+
+  // --- Environmental layers injection (river flow + tides) -------------------
+  // Added imperatively, exactly like the existing `businesses`/`rivers` sources,
+  // once the map has loaded. Click handlers are LAYER-SCOPED so they cannot
+  // interfere with the existing global click / river / business handlers.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return undefined;
+
+    const ENV_LAYERS = ['env-river-nodes', 'env-river-glow', 'env-tide-nodes', 'env-tide-glow'];
+    const ENV_SOURCES = ['env-rivers', 'env-tides'];
+    const stationById = new Map([
+      ...RIVER_STATIONS.map((s) => [s.id, { type: 'river', station: s }]),
+      ...TIDE_STATIONS.map((s) => [s.id, { type: 'tide', station: s }]),
+    ]);
+
+    const addLayers = () => {
+      if (map.getSource('env-rivers')) return; // already injected
+      map.addSource('env-rivers', { type: 'geojson', data: riverNodes });
+      map.addSource('env-tides', { type: 'geojson', data: tideNodes });
+
+      // River flow — blue circular nodes (soft glow + solid core).
+      map.addLayer({
+        id: 'env-river-glow', type: 'circle', source: 'env-rivers',
+        paint: { 'circle-radius': 13, 'circle-color': '#2563EB', 'circle-opacity': 0.18, 'circle-blur': 0.6 },
+      });
+      map.addLayer({
+        id: 'env-river-nodes', type: 'circle', source: 'env-rivers',
+        paint: {
+          'circle-radius': 6, 'circle-color': '#2563EB',
+          'circle-stroke-width': 2, 'circle-stroke-color': '#FFFFFF',
+        },
+      });
+
+      // Tides — teal wave nodes along the coast (glow + core; label carries a wave glyph).
+      map.addLayer({
+        id: 'env-tide-glow', type: 'circle', source: 'env-tides',
+        paint: { 'circle-radius': 13, 'circle-color': '#0E9C93', 'circle-opacity': 0.18, 'circle-blur': 0.6 },
+      });
+      map.addLayer({
+        id: 'env-tide-nodes', type: 'circle', source: 'env-tides',
+        paint: {
+          'circle-radius': 6, 'circle-color': '#0E9C93',
+          'circle-stroke-width': 2, 'circle-stroke-color': '#FFFFFF',
+        },
+      });
+    };
+
+    const openFromFeature = (e) => {
+      const f = e.features?.[0];
+      const hit = f && stationById.get(f.properties?.id);
+      if (hit) setEnvSelection(hit);
+    };
+    const setPointer = () => { map.getCanvas().style.cursor = 'pointer'; };
+    const clearPointer = () => { map.getCanvas().style.cursor = ''; };
+
+    if (map.isStyleLoaded()) addLayers(); else map.once('load', addLayers);
+
+    map.on('click', 'env-river-nodes', openFromFeature);
+    map.on('click', 'env-tide-nodes', openFromFeature);
+    for (const id of ['env-river-nodes', 'env-tide-nodes']) {
+      map.on('mouseenter', id, setPointer);
+      map.on('mouseleave', id, clearPointer);
+    }
+
+    return () => {
+      map.off('click', 'env-river-nodes', openFromFeature);
+      map.off('click', 'env-tide-nodes', openFromFeature);
+      for (const id of ['env-river-nodes', 'env-tide-nodes']) {
+        map.off('mouseenter', id, setPointer);
+        map.off('mouseleave', id, clearPointer);
+      }
+      try {
+        for (const id of ENV_LAYERS) if (map.getLayer(id)) map.removeLayer(id);
+        for (const id of ENV_SOURCES) if (map.getSource(id)) map.removeSource(id);
+      } catch { /* style torn down already */ }
+    };
+  }, [mapReady, riverNodes, tideNodes]);
 
   // Fourth useEffect - Display fishing zones on map when fishingZones changes
   useEffect(() => {
@@ -4893,6 +4980,14 @@ const GaspesieMap = ({
         language={language}
         dateRange={startDate && endDate ? { start: startDate, end: endDate } : null}
         hourlyRate={selectedGuide?.hourly_rate}
+      />
+
+      {/* River-flow / tide bottom-sheet drawer (additive environmental layers) */}
+      <EnvironmentalDrawer
+        selection={envSelection}
+        fetchRiverDetail={fetchRiverDetail}
+        fetchTideDetail={fetchTideDetail}
+        onClose={() => setEnvSelection(null)}
       />
     </div>
   );
