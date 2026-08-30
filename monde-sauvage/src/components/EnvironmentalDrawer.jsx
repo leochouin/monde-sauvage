@@ -40,7 +40,7 @@ function Sparkline({ series, color }) {
 
   if (!path) return null;
   return (
-    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Tendance du débit sur 24 h">
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Tendance du débit sur ~14 jours">
       <path d={path.area} fill={color} opacity="0.12" />
       <path d={path.line} fill="none" stroke={color} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" />
       <circle cx={path.last[0]} cy={path.last[1]} r="3.4" fill={color} />
@@ -202,7 +202,7 @@ export default function EnvironmentalDrawer({ selection, fetchRiverDetail, fetch
           <button
             onClick={requestClose}
             aria-label="Fermer"
-            style={{ border: 'none', background: '#EFEDE6', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', fontSize: 18, lineHeight: 1, color: MUTED }}
+            style={{ border: 'none', background: '#EFEDE6', borderRadius: '50%', width: 32, height: 32, flexShrink: 0, padding: 0, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 18, lineHeight: 1, color: MUTED }}
           >×</button>
         </div>
 
@@ -222,7 +222,7 @@ export default function EnvironmentalDrawer({ selection, fetchRiverDetail, fetch
               <Sparkline series={detail.series} color={accent} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED, marginTop: 2 }}>
-              <span>-24 h</span><span>maintenant</span>
+              <span>−14 j</span><span>aujourd'hui</span>
             </div>
             {detail.estimated && (
               <div style={{ marginTop: 14, fontSize: 12, color: '#92653A', background: '#FBEFDD', border: '1px solid #F0D9B8', borderRadius: 10, padding: '8px 12px' }}>

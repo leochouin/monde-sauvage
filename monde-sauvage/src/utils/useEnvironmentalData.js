@@ -2,7 +2,6 @@ import { useCallback, useMemo } from 'react';
 import {
   RIVER_STATIONS,
   TIDE_STATIONS,
-  RIVER_API_BASE,
   TIDE_API_BASE,
 } from './environmentalStations.js';
 
@@ -49,7 +48,7 @@ const estimateRiverSeries = (stationNumber) => {
   let seed = 0;
   for (const ch of stationNumber) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const base = 8 + (seed % 40); // m³/s, plausible small-river baseline
-  const points = 24;
+  const points = 14; // daily, to match the live CEHQ window (~14 days)
   const series = [];
   for (let i = 0; i < points; i += 1) {
     const diurnal = Math.sin((i / points) * Math.PI * 2 + (seed % 7)) * base * 0.12;
@@ -66,46 +65,87 @@ const fetchJSON = async (url, signal) => {
   return res.json();
 };
 
+// ---------------------------------------------------------------------------
+// Pure government-API fetchers (no React). Each returns a normalized payload,
+// or `null` on any failure — EXCEPT AbortError, which is re-thrown so the
+// caller can cancel cleanly (a cancelled request is not a failed one, and must
+// never overwrite fresh state after the user picks a different node).
+// ---------------------------------------------------------------------------
+
+// River flow — live CEHQ débit via our `cehq-river-flow` Supabase edge function.
+// That function proxies the CORS-less CEHQ suivi-hydrologique feed, validates
+// the station diffuses débit, and returns a small normalized payload:
+//   { flow:number, unit:'m³/s', trend, series:number[] (daily, ~14d), observedAt }
+// Returns null when there's no configured base, no station id, or the station
+// has no live gauge → the drawer falls back to a badged estimate.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const RIVER_DEBIT_API_BASE = SUPABASE_URL
+  ? `${SUPABASE_URL}/functions/v1/cehq-river-flow`
+  : null;
+
+export async function fetchRiverFlow(stationNumber, signal) {
+  if (!RIVER_DEBIT_API_BASE || !stationNumber) return null;
+  try {
+    const data = await fetchJSON(
+      `${RIVER_DEBIT_API_BASE}?station=${encodeURIComponent(stationNumber)}`,
+      signal,
+    );
+    if (!data || typeof data.flow !== 'number' || !Array.isArray(data.series)) return null;
+    return {
+      flow: data.flow,
+      trend: data.trend ?? 'steady',
+      series: data.series, // real daily curve, oldest → newest
+      observedAt: data.observedAt ? new Date(data.observedAt) : null,
+    };
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+    return null; // edge fn 404/5xx or network → estimate fallback
+  }
+}
+
+// Tides — DFO IWLS. Fetches the two time-series codes in parallel over a
+// 12h-back / 12h-ahead window: `wlp` (15-min prediction curve) and `wlp-hilo`
+// (exact high/low events). Returns the two raw arrays, or null on failure.
+export async function fetchTides(stationId, signal) {
+  const now = Date.now();
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const from = iso(now - 12 * 3600 * 1000);
+  const to = iso(now + 12 * 3600 * 1000);
+  const base = `${TIDE_API_BASE}/${stationId}/data`;
+  const get = (code) => fetchJSON(`${base}?time-series-code=${code}&from=${from}&to=${to}`, signal);
+  try {
+    const [wlp, hilo] = await Promise.all([get('wlp'), get('wlp-hilo')]);
+    return { wlp: Array.isArray(wlp) ? wlp : [], hilo: Array.isArray(hilo) ? hilo : [] };
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+    return null;
+  }
+}
+
 export default function useEnvironmentalData() {
   const riverNodes = useMemo(() => toGeoJSON(RIVER_STATIONS, 'river'), []);
   const tideNodes = useMemo(() => toGeoJSON(TIDE_STATIONS, 'tide'), []);
 
-  // --- River flow (Env Canada hydrometric-realtime, GeoJSON) ---------------
+  // --- River flow (live CEHQ débit via edge fn, else estimate) --------------
   const fetchRiverDetail = useCallback(async (station, signal) => {
-    // Pull the most recent ~24h of observations for this station.
-    const params = new URLSearchParams({
-      STATION_NUMBER: station.stationNumber,
-      limit: '96',
-      sortby: '-DATETIME',
-      f: 'json',
-    });
-    try {
-      const data = await fetchJSON(`${RIVER_API_BASE}?${params}`, signal);
-      const feats = Array.isArray(data?.features) ? data.features : [];
-      // API returns newest-first; reverse to chronological and keep discharge.
-      const series = feats
-        .map((f) => f?.properties?.DISCHARGE)
-        .filter((v) => typeof v === 'number' && Number.isFinite(v))
-        .reverse();
-
-      if (series.length >= 2) {
-        return {
-          kind: 'river',
-          name: station.name,
-          unit: 'm³/s',
-          flow: series[series.length - 1],
-          trend: trendOf(series),
-          series,
-          estimated: false,
-        };
-      }
-    } catch (err) {
-      if (err?.name === 'AbortError') throw err;
-      // fall through to estimate on network/CORS failure
+    // Live débit + real daily series for stations with an active CEHQ gauge.
+    // AbortError propagates (from fetchRiverFlow) for clean cancellation.
+    const live = await fetchRiverFlow(station.stationNumber, signal);
+    if (live) {
+      return {
+        kind: 'river',
+        name: station.name,
+        unit: 'm³/s',
+        flow: live.flow,
+        trend: live.trend,
+        series: live.series, // real daily curve (~14d)
+        estimated: false,
+      };
     }
 
-    // No federal coverage (Gaspésie/CEHQ rivers) → labelled estimate.
-    const series = estimateRiverSeries(station.stationNumber);
+    // No active gauge (stationNumber: null) or feed unavailable → badged estimate.
+    // Seed by station id so the fake curve is stable + distinct per river.
+    const series = estimateRiverSeries(station.stationNumber || station.id);
     return {
       kind: 'river',
       name: station.name,
@@ -119,21 +159,12 @@ export default function useEnvironmentalData() {
 
   // --- Tides (DFO IWLS, fully live) ----------------------------------------
   const fetchTideDetail = useCallback(async (station, signal) => {
+    const raw = await fetchTides(station.iwlsId, signal);
+    if (!raw) throw new Error('tide-fetch-failed'); // surface the drawer's error state
     const now = new Date();
-    const from = new Date(now.getTime() - 6 * 3600 * 1000); // 6h back for context
-    const to = new Date(now.getTime() + 24 * 3600 * 1000); // next day for events
-    const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const base = `${TIDE_API_BASE}/${station.iwlsId}/data`;
-    const curveUrl = `${base}?time-series-code=wlp&from=${iso(from)}&to=${iso(to)}`;
-    const hiloUrl = `${base}?time-series-code=wlp-hilo&from=${iso(now)}&to=${iso(to)}`;
-
-    const [curveRaw, hiloRaw] = await Promise.all([
-      fetchJSON(curveUrl, signal),
-      fetchJSON(hiloUrl, signal),
-    ]);
 
     // Downsample the dense (per-minute) prediction curve to ~15-min steps.
-    const curve = (Array.isArray(curveRaw) ? curveRaw : [])
+    const curve = raw.wlp
       .map((p) => ({ t: new Date(p.eventDate), v: p.value }))
       .filter((p) => Number.isFinite(p.v) && !Number.isNaN(p.t.getTime()))
       .filter((_, i) => i % 15 === 0);
@@ -147,7 +178,7 @@ export default function useEnvironmentalData() {
     }
 
     // Next high/low event strictly after now.
-    const events = (Array.isArray(hiloRaw) ? hiloRaw : [])
+    const events = raw.hilo
       .map((p) => ({ t: new Date(p.eventDate), v: p.value }))
       .filter((p) => Number.isFinite(p.v) && p.t.getTime() > now.getTime())
       .sort((a, b) => a.t - b.t);

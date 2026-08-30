@@ -1051,7 +1051,17 @@ const GaspesieMap = ({
     const setPointer = () => { map.getCanvas().style.cursor = 'pointer'; };
     const clearPointer = () => { map.getCanvas().style.cursor = ''; };
 
-    if (map.isStyleLoaded()) addLayers(); else map.once('load', addLayers);
+    // NOTE: this effect runs AFTER the map's `load` event (it's gated on
+    // `mapReady`, set inside the load handler). So `map.once('load', …)` would
+    // never fire. When the style isn't fully loaded yet (tiles/overlay still
+    // streaming), retry on `idle` until it is.
+    let cancelled = false;
+    const ensureLayers = () => {
+      if (cancelled) return;
+      if (map.isStyleLoaded()) addLayers();
+      else map.once('idle', ensureLayers);
+    };
+    ensureLayers();
 
     map.on('click', 'env-river-nodes', openFromFeature);
     map.on('click', 'env-tide-nodes', openFromFeature);
@@ -1061,6 +1071,8 @@ const GaspesieMap = ({
     }
 
     return () => {
+      cancelled = true;
+      map.off('idle', ensureLayers);
       map.off('click', 'env-river-nodes', openFromFeature);
       map.off('click', 'env-tide-nodes', openFromFeature);
       for (const id of ['env-river-nodes', 'env-tide-nodes']) {

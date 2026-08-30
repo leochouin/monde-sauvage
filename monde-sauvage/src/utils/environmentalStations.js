@@ -2,60 +2,92 @@
 //
 // Two independent, additive map layers consume this registry:
 //   • RIVER_STATIONS — river flow (débit), rendered as blue circular nodes inland.
-//     `stationNumber` is the real hydrometric station id. Gaspésie rivers are
-//     monitored by CEHQ (province of Québec); Environment Canada's federal
-//     real-time datamart does NOT cover them, so `fetchRiverDetail` will fall
-//     back to a clearly-badged estimation when the federal API returns nothing
-//     for a given station. Swap `RIVER_API_BASE` for a CEHQ proxy to go fully
-//     live (see GO_LIVE notes / tile-cache doc for the proxy sketch).
+//     `stationNumber` is the real 6-digit CEHQ noStation. Live débit is fetched
+//     through our `cehq-river-flow` Supabase edge function (which proxies the
+//     CORS-less CEHQ suivi-hydrologique JSON). A river with `stationNumber: null`
+//     has NO active CEHQ gauge — `fetchRiverDetail` shows a clearly-badged
+//     estimation for it instead. Verified 2026-07-21: only the Sainte-Anne
+//     (021407) gauge covers the outfitter's immediate footprint; Cap-Chat,
+//     Sainte-Anne Nord-Est, Mont-Louis and Madeleine have no open station.
 //   • TIDE_STATIONS — tides (marées), rendered as teal wave nodes along the
 //     St. Lawrence coast. `iwlsId` is the DFO IWLS station id and this feed is
 //     fully live + CORS-clean, no proxy required.
 //
-// Coordinates are [lng, lat] to match GeoJSON / Mapbox ordering.
+// IMPORTANT — coordinates are ARTISTIC, not real-world. The map is a decorative
+// illustrated overlay (public/NewMap.png) where rivers are drawn stylized and do
+// NOT sit at their true lat/lng. So each node's [lng, lat] is hand-tuned to land
+// on the *drawn* river, computed from the overlay's corner bounds by snapping to
+// the illustration's blue river line. The real CEHQ gauge id lives in
+// `stationNumber` (used only for the live débit fetch) and is fully decoupled
+// from where the dot renders. Coordinates are [lng, lat] (GeoJSON/Mapbox order).
 
 export const SAINTE_ANNE_DES_MONTS = [-66.49, 49.13];
 
 /** @typedef {{ id: string, name: string, coordinates: [number, number] }} EnvStationBase */
 
-/** @typedef {EnvStationBase & { stationNumber: string, river: string }} RiverStation */
-/** Real CEHQ station numbers, placed on the rivers that matter to the outfitter. */
+/** @typedef {EnvStationBase & { stationNumber: string|null, river: string }} RiverStation */
+/**
+ * Rivers shown on the map. `stationNumber` = active CEHQ noStation (live débit),
+ * or null when there is no open gauge (→ badged estimate). All ids verified
+ * against the CEHQ station directory + live JSON feed on 2026-07-21.
+ */
 export const RIVER_STATIONS = /** @type {RiverStation[]} */ ([
   {
     id: 'river-sainte-anne',
     name: 'Rivière Sainte-Anne',
     river: 'Sainte-Anne',
-    stationNumber: '02QC009',
-    coordinates: [-66.4867, 49.0589],
+    stationNumber: '021407', // LIVE — CEHQ Sainte-Anne (Gaspésie)
+    coordinates: [-66.5266, 49.0042], // on drawn "Sainte-Anne" river
   },
   {
     id: 'river-cap-chat',
     name: 'Rivière Cap-Chat',
     river: 'Cap-Chat',
-    stationNumber: '02QB011',
-    coordinates: [-66.6722, 49.0564],
+    stationNumber: null, // no open CEHQ gauge (021502 closed 1996) → estimate
+    coordinates: [-66.7371, 48.9752], // on drawn "Cap-Chat" river
   },
-  {
-    id: 'river-sainte-anne-ne',
-    name: 'Rivière Sainte-Anne Nord-Est',
-    river: 'Sainte-Anne Nord-Est',
-    stationNumber: '02QC010',
-    coordinates: [-66.1272, 48.9464],
-  },
-  {
-    id: 'river-mont-louis',
-    name: 'Rivière de Mont-Louis',
-    river: 'Mont-Louis',
-    stationNumber: '02QC003',
-    coordinates: [-65.7286, 49.2067],
-  },
+  // NOTE: Mont-Louis and Sainte-Anne Nord-Est were dropped — neither is drawn on
+  // the illustrated map and neither has an active CEHQ gauge (nowhere correct to
+  // place them, no data to show).
   {
     id: 'river-madeleine',
     name: 'Rivière Madeleine',
     river: 'Madeleine',
-    stationNumber: '02QC001',
-    coordinates: [-65.2956, 49.2028],
+    stationNumber: null, // no open CEHQ gauge (020802 closed 2003) → estimate
+    coordinates: [-65.6844, 49.0042], // on drawn "Madeleine" river
   },
+  {
+    id: 'river-matane',
+    name: 'Rivière Matane',
+    river: 'Matane',
+    stationNumber: '021601', // LIVE — CEHQ Matane
+    coordinates: [-67.4835, 48.7126], // on drawn "Matane" river
+  },
+  {
+    id: 'river-cascapedia',
+    name: 'Rivière Cascapédia',
+    river: 'Cascapédia',
+    stationNumber: '011003', // LIVE — CEHQ Cascapédia
+    coordinates: [-66.1017, 48.4906], // on drawn "Cascapédia" river
+  },
+  {
+    id: 'river-york',
+    name: 'Rivière York',
+    river: 'York',
+    stationNumber: '020404', // LIVE — CEHQ York
+    coordinates: [-64.9763, 48.7261], // on drawn "York" river
+  },
+  {
+    id: 'river-dartmouth',
+    name: 'Rivière Dartmouth',
+    river: 'Dartmouth',
+    stationNumber: '020602', // LIVE — CEHQ Dartmouth
+    coordinates: [-64.9935, 49.0061], // on drawn "Dartmouth" river
+  },
+
+  // --- More verified active gauges, off-footprint. Uncomment if you guide there.
+  // { id: 'river-p-cascapedia', name: 'Petite rivière Cascapédia', river: 'Petite Cascapédia', stationNumber: '010902', coordinates: [-65.8643, 48.4577] },
+  // { id: 'river-bonaventure',  name: 'Rivière Bonaventure',  river: 'Bonaventure',  stationNumber: '010802', coordinates: [-65.5351, 48.3457] },
 ]);
 
 /** @typedef {EnvStationBase & { iwlsId: string, code: string }} TideStation */
