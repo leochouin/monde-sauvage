@@ -91,7 +91,7 @@ export function generateIcsCalendarEvent(data: BookingEmailData): string {
       `Total: ${formatPricePlain(data.total, data.currency)}`,
       "",
       "Monde Sauvage",
-      "https://monde-sauvage.vercel.app",
+      "https://app.mondesauvage.com",
     ]
       .filter(Boolean)
       .join("\\n")

@@ -23,7 +23,7 @@ Deno.serve(async (req: Request) => {
   try {
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const FRONTEND_URL = Deno.env.get("FRONTEND_URL") || "http://localhost:5173";
+    const FRONTEND_URL = Deno.env.get("FRONTEND_URL") || "https://app.mondesauvage.com";
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
