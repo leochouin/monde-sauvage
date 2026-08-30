@@ -1016,31 +1016,36 @@ const GaspesieMap = ({
       map.addSource('env-rivers', { type: 'geojson', data: riverNodes });
       map.addSource('env-tides', { type: 'geojson', data: tideNodes });
 
+      // Stack these below the business pins: business markers are the primary
+      // tap target and must never be visually covered by a decorative env dot
+      // that happens to land nearby (e.g. Falls Gully / Auberge Lamontagne).
+      const beforeId = map.getLayer('business-pin') ? 'business-pin' : undefined;
+
       // River flow — blue circular nodes (soft glow + solid core).
       map.addLayer({
         id: 'env-river-glow', type: 'circle', source: 'env-rivers',
         paint: { 'circle-radius': 13, 'circle-color': '#2563EB', 'circle-opacity': 0.18, 'circle-blur': 0.6 },
-      });
+      }, beforeId);
       map.addLayer({
         id: 'env-river-nodes', type: 'circle', source: 'env-rivers',
         paint: {
           'circle-radius': 6, 'circle-color': '#2563EB',
           'circle-stroke-width': 2, 'circle-stroke-color': '#FFFFFF',
         },
-      });
+      }, beforeId);
 
       // Tides — teal wave nodes along the coast (glow + core; label carries a wave glyph).
       map.addLayer({
         id: 'env-tide-glow', type: 'circle', source: 'env-tides',
         paint: { 'circle-radius': 13, 'circle-color': '#0E9C93', 'circle-opacity': 0.18, 'circle-blur': 0.6 },
-      });
+      }, beforeId);
       map.addLayer({
         id: 'env-tide-nodes', type: 'circle', source: 'env-tides',
         paint: {
           'circle-radius': 6, 'circle-color': '#0E9C93',
           'circle-stroke-width': 2, 'circle-stroke-color': '#FFFFFF',
         },
-      });
+      }, beforeId);
     };
 
     const openFromFeature = (e) => {
