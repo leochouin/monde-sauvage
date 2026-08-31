@@ -207,8 +207,9 @@ const GaspesieMap = ({
   isAccountSettingsOpen,
   isSocialFeedOpen,
   radius, 
-  isRejoindreOpen, 
+  isRejoindreOpen,
   isEtablissementOpen,
+  onGoHome,
   // Booking flow props
   browseMode,
   bookingStep,
@@ -4846,6 +4847,36 @@ const GaspesieMap = ({
             )}
           </div>
         </div>
+      )}
+
+      {/* Back to homepage button — always accessible from the map */}
+      {onGoHome && (
+        <button
+          type="button"
+          onClick={onGoHome}
+          title={t("Retour à l'accueil", 'Back to homepage')}
+          style={{
+            position: 'fixed',
+            top: isMobile ? '16px' : '20px',
+            right: isMobile ? '16px' : '24px',
+            zIndex: 1001,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: isMobile ? '9px 12px' : '10px 16px',
+            backgroundColor: 'rgba(255, 252, 247, 0.95)',
+            color: '#173428',
+            border: '1px solid rgba(72, 102, 86, 0.24)',
+            borderRadius: '12px',
+            cursor: 'pointer',
+            fontWeight: '600',
+            fontSize: isMobile ? '13px' : '14px',
+            boxShadow: '0 4px 12px rgba(45, 95, 76, 0.16)',
+          }}
+        >
+          <span aria-hidden="true">←</span>
+          {!isMobile && t('Accueil', 'Home')}
+        </button>
       )}
 
       {/* Login Button - Only shown when not logged in */}

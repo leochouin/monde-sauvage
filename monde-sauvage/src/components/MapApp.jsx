@@ -1657,6 +1657,7 @@ function MapApp({ user, profile, guide, language = 'fr', setLanguage }) {
                         setLanguage={setLanguage}
                         isRejoindreOpen={setIsRejoindreOpen}
                         isEtablissementOpen={() => navigate('/dashboard/establishment')}
+                        onGoHome={() => navigate('/')}
                         onOpenHelp={openOnboarding}
                         // Pass booking flow state to control the sidebar
                         browseMode={browseMode}
