@@ -41,15 +41,16 @@ export default function Landing() {
         </video>
         <div className="landing-hero__overlay" />
 
+        <img
+          src="/logo-mondesauvage.png"
+          alt="Monde Sauvage"
+          className="landing-hero__mark"
+          draggable="false"
+        />
+
         <div className="landing-hero__content">
-          <img
-            src="/logo-mondesauvage.png"
-            alt="Monde Sauvage"
-            className="landing-hero__logo"
-            draggable="false"
-          />
           <h1 className="landing-hero__title">
-            Bienvenue dans le Monde Sauvage
+            Bienvenue dans le<br />Monde Sauvage
           </h1>
           <p className="landing-hero__tagline">
             Hébergements en pleine nature, guides locaux et pourvoiries d'exception —
